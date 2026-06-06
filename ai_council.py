@@ -2184,9 +2184,9 @@ def capabilities_response() -> str:
     ensure_council_dirs()
     return (
         "[Council] Capabilities L3.5 active + L4.0 Shortcuts-ready.\n"
-        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, final delivery cards z Status/Details/Facts/Next, opcjonalny token-gated iPhone Shortcuts ingress przez serve-shortcuts, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, final delivery cards z Status/Details/Facts/Next, opcjonalny token-gated iPhone Shortcuts ingress przez serve-shortcuts, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, /selftest, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
+        "Komendy i naturalne frazy: status, selftest, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2203,7 +2203,7 @@ def system_status_response() -> str:
         "[Council] Online na Desktopie 24/7. L3.5 active + L4.0 Shortcuts-ready: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L3.0: /health, /selftest, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -2230,6 +2230,41 @@ def health_response() -> str:
     if stuck:
         lines.append("stuck: " + ", ".join(task.get("task_id", "") for task in stuck))
     lines.append("quick_check: jeśli zwykła wiadomość wraca jako task_id, polling nie jest blokowany.")
+    return "\n".join(lines)
+
+
+def selftest_response() -> str:
+    ensure_council_dirs()
+    status = operator_binary_status()
+    running = [task for task in latest_tasks(limit=50) if task.get("status") in {"running", "running_background"}]
+    stuck = stuck_tasks(limit=5)
+    required_docs = {
+        "grok_x_research": PROJECT_DIR / "docs" / "research" / "grok-x-poke-research-2026-06-06.md",
+        "claude_plan": PROJECT_DIR / "docs" / "research" / "claude-opus48-poke-research-full-2026-06-06.md",
+        "claude_tournament": PROJECT_DIR / "docs" / "research" / "claude-opus48-tournament-scorecard-2026-06-06.md",
+        "target": PROJECT_DIR / "docs" / "POKE_CLONE_TARGET.md",
+    }
+    doc_status = ", ".join(f"{name}:{'OK' if path.exists() else 'missing'}" for name, path in required_docs.items())
+    operator_status = ", ".join(f"{name}:{'OK' if item.get('configured') else 'missing'}" for name, item in status.items())
+    shortcut_state = "ready" if cfg("AI_COUNCIL_SHORTCUT_TOKEN") else "token_missing_not_started"
+    telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
+    lines = [
+        "[Council] Selftest",
+        "version: L3.5 active + L4.0 Shortcuts-ready",
+        f"project: {PROJECT_DIR}",
+        f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
+        f"telegram: {telegram_state}",
+        f"operators: {operator_status}",
+        f"running_tasks: {len(running)}",
+        f"stuck_tasks: {len(stuck)}",
+        f"artifacts_dir: {'OK' if ARTIFACTS_DIR.exists() else 'missing'}",
+        f"workspaces_dir: {'OK' if WORKSPACES_DIR.exists() else 'missing'}",
+        f"docs: {doc_status}",
+        f"shortcuts: {shortcut_state}",
+        "live_telegram: jeśli widzisz tę wiadomość w Telegramie po wpisaniu /selftest, inbound i outbound działają.",
+    ]
+    if stuck:
+        lines.append("stuck: " + ", ".join(task.get("task_id", "") for task in stuck))
     return "\n".join(lines)
 
 
@@ -3947,6 +3982,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/health", "operators": ["host"], "prompt": "", "mode": "health", "intent": "natural"}
 
+    if lower in {"selftest", "self test", "test systemu", "sprawdź wszystko", "sprawdz wszystko"} or lower.startswith(
+        ("pokaż selftest", "pokaz selftest", "uruchom selftest")
+    ):
+        return {"command": "/selftest", "operators": ["host"], "prompt": "", "mode": "selftest", "intent": "natural"}
+
     if lower in {"co umiesz", "co potrafisz", "capabilities", "możliwości", "mozliwosci"} or lower.startswith(
         ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities")
     ):
@@ -4263,6 +4303,8 @@ def route_text(text: str) -> dict:
         return {"command": "/status", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "status"}
     if lower.startswith("/health"):
         return {"command": "/health", "operators": ["host"], "prompt": "", "mode": "health"}
+    if lower.startswith("/selftest"):
+        return {"command": "/selftest", "operators": ["host"], "prompt": "", "mode": "selftest"}
     if lower.startswith("/workspace"):
         return {"command": "/workspace", "operators": ["host"], "prompt": "", "mode": "workspace"}
     natural_route = natural_intent_route(stripped, lower)
@@ -4575,11 +4617,11 @@ def build_research_prompt(prompt: str) -> str:
 
 def host_response(prompt: str) -> str:
     if not prompt:
-        return "[Council] AI Council online. Rozumiem też naturalne intencje: status, health, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, council, flow, zapisz/dopisz/zmień plik. Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all."
+        return "[Council] AI Council online. Rozumiem też naturalne intencje: status, selftest, health, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, council, flow, zapisz/dopisz/zmień plik. Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all."
     return (
         "[Council]\n"
         "Odebrałem. Routing działa.\n"
-        "Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all, /task, /queue, /artifacts, /actions, /approve, /deny, /memory, /write, /append, /patch, /flow, /council, /details <id>, /facts <id>, /next <id>, /capabilities, /health, /status <id>, /cancel <id>, /cost."
+        "Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all, /task, /queue, /artifacts, /actions, /approve, /deny, /memory, /write, /append, /patch, /flow, /council, /details <id>, /facts <id>, /next <id>, /capabilities, /health, /selftest, /status <id>, /cancel <id>, /cost."
     )
 
 
@@ -4601,6 +4643,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return task_status_response(prompt)
     if command == "/health":
         return health_response()
+    if command == "/selftest":
+        return selftest_response()
     if command == "/workspace":
         ensure_council_dirs()
         return "[Council] Workspace: D:\\ai-council. L2.5: workspaces, artifacts, reports, state\\tasks.jsonl, state\\actions.jsonl, state\\background_jobs.jsonl, state\\artifact_index.jsonl, state\\costs.jsonl, state\\memory.sqlite. Codex: read-only. Claude quick: bez tools. Claude Flow: Opus 4.8 plan workflow. Grok: API research."

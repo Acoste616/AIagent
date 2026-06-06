@@ -97,6 +97,14 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(route["operators"], ["grok"])
         self.assertEqual(route["mode"], "xresearch")
 
+    def test_selftest_routes_from_command_and_natural_intent(self):
+        direct = ai_council.route_text("/selftest")
+        natural = ai_council.route_text("sprawdź wszystko")
+
+        self.assertEqual(direct["command"], "/selftest")
+        self.assertEqual(natural["command"], "/selftest")
+        self.assertEqual(natural["mode"], "selftest")
+
     def test_xai_response_text_extracts_nested_output_text(self):
         data = {
             "output": [
@@ -1115,6 +1123,24 @@ class L25BackgroundTests(unittest.TestCase):
 
         self.assertIn("[Council] Health", response)
         self.assertIn("codex: OK", response)
+
+    def test_selftest_response_is_available_without_model_calls(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "operator_binary_status", return_value={"codex": {"configured": True}}), patch.object(
+                ai_council, "cfg", return_value=""
+            ):
+                response = ai_council.build_response({"command": "/selftest", "operators": ["host"], "prompt": ""})
+
+        self.assertIn("[Council] Selftest", response)
+        self.assertIn("operators: codex:OK", response)
+        self.assertIn("live_telegram:", response)
 
     def test_task_artifact_details_facts_and_next(self):
         with temp_dir() as tmp:
