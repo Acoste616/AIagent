@@ -55,6 +55,8 @@ ARTIFACT_INDEX_FILE = STATE_DIR / "artifact_index.jsonl"
 BACKGROUND_JOB_SPECS_DIR = STATE_DIR / "background_job_specs"
 COSTS_FILE = STATE_DIR / "costs.jsonl"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
+RECIPES_DIR = PROJECT_DIR / "recipes"
+NUDGES_FILE = STATE_DIR / "nudges.jsonl"
 DEFAULT_OPENCLAW_EXPORT = Path("D:/openclaw-export") if os.name == "nt" else Path.home() / "openclaw-export"
 OPENCLAW_EXPORT = Path(os.environ.get("OPENCLAW_EXPORT", DEFAULT_OPENCLAW_EXPORT)).expanduser()
 CLAUDE_COLLAB_DIR = Path(
@@ -93,6 +95,7 @@ MODEL_COMMANDS = {
     "@xresearch",
     "/xresearch",
     "/poke-research",
+    "/recipe",
     "@all",
     "/council",
 }
@@ -107,6 +110,7 @@ BACKGROUND_COMMANDS = {
     "@xresearch",
     "/xresearch",
     "/poke-research",
+    "/recipe",
     "@all",
     "/council",
 }
@@ -254,6 +258,7 @@ def ensure_council_dirs() -> None:
         WORKSPACES_DIR / "shared",
         ARTIFACTS_DIR,
         REPORTS_DIR,
+        RECIPES_DIR,
         BACKGROUND_JOB_SPECS_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)
@@ -386,6 +391,8 @@ def update_task_status(task_id: str, status: str, note: str = "", **fields) -> d
 
 def route_needs_task(route: dict) -> bool:
     command = route.get("command")
+    if command == "/recipe":
+        return str(route.get("prompt") or "").strip().lower().startswith("run ")
     if command in MODEL_COMMANDS or command in SIDE_EFFECT_COMMANDS:
         return True
     if command == "/multi":
@@ -395,6 +402,8 @@ def route_needs_task(route: dict) -> bool:
 
 def route_should_background(route: dict) -> bool:
     command = route.get("command")
+    if command == "/recipe":
+        return str(route.get("prompt") or "").strip().lower().startswith("run ")
     if command in BACKGROUND_COMMANDS:
         return True
     if command == "/multi":
@@ -985,7 +994,15 @@ def operator_call_allowed(operator: str) -> tuple[bool, str]:
 
 def cost_response() -> str:
     summary = operator_usage_summary()
-    lines = ["[Council] Cost/usage today (UTC)."]
+    rows = usage_today()
+    total_calls = sum(1 for row in rows if row.get("status") != "blocked")
+    total_blocked = sum(1 for row in rows if row.get("status") == "blocked")
+    total_time = sum(int(row.get("duration_ms") or 0) for row in rows)
+    total_est = sum(float(row.get("estimated_usd") or 0.0) for row in rows)
+    lines = [
+        "[Council] Cost/usage today (UTC).",
+        f"total_calls: {total_calls} | blocked: {total_blocked} | time: {total_time}ms | est: ${total_est:.4f}",
+    ]
     if not summary:
         lines.append("Brak zapisanych wywołań operatorów dzisiaj.")
     else:
@@ -1002,13 +1019,168 @@ def cost_response() -> str:
     return "\n".join(lines)
 
 
+def default_recipes() -> dict[str, dict]:
+    return {
+        "research_brief": {
+            "name": "research_brief",
+            "description": "Grok X research brief z faktami, ryzykami i next actions.",
+            "enabled": True,
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [{"command": "@xresearch", "prompt": "{input}"}],
+        },
+        "daily_system_digest": {
+            "name": "daily_system_digest",
+            "description": "Krótki digest health, kosztów, kolejki i artefaktów.",
+            "enabled": True,
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [
+                {"command": "/health", "prompt": ""},
+                {"command": "/cost", "prompt": ""},
+                {"command": "/queue", "prompt": ""},
+                {"command": "/artifacts", "prompt": ""},
+            ],
+        },
+        "project_next_action": {
+            "name": "project_next_action",
+            "description": "Claude Flow wybiera najbliższy bezpieczny krok dla projektu.",
+            "enabled": True,
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [{"command": "/flow", "prompt": "Wybierz najbliższy bezpieczny krok dla: {input}"}],
+        },
+    }
+
+
+def ensure_default_recipes() -> None:
+    ensure_council_dirs()
+    for name, recipe in default_recipes().items():
+        path = RECIPES_DIR / f"{name}.json"
+        if not path.exists():
+            path.write_text(json.dumps(recipe, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def recipe_path(name: str) -> Path:
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", name.strip())
+    return RECIPES_DIR / f"{safe_name}.json"
+
+
+def load_recipe(name: str) -> dict | None:
+    ensure_default_recipes()
+    path = recipe_path(name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+
+
+def list_recipes() -> list[dict]:
+    ensure_default_recipes()
+    recipes = []
+    for path in sorted(RECIPES_DIR.glob("*.json")):
+        try:
+            recipes.append(json.loads(path.read_text(encoding="utf-8", errors="replace")))
+        except json.JSONDecodeError:
+            recipes.append({"name": path.stem, "description": "invalid json", "enabled": False})
+    return recipes
+
+
+def recipes_response() -> str:
+    recipes = list_recipes()
+    if not recipes:
+        return "[Council] Brak recipes."
+    lines = ["[Council] Recipes:"]
+    for recipe in recipes:
+        enabled = "on" if recipe.get("enabled", True) else "off"
+        lines.append(f"- {recipe.get('name')} [{enabled}] {compact_line(recipe.get('description', ''), 110)}")
+    lines.append("Uruchom: /recipe run <name> <input>")
+    return "\n".join(lines)
+
+
+def format_recipe(recipe: dict) -> str:
+    steps = recipe.get("steps") or []
+    lines = [
+        f"[Council] Recipe {recipe.get('name')}",
+        f"enabled: {recipe.get('enabled', True)}",
+        f"risk: {recipe.get('risk', 'R0')}",
+        f"approval: {recipe.get('approval_policy', 'auto')}",
+        f"description: {recipe.get('description', '')}",
+        "steps:",
+    ]
+    for index, step in enumerate(steps, start=1):
+        lines.append(f"{index}. {step.get('command')} {compact_line(step.get('prompt', ''), 120)}")
+    return "\n".join(lines)
+
+
+def recipe_response(prompt: str) -> str:
+    parts = prompt.strip().split(maxsplit=2)
+    if not parts:
+        return recipes_response()
+    action = parts[0].lower()
+    if action == "show" and len(parts) >= 2:
+        recipe = load_recipe(parts[1])
+        return format_recipe(recipe) if recipe else f"[Council] Nie znalazłem recipe `{parts[1]}`."
+    if action == "run":
+        return "[Council] Recipe run działa w tle. Użyj: /recipe run <name> <input>."
+    return "[Council] Recipe: /recipes, /recipe show <name>, /recipe run <name> <input>."
+
+
+def render_recipe_step_prompt(template: str, recipe_input: str) -> str:
+    return (template or "").replace("{input}", recipe_input.strip())
+
+
+def run_recipe_background(prompt: str, task_id: str = "") -> dict:
+    parts = prompt.strip().split(maxsplit=2)
+    if len(parts) < 2 or parts[0].lower() != "run":
+        response = recipe_response(prompt)
+        return {
+            "decision": "Recipe nie została uruchomiona.",
+            "facts": [response],
+            "dispute": "",
+            "next_actions": [f"Sprawdź recipes: /recipes"],
+            "ask_user": "Podaj /recipe run <name> <input>.",
+            "raw_output": response,
+            "report": response,
+        }
+    name = parts[1]
+    recipe_input = parts[2] if len(parts) >= 3 else ""
+    recipe = load_recipe(name)
+    if not recipe:
+        response = f"[Council] Nie znalazłem recipe `{name}`."
+        return {"decision": response, "facts": [response], "dispute": "", "next_actions": ["/recipes"], "ask_user": "Wybierz istniejącą recipe.", "raw_output": response, "report": response}
+    if recipe.get("enabled") is False:
+        response = f"[Council] Recipe `{name}` jest disabled."
+        return {"decision": response, "facts": [response], "dispute": "", "next_actions": [f"/recipe show {name}"], "ask_user": "Włącz recipe zanim ją uruchomisz.", "raw_output": response, "report": response}
+    outputs = []
+    for index, step in enumerate(recipe.get("steps") or [], start=1):
+        route = {"command": step.get("command", ""), "operators": [], "prompt": render_recipe_step_prompt(str(step.get("prompt", "")), recipe_input), "task_id": task_id}
+        if not route["command"]:
+            continue
+        step_response = build_response(route)
+        outputs.append(f"## Step {index}: {route['command']}\n\n{step_response}")
+    raw = "\n\n".join(outputs) or "Recipe nie ma kroków."
+    facts = extract_fact_lines(raw, limit=3)
+    return {
+        "decision": f"Recipe `{name}` zakończona.",
+        "facts": facts or [f"Recipe `{name}` uruchomiona."],
+        "dispute": "Recipe MVP działa deterministycznie; realne write/external actions nadal wymagają approval.",
+        "next_actions": [f"Przejrzyj wynik: /details {task_id}", f"Pokaż recipe: /recipe show {name}"],
+        "ask_user": "Zdecyduj, czy kontynuować wynik recipe.",
+        "raw_output": raw,
+        "report": f"# Recipe run: {name}\n\nInput: {recipe_input}\n\n{raw}",
+    }
+
+
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L2.5 active.\n"
-        "Teraz: Telegram, natural intent routing, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L2.6 active.\n"
+        "Teraz: Telegram, inline approval buttons, natural intent routing, recipes MVP, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council, @xresearch, /xresearch, /poke-research.\n"
+        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council, /recipes, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -1022,8 +1194,8 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L2.5 active: natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L2.6 active: inline buttons, recipes MVP, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L2.5: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /xresearch, /poke-research."
     )
@@ -1639,6 +1811,36 @@ def actions_response(limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def nudged_ids() -> set[str]:
+    return {str(row.get("action_id")) for row in read_jsonl(NUDGES_FILE) if row.get("action_id")}
+
+
+def maybe_send_action_nudges(chat_id: str, send: bool) -> int:
+    if not chat_id or not send:
+        return 0
+    threshold = int_cfg("AI_COUNCIL_ACTION_NUDGE_SECONDS", 1800)
+    if threshold <= 0:
+        return 0
+    already = nudged_ids()
+    sent = 0
+    for action in latest_by_id(ACTIONS_FILE, "action_id", limit=30):
+        action_id = str(action.get("action_id") or "")
+        if not action_id or action_id in already or action.get("status") != "pending":
+            continue
+        if seconds_since(str(action.get("created_at", ""))) < threshold:
+            continue
+        text = (
+            "[Council] Nudge: akcja czeka na decyzję.\n"
+            f"id: {action_id}\n"
+            f"type: {action.get('type')}\n"
+            f"preview: {compact_line(action.get('description', ''), 180)}"
+        )
+        if telegram_send_message_with_markup(chat_id, text, action_reply_markup(action_id)):
+            append_jsonl(NUDGES_FILE, {"action_id": action_id, "created_at": utc_now(), "status": "sent"})
+            sent += 1
+    return sent
+
+
 def approve_response(prompt: str) -> str:
     parts = prompt.strip().split(maxsplit=1)
     if not parts:
@@ -1970,6 +2172,8 @@ def execute_route_for_background(route: dict, chat_id: str, task_id: str) -> dic
         }
     if command == "/council":
         return build_structured_council_result(str(route.get("prompt", "")), task_id=task_id)
+    if command == "/recipe":
+        return run_recipe_background(str(route.get("prompt", "")), task_id=task_id)
     response = build_response(worker_route, chat_id=chat_id)
     facts = extract_fact_lines(response, limit=3)
     direct_summary = f"{response}\n\n[AI Council]\ntask: {task_id}\nDetails: /details {task_id}"
@@ -2360,6 +2564,10 @@ def split_telegram_text(text: str, limit: int = 4000) -> list[str]:
 
 
 def telegram_send_message(chat_id: str, text: str) -> bool:
+    return telegram_send_message_with_markup(chat_id, text)
+
+
+def telegram_send_message_with_markup(chat_id: str, text: str, reply_markup: dict | None = None) -> bool:
     ok = True
     chunks = split_telegram_text(text)
     for index, chunk in enumerate(chunks, start=1):
@@ -2368,6 +2576,8 @@ def telegram_send_message(chat_id: str, text: str) -> bool:
             "text": chunk,
             "disable_web_page_preview": True,
         }
+        if reply_markup and index == 1:
+            payload["reply_markup"] = reply_markup
         data = request_json(telegram_url("sendMessage"), method="POST", payload=payload)
         if not data.get("ok"):
             print(f"telegram_sendMessage=failed {data.get('error') or data.get('description')}")
@@ -2378,6 +2588,57 @@ def telegram_send_message(chat_id: str, text: str) -> bool:
         else:
             print("telegram_sendMessage=ok")
     return ok
+
+
+def telegram_answer_callback_query(callback_query_id: str, text: str = "") -> bool:
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = compact_line(text, 180)
+    data = request_json(telegram_url("answerCallbackQuery"), method="POST", payload=payload)
+    return bool(data.get("ok"))
+
+
+def telegram_edit_message_reply_markup(chat_id: str, message_id: str) -> bool:
+    payload = {"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}}
+    data = request_json(telegram_url("editMessageReplyMarkup"), method="POST", payload=payload)
+    return bool(data.get("ok"))
+
+
+def inline_keyboard(button_rows: list[list[tuple[str, str]]]) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": label, "callback_data": data} for label, data in row]
+            for row in button_rows
+        ]
+    }
+
+
+def action_reply_markup(action_id: str) -> dict:
+    return inline_keyboard(
+        [
+            [("Zatwierdź", f"approve:{action_id}"), ("Anuluj", f"deny:{action_id}")],
+            [("Actions", "actions:latest")],
+        ]
+    )
+
+
+def task_reply_markup(task_id: str) -> dict:
+    return inline_keyboard(
+        [
+            [("Status", f"status:{task_id}"), ("Details", f"details:{task_id}")],
+            [("Cancel", f"cancel:{task_id}")],
+        ]
+    )
+
+
+def response_reply_markup(response: str) -> dict | None:
+    action_match = re.search(r"\bid:\s*(act-[A-Za-z0-9_.-]+)", response or "")
+    if action_match and "Pending" in response:
+        return action_reply_markup(action_match.group(1))
+    task_match = re.search(r"\b(task-[0-9]{8}-[0-9]{6}-[A-Za-z0-9]+)", response or "")
+    if task_match:
+        return task_reply_markup(task_match.group(1))
+    return None
 
 
 def xai_models() -> bool:
@@ -2720,6 +2981,10 @@ def route_text(text: str) -> dict:
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities"}
     if lower.startswith("/cost"):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
+    if lower.startswith("/recipes"):
+        return {"command": "/recipes", "operators": ["host"], "prompt": "", "mode": "recipes"}
+    if lower.startswith("/recipe"):
+        return {"command": "/recipe", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "recipe"}
     if lower.startswith("/cancel"):
         return {"command": "/cancel", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "cancel"}
     if lower.startswith("/details"):
@@ -3101,6 +3366,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return capabilities_response()
     if command == "/cost":
         return cost_response()
+    if command == "/recipes":
+        return recipes_response()
     if command == "/cancel":
         return cancel_response(prompt)
     if command == "/details":
@@ -3129,6 +3396,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return deny_response(prompt)
     if command == "/memory":
         return memory_response(prompt)
+    if command == "/recipe":
+        return recipe_response(prompt)
     if command == "/flow":
         return claude_flow_response(prompt, task_id=task_id)
     if command == "/council":
@@ -3281,6 +3550,39 @@ def is_allowed_message(message: dict) -> bool:
     )
 
 
+def is_allowed_callback(callback: dict) -> bool:
+    sender = callback.get("from", {})
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    return (
+        str(sender.get("id")) == cfg("TELEGRAM_ALLOWED_USER_ID")
+        and str(chat.get("id")) == cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    )
+
+
+def handle_callback_query(callback: dict) -> tuple[str, str]:
+    data = str(callback.get("data") or "")
+    if ":" in data:
+        action, target = data.split(":", 1)
+    else:
+        action, target = data, ""
+    action = action.lower().strip()
+    target = target.strip()
+    if action == "approve":
+        return approve_response(target), "approved"
+    if action == "deny":
+        return deny_response(target), "denied"
+    if action == "cancel":
+        return cancel_response(target), "cancelled"
+    if action == "status":
+        return task_status_response(target), "status"
+    if action == "details":
+        return details_response(target), "details"
+    if action == "actions":
+        return actions_response(), "actions"
+    return f"[Council] Nieznany callback `{compact_line(data, 80)}`.", "unknown_callback"
+
+
 def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> int:
     params = {"limit": str(limit), "timeout": "1"}
     offset = read_offset()
@@ -3298,6 +3600,38 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
     max_update_id = None
     for update in updates:
         max_update_id = max(max_update_id or update["update_id"], update["update_id"])
+        callback = update.get("callback_query")
+        if callback:
+            chat_id = str(((callback.get("message") or {}).get("chat") or {}).get("id", ""))
+            allowed = is_allowed_callback(callback)
+            started = time.time()
+            response = ""
+            status = "ignored_not_allowed"
+            if allowed:
+                response, status = handle_callback_query(callback)
+                if send:
+                    telegram_answer_callback_query(str(callback.get("id") or ""), status)
+                    message_id = str((callback.get("message") or {}).get("message_id") or "")
+                    if chat_id and message_id:
+                        telegram_edit_message_reply_markup(chat_id, message_id)
+                    telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+                else:
+                    print(response)
+            event = {
+                "request_id": short_hash(f"{update.get('update_id')}:{callback.get('data', '')}"),
+                "update_id": update.get("update_id"),
+                "chat_id_hash": short_hash(chat_id),
+                "user_id_hash": short_hash(str((callback.get("from") or {}).get("id", ""))),
+                "command": "callback",
+                "operators": ["host"],
+                "allowed": allowed,
+                "status": status,
+                "duration_ms": int((time.time() - started) * 1000),
+                "output_preview": response[:300],
+            }
+            audit(event)
+            processed += 1
+            continue
         message = update.get("message") or update.get("edited_message") or {}
         text = message.get("text") or ""
         chat_id = str((message.get("chat") or {}).get("id", ""))
@@ -3375,13 +3709,15 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
             else:
                 update_task_status(task["task_id"], "completed", "response sent", duration_ms=event["duration_ms"])
         if send:
-            sent = telegram_send_message(chat_id, response)
+            sent = telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
             event["status"] = "duplicate" if duplicate else ("responded" if sent else "send_failed")
         else:
             event["status"] = "duplicate" if duplicate else "dry_responded"
             print(response)
         audit(event)
         processed += 1
+        if allowed and chat_id:
+            maybe_send_action_nudges(chat_id, send)
 
     if max_update_id is not None:
         write_offset(max_update_id + 1)

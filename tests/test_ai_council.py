@@ -109,6 +109,40 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertEqual(ai_council.xai_response_text(data), "Pierwszy fakt.\nDrugi fakt.")
 
+    def test_response_reply_markup_for_pending_action(self):
+        markup = ai_council.response_reply_markup("[Council] Pending action utworzona.\nid: act-20260606-120000-abcdef")
+
+        self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "approve:act-20260606-120000-abcdef")
+        self.assertEqual(markup["inline_keyboard"][0][1]["callback_data"], "deny:act-20260606-120000-abcdef")
+
+    def test_response_reply_markup_for_task(self):
+        markup = ai_council.response_reply_markup("[AI Council] task-20260606-120000-abcdef\nSTART")
+
+        self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "status:task-20260606-120000-abcdef")
+        self.assertEqual(markup["inline_keyboard"][1][0]["callback_data"], "cancel:task-20260606-120000-abcdef")
+
+    def test_callback_approve_routes_to_approve_response(self):
+        with patch.object(ai_council, "approve_response", return_value="[Council] Approved: act-1") as approve:
+            response, status = ai_council.handle_callback_query({"data": "approve:act-1"})
+
+        approve.assert_called_once_with("act-1")
+        self.assertEqual(status, "approved")
+        self.assertIn("Approved", response)
+
+    def test_recipe_run_needs_background_task(self):
+        route = ai_council.route_text("/recipe run daily_system_digest")
+
+        self.assertEqual(route["command"], "/recipe")
+        self.assertTrue(ai_council.route_needs_task(route))
+        self.assertTrue(ai_council.route_should_background(route))
+
+    def test_recipe_show_does_not_need_background_task(self):
+        route = ai_council.route_text("/recipe show daily_system_digest")
+
+        self.assertEqual(route["command"], "/recipe")
+        self.assertFalse(ai_council.route_needs_task(route))
+        self.assertFalse(ai_council.route_should_background(route))
+
     def test_claude_flow_uses_opus_48_without_default_budget_cap(self):
         completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout="FLOW OK", stderr="")
 
