@@ -57,6 +57,7 @@ COSTS_FILE = STATE_DIR / "costs.jsonl"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
 RECIPES_DIR = PROJECT_DIR / "recipes"
 NUDGES_FILE = STATE_DIR / "nudges.jsonl"
+RECIPE_RUNS_FILE = STATE_DIR / "recipe_runs.jsonl"
 DEFAULT_OPENCLAW_EXPORT = Path("D:/openclaw-export") if os.name == "nt" else Path.home() / "openclaw-export"
 OPENCLAW_EXPORT = Path(os.environ.get("OPENCLAW_EXPORT", DEFAULT_OPENCLAW_EXPORT)).expanduser()
 CLAUDE_COLLAB_DIR = Path(
@@ -1025,6 +1026,7 @@ def default_recipes() -> dict[str, dict]:
             "name": "research_brief",
             "description": "Grok X research brief z faktami, ryzykami i next actions.",
             "enabled": True,
+            "trigger": {"type": "manual"},
             "risk": "R0",
             "approval_policy": "auto",
             "steps": [{"command": "@xresearch", "prompt": "{input}"}],
@@ -1033,6 +1035,7 @@ def default_recipes() -> dict[str, dict]:
             "name": "daily_system_digest",
             "description": "Krótki digest health, kosztów, kolejki i artefaktów.",
             "enabled": True,
+            "trigger": {"type": "schedule", "cron": "30 8 * * *"},
             "risk": "R0",
             "approval_policy": "auto",
             "steps": [
@@ -1042,10 +1045,32 @@ def default_recipes() -> dict[str, dict]:
                 {"command": "/artifacts", "prompt": ""},
             ],
         },
+        "stuck_tasks_monitor": {
+            "name": "stuck_tasks_monitor",
+            "description": "Sprawdza stuck/running tasks i kolejkę.",
+            "enabled": False,
+            "trigger": {"type": "schedule", "interval_seconds": 1800},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [
+                {"command": "/health", "prompt": ""},
+                {"command": "/queue", "prompt": ""},
+            ],
+        },
+        "cost_usage_monitor": {
+            "name": "cost_usage_monitor",
+            "description": "Monitoruje dzienne użycie i estymowany koszt.",
+            "enabled": False,
+            "trigger": {"type": "schedule", "interval_seconds": 3600},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [{"command": "/cost", "prompt": ""}],
+        },
         "project_next_action": {
             "name": "project_next_action",
             "description": "Claude Flow wybiera najbliższy bezpieczny krok dla projektu.",
             "enabled": True,
+            "trigger": {"type": "manual"},
             "risk": "R0",
             "approval_policy": "auto",
             "steps": [{"command": "/flow", "prompt": "Wybierz najbliższy bezpieczny krok dla: {input}"}],
@@ -1057,7 +1082,17 @@ def ensure_default_recipes() -> None:
     ensure_council_dirs()
     for name, recipe in default_recipes().items():
         path = RECIPES_DIR / f"{name}.json"
-        if not path.exists():
+        if path.exists():
+            try:
+                current = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                current = {}
+            merged = {**recipe, **current}
+            if "trigger" not in current and "trigger" in recipe:
+                merged["trigger"] = recipe["trigger"]
+            if merged != current:
+                path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
             path.write_text(json.dumps(recipe, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -1075,6 +1110,25 @@ def load_recipe(name: str) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except json.JSONDecodeError:
         return None
+
+
+def save_recipe(recipe: dict) -> bool:
+    name = str(recipe.get("name") or "").strip()
+    if not name:
+        return False
+    ensure_council_dirs()
+    recipe_path(name).write_text(json.dumps(recipe, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def set_recipe_enabled(name: str, enabled: bool) -> str:
+    recipe = load_recipe(name)
+    if not recipe:
+        return f"[Council] Nie znalazłem recipe `{name}`."
+    recipe["enabled"] = enabled
+    save_recipe(recipe)
+    state = "enabled" if enabled else "disabled"
+    return f"[Council] Recipe `{name}` {state}."
 
 
 def list_recipes() -> list[dict]:
@@ -1097,14 +1151,17 @@ def recipes_response() -> str:
         enabled = "on" if recipe.get("enabled", True) else "off"
         lines.append(f"- {recipe.get('name')} [{enabled}] {compact_line(recipe.get('description', ''), 110)}")
     lines.append("Uruchom: /recipe run <name> <input>")
+    lines.append("Zarządzaj: /recipe show|enable|disable <name>")
     return "\n".join(lines)
 
 
 def format_recipe(recipe: dict) -> str:
     steps = recipe.get("steps") or []
+    trigger = recipe.get("trigger") or {"type": "manual"}
     lines = [
         f"[Council] Recipe {recipe.get('name')}",
         f"enabled: {recipe.get('enabled', True)}",
+        f"trigger: {json.dumps(trigger, ensure_ascii=False)}",
         f"risk: {recipe.get('risk', 'R0')}",
         f"approval: {recipe.get('approval_policy', 'auto')}",
         f"description: {recipe.get('description', '')}",
@@ -1123,9 +1180,120 @@ def recipe_response(prompt: str) -> str:
     if action == "show" and len(parts) >= 2:
         recipe = load_recipe(parts[1])
         return format_recipe(recipe) if recipe else f"[Council] Nie znalazłem recipe `{parts[1]}`."
+    if action in {"enable", "disable"} and len(parts) >= 2:
+        return set_recipe_enabled(parts[1], action == "enable")
     if action == "run":
         return "[Council] Recipe run działa w tle. Użyj: /recipe run <name> <input>."
-    return "[Council] Recipe: /recipes, /recipe show <name>, /recipe run <name> <input>."
+    return "[Council] Recipe: /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>."
+
+
+def cron_field_matches(token: str, value: int, *, day_of_week: bool = False) -> bool:
+    token = token.strip()
+    if token == "*":
+        return True
+    values = []
+    for part in token.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            candidate = int(part)
+        except ValueError:
+            return False
+        if day_of_week and candidate == 7:
+            candidate = 0
+        values.append(candidate)
+    compare = value
+    if day_of_week and compare == 7:
+        compare = 0
+    return compare in values
+
+
+def recipe_due_window(recipe: dict, now: datetime | None = None) -> tuple[bool, str]:
+    trigger = recipe.get("trigger") or {}
+    if trigger.get("type") != "schedule":
+        return False, ""
+    current = now or datetime.now().astimezone()
+    interval = int(trigger.get("interval_seconds") or 0)
+    if interval > 0:
+        bucket = int(current.timestamp() // interval)
+        return True, f"interval:{interval}:{bucket}"
+    cron = str(trigger.get("cron") or "").strip()
+    fields = cron.split()
+    if len(fields) != 5:
+        return False, ""
+    minute, hour, day, month, dow = fields
+    cron_dow = current.isoweekday() % 7
+    due = (
+        cron_field_matches(minute, current.minute)
+        and cron_field_matches(hour, current.hour)
+        and cron_field_matches(day, current.day)
+        and cron_field_matches(month, current.month)
+        and cron_field_matches(dow, cron_dow, day_of_week=True)
+    )
+    if not due:
+        return False, ""
+    return True, f"cron:{cron}:{current.strftime('%Y%m%d%H%M')}"
+
+
+def recipe_run_exists(name: str, window_key: str) -> bool:
+    return any(
+        row.get("recipe") == name and row.get("window_key") == window_key
+        for row in read_jsonl(RECIPE_RUNS_FILE)
+    )
+
+
+def append_recipe_run(name: str, window_key: str, task_id: str, status: str) -> None:
+    append_jsonl(
+        RECIPE_RUNS_FILE,
+        {
+            "recipe": name,
+            "window_key": window_key,
+            "task_id": task_id,
+            "status": status,
+            "updated_at": utc_now(),
+        },
+    )
+
+
+def run_due_recipes(send: bool = False, now: datetime | None = None) -> int:
+    if not bool_cfg("AI_COUNCIL_RECIPE_SCHEDULER", True):
+        return 0
+    chat_id = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    started = 0
+    for recipe in list_recipes():
+        name = str(recipe.get("name") or "").strip()
+        if not name or recipe.get("enabled") is False:
+            continue
+        due, window_key = recipe_due_window(recipe, now=now)
+        if not due or not window_key or recipe_run_exists(name, window_key):
+            continue
+        trigger = recipe.get("trigger") or {}
+        recipe_input = str(trigger.get("input") or "")
+        prompt = f"run {name} {recipe_input}".strip()
+        route = {
+            "command": "/recipe",
+            "operators": ["host"],
+            "prompt": prompt,
+            "mode": "recipe_scheduler",
+        }
+        task = create_task(
+            prompt,
+            source="recipe_scheduler",
+            status="running",
+            command="/recipe",
+            operators=["host"],
+            idempotency_key=f"recipe:{name}:{window_key}",
+            chat_id_hash=short_hash(chat_id),
+        )
+        append_recipe_run(name, window_key, task["task_id"], "started")
+        response = start_background_job(route, chat_id=chat_id, task_id=task["task_id"], send_progress=send)
+        if send and chat_id:
+            telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+        else:
+            print(response)
+        started += 1
+    return started
 
 
 def render_recipe_step_prompt(template: str, recipe_input: str) -> str:
@@ -1177,10 +1345,10 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L2.6 active.\n"
-        "Teraz: Telegram, inline approval buttons, natural intent routing, recipes MVP, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L2.7 active.\n"
+        "Teraz: Telegram, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council, /recipes, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
+        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -1194,10 +1362,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L2.6 active: inline buttons, recipes MVP, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run -> recipe w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L2.7 active: inline buttons, recipes scheduler, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L2.5: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /xresearch, /poke-research."
+        "Komendy L2.7: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -3738,11 +3906,14 @@ def listen_loop(send: bool = False, seconds: int = 120, limit: int = 10, sleep_s
         print(f"reconciled_background_jobs={len(reconciled)}")
     while time.time() < deadline:
         before = AUDIT_LOG.stat().st_size if AUDIT_LOG.exists() else 0
+        scheduled = run_due_recipes(send=send)
+        if scheduled:
+            print(f"scheduled_recipes_started={scheduled}")
         code = listen_once(send=send, limit=limit, verbose=False)
         after = AUDIT_LOG.stat().st_size if AUDIT_LOG.exists() else before
         if code != 0:
             return code
-        if after > before:
+        if after > before or scheduled:
             total += 1
         time.sleep(sleep_seconds)
     print(f"listen_loop_done iterations_with_activity={total}")
@@ -3757,6 +3928,9 @@ def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int
         print(f"reconciled_background_jobs={len(reconciled)}")
     try:
         while True:
+            scheduled = run_due_recipes(send=send)
+            if scheduled:
+                print(f"scheduled_recipes_started={scheduled}")
             code = listen_once(send=send, limit=limit, verbose=False)
             if code != 0:
                 print(f"serve_poll_error code={code}")
@@ -3792,6 +3966,8 @@ def main() -> int:
     updates = sub.add_parser("telegram-updates")
     updates.add_argument("--limit", type=int, default=5)
     sub.add_parser("xai-models")
+    scheduler = sub.add_parser("run-scheduler")
+    scheduler.add_argument("--send", action="store_true", help="Actually send Telegram scheduler replies")
     listen = sub.add_parser("listen-once")
     listen.add_argument("--send", action="store_true", help="Actually send Telegram replies for this bounded run")
     listen.add_argument("--limit", type=int, default=10)
@@ -3818,6 +3994,10 @@ def main() -> int:
         return 0 if telegram_updates(args.limit) else 1
     if args.cmd == "xai-models":
         return 0 if xai_models() else 1
+    if args.cmd == "run-scheduler":
+        started = run_due_recipes(send=args.send)
+        print(f"scheduled_recipes_started={started}")
+        return 0
     if args.cmd == "listen-once":
         return listen_once(send=args.send, limit=args.limit)
     if args.cmd == "listen":

@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -142,6 +143,72 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(route["command"], "/recipe")
         self.assertFalse(ai_council.route_needs_task(route))
         self.assertFalse(ai_council.route_should_background(route))
+
+    def test_recipe_enable_disable_updates_recipe_file(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                disabled = ai_council.recipe_response("disable research_brief")
+                disabled_recipe = ai_council.load_recipe("research_brief")
+                enabled = ai_council.recipe_response("enable research_brief")
+                enabled_recipe = ai_council.load_recipe("research_brief")
+
+        self.assertIn("disabled", disabled)
+        self.assertFalse(disabled_recipe["enabled"])
+        self.assertIn("enabled", enabled)
+        self.assertTrue(enabled_recipe["enabled"])
+
+    def test_recipe_due_window_matches_simple_cron(self):
+        recipe = {"trigger": {"type": "schedule", "cron": "30 8 * * *"}}
+        due, window = ai_council.recipe_due_window(recipe, now=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc))
+        not_due, _ = ai_council.recipe_due_window(recipe, now=datetime(2026, 6, 6, 8, 31, tzinfo=timezone.utc))
+
+        self.assertTrue(due)
+        self.assertIn("202606060830", window)
+        self.assertFalse(not_due)
+
+    def test_run_due_recipes_starts_once_per_window(self):
+        recipe = {
+            "scheduled_digest": {
+                "name": "scheduled_digest",
+                "description": "test",
+                "enabled": True,
+                "trigger": {"type": "schedule", "interval_seconds": 60},
+                "risk": "R0",
+                "approval_policy": "auto",
+                "steps": [{"command": "/health", "prompt": ""}],
+            }
+        }
+
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_RECIPE_SCHEDULER":
+                return "true"
+            if key == "TELEGRAM_ALLOWED_CHAT_ID":
+                return "553"
+            return default
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "RECIPE_RUNS_FILE", root / "state" / "recipe_runs.jsonl"
+            ), patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "default_recipes", return_value=recipe
+            ), patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] task-test"
+            ) as start:
+                now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+                first = ai_council.run_due_recipes(send=False, now=now)
+                second = ai_council.run_due_recipes(send=False, now=now)
+                runs = ai_council.read_jsonl(root / "state" / "recipe_runs.jsonl")
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(len(runs), 1)
+        start.assert_called_once()
 
     def test_claude_flow_uses_opus_48_without_default_budget_cap(self):
         completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout="FLOW OK", stderr="")
