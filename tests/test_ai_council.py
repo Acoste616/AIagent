@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -771,6 +772,7 @@ class L25BackgroundTests(unittest.TestCase):
                 latest = ai_council.get_latest_task(task["task_id"])
                 artifact = ai_council.get_latest_task_artifact(task["task_id"])
                 media_files = list((root / "artifacts" / task["task_id"] / "media").glob("*"))
+                metadata = json.loads((root / "artifacts" / task["task_id"] / "media.json").read_text(encoding="utf-8"))
                 report_exists = Path(artifact["report_path"]).exists()
                 media_content = media_files[0].read_bytes()
 
@@ -779,6 +781,51 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertTrue(report_exists)
         self.assertEqual(len(media_files), 1)
         self.assertEqual(media_content, b"hello")
+        self.assertEqual(metadata["analysis"]["status"], "text_extracted")
+        self.assertIn("hello", metadata["analysis"]["text"])
+
+    def test_grok_image_analysis_sends_data_url(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "XAI_API_KEY": "xai-test-key",
+                "AI_COUNCIL_GROK_VISION_MODEL": "grok-test",
+                "AI_COUNCIL_MEDIA_ANALYSIS_MAX_BYTES": "5000000",
+                "AI_COUNCIL_MEDIA_ANALYSIS_MAX_CHARS": "500",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            image = root / "screen.jpg"
+            image.write_bytes(b"fakejpg")
+            with patch.object(ai_council, "COSTS_FILE", root / "costs.jsonl"), patch.object(
+                ai_council, "cfg", side_effect=fake_cfg
+            ), patch.object(
+                ai_council,
+                "request_json",
+                return_value={"choices": [{"message": {"content": "Widzę tekst na ekranie."}}]},
+            ) as request_json:
+                response = ai_council.grok_image_analysis(image, caption="test", task_id="task-img")
+
+        self.assertIn("Widzę tekst", response)
+        payload = request_json.call_args.kwargs["payload"]
+        image_url = payload["messages"][1]["content"][1]["image_url"]["url"]
+        self.assertTrue(image_url.startswith("data:image/jpeg;base64,"))
+
+    def test_audio_media_analysis_is_transcription_pending(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audio = root / "voice.ogg"
+            audio.write_bytes(b"audio")
+            analysis = ai_council.analyze_downloaded_media(
+                {
+                    "task_id": "task-audio",
+                    "local_path": str(audio),
+                    "media": {"kind": "voice", "mime_type": "audio/ogg"},
+                }
+            )
+
+        self.assertEqual(analysis["status"], "transcription_pending")
 
     def test_health_response_is_available_without_network_calls(self):
         with temp_dir() as tmp:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import difflib
 import hashlib
@@ -866,6 +867,138 @@ def media_target_path(artifact_dir: Path, media: dict, file_path: str = "") -> P
     return artifact_dir / "media" / f"{unique}-{name}"
 
 
+def looks_like_text_media(path: Path, mime_type: str = "") -> bool:
+    suffix = path.suffix.lower()
+    mime = (mime_type or "").lower()
+    return mime.startswith("text/") or suffix in {
+        ".txt",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".json",
+        ".jsonl",
+        ".log",
+        ".html",
+        ".htm",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+
+
+def read_text_media_preview(path: Path, limit: int | None = None) -> str:
+    max_chars = limit if limit is not None else int_cfg("AI_COUNCIL_MEDIA_TEXT_MAX_CHARS", 6000)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n...[truncated]..."
+    return text
+
+
+def xai_chat_text(data: dict) -> str:
+    try:
+        return str(data["choices"][0]["message"]["content"]).strip()
+    except (KeyError, IndexError, TypeError):
+        return xai_response_text(data) or redact_secrets(json.dumps(data, ensure_ascii=False))[:1200]
+
+
+def grok_image_analysis(local_path: Path, caption: str = "", task_id: str = "") -> str:
+    started = time.time()
+    allowed, reason = operator_call_allowed("grok")
+    if not allowed:
+        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, detail=reason)
+        return f"[Grok Vision] blocked: {reason}"
+    key = cfg("XAI_API_KEY")
+    if not key:
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, detail="missing XAI_API_KEY")
+        return "[Grok Vision] error: missing XAI_API_KEY"
+    if not local_path.exists():
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, detail="media file missing")
+        return "[Grok Vision] error: media file missing"
+    max_bytes = int_cfg("AI_COUNCIL_MEDIA_ANALYSIS_MAX_BYTES", 5_000_000)
+    file_size = local_path.stat().st_size
+    if file_size > max_bytes:
+        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, detail="media too large")
+        return f"[Grok Vision] blocked: media too large ({file_size} bytes > {max_bytes})."
+    mime_type = mimetypes.guess_type(str(local_path))[0] or "image/jpeg"
+    data_url = f"data:{mime_type};base64,{base64.b64encode(local_path.read_bytes()).decode('ascii')}"
+    user_text = (
+        "Przeanalizuj obraz/screenshot dla prywatnego AI Council Bartka. "
+        "Odpowiedz po polsku. Zwróć: 1) co widać, 2) tekst/OCR jeśli jest, "
+        "3) najważniejsze fakty, 4) następny najlepszy krok. "
+        "Nie zmyślaj, jeśli czegoś nie widać."
+    )
+    if caption:
+        user_text += f"\nKontekst od Bartka: {caption}"
+    payload = {
+        "model": cfg("AI_COUNCIL_GROK_VISION_MODEL", cfg("AI_COUNCIL_GROK_X_MODEL", "grok-4.3")),
+        "messages": [
+            {"role": "system", "content": "Jesteś operatorem vision/OCR w AI Council. Odpowiadasz zwięźle po polsku."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ],
+        "stream": False,
+    }
+    data = request_json(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        method="POST",
+        payload=payload,
+        timeout=180,
+    )
+    duration_ms = int((time.time() - started) * 1000)
+    if data.get("ok") is False:
+        detail = redact_secrets(str(data.get("body_preview", "")))[:500]
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=detail[:240])
+        return f"[Grok Vision] error: {data.get('error')} {detail}".strip()
+    text = xai_chat_text(data)
+    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    return f"[Grok Vision]\n{text[: int_cfg('AI_COUNCIL_MEDIA_ANALYSIS_MAX_CHARS', 2400)]}"
+
+
+def analyze_downloaded_media(metadata: dict) -> dict:
+    local_path = Path(str(metadata.get("local_path") or ""))
+    media = metadata.get("media") or {}
+    kind = str(media.get("kind") or "")
+    mime_type = str(media.get("mime_type") or "")
+    if not local_path.exists():
+        return {"status": "not_available", "reason": "local media file missing", "text": ""}
+    if looks_like_text_media(local_path, mime_type):
+        preview = read_text_media_preview(local_path)
+        return {
+            "status": "text_extracted",
+            "provider": "local",
+            "text": preview,
+            "summary": compact_line(preview, 700),
+        }
+    if kind in {"photo"} or mime_type.startswith("image/"):
+        analysis = grok_image_analysis(local_path, caption=str(media.get("caption") or ""), task_id=str(metadata.get("task_id") or ""))
+        status = "vision_analyzed" if analysis.startswith("[Grok Vision]\n") else "vision_failed"
+        return {
+            "status": status,
+            "provider": "xai_grok_vision",
+            "text": analysis,
+            "summary": compact_line(analysis, 700),
+        }
+    if kind in {"voice", "audio", "video"} or mime_type.startswith(("audio/", "video/")):
+        return {
+            "status": "transcription_pending",
+            "provider": "none",
+            "text": "",
+            "summary": "Audio/video captured. STT/OCR pipeline is not enabled in L3.2.",
+        }
+    return {
+        "status": "unsupported_media_type",
+        "provider": "none",
+        "text": "",
+        "summary": f"Captured media type is not analyzed yet: kind={kind} mime={mime_type}",
+    }
+
+
 def capture_telegram_media_message(message: dict, chat_id: str, update_id: int | None = None) -> tuple[str, dict | None]:
     media = telegram_media_from_message(message)
     if not media:
@@ -913,21 +1046,24 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
         "local_path": local_path,
         "download_status": download_status,
     }
+    analysis = analyze_downloaded_media(metadata) if local_path else {"status": "not_available", "reason": download_status, "text": ""}
+    metadata["analysis"] = analysis
     metadata_path = artifact_dir / "media.json"
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     facts = [
         f"type={media.get('kind')}",
         f"download_status={download_status}",
         f"local_path={local_path or 'not saved'}",
+        f"analysis_status={analysis.get('status')}",
     ]
     result = {
-        "decision": "Telegram media captured as AI Council task.",
+        "decision": "Telegram media captured and analyzed as AI Council task.",
         "facts": facts,
-        "dispute": "Treść pliku nie jest jeszcze analizowana modelem; L3.1 zapisuje media lokalnie i robi ślad audytowy.",
+        "dispute": "L3.2 analizuje tekst i obrazy; voice/audio/video są przechwycone, ale transkrypcja wymaga osobnego STT pipeline.",
         "next_actions": [
             f"Przejrzyj artefakt: /details {task_id}",
-            "Dodaj opis/cel do tego taska albo poproś o analizę po włączeniu transkrypcji/OCR.",
-            "Następny sprint: voice transcription i screenshot/OCR routing.",
+            "Dodaj opis/cel do tego taska albo poproś o kolejny krok na podstawie analizy.",
+            "Następny sprint: voice transcription przez STT WebSocket i automatyczne zadania z transkryptu.",
         ],
         "ask_user": "Napisz, co mam zrobić z tym plikiem albo wyślij kolejną wiadomość z kontekstem.",
         "raw_output": json.dumps(metadata, ensure_ascii=False, indent=2),
@@ -937,6 +1073,8 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
             f"Caption: {caption or '(none)'}\n\n"
             f"Download: {download_status}\n\n"
             f"Local path: {local_path or '(not saved)'}\n\n"
+            f"Analysis status: {analysis.get('status')}\n\n"
+            f"## Analysis\n\n{analysis.get('text') or analysis.get('summary') or '(none)'}\n\n"
             f"Metadata: {metadata_path}\n"
         ),
     }
@@ -1549,8 +1687,8 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.1 active.\n"
-        "Teraz: Telegram, voice/photo/document/video capture, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.2 active.\n"
+        "Teraz: Telegram, voice/photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -1566,8 +1704,8 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.1 active: Telegram media capture, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; voice/photo/document/video -> local capture artifact; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L3.2 active: Telegram media capture + text/image analysis, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction; photo/screenshot -> Grok vision/OCR; voice/audio/video -> capture + transcription_pending; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
