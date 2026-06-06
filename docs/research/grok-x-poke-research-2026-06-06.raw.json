@@ -1,0 +1,668 @@
+[
+  {
+    "label": "official_poke_posts",
+    "prompt": "Zbadaj oficjalne posty X od @interaction o Poke od 2026-03-01 do 2026-06-06. Wyciągnij: funkcje, kanały, Apple Messages/iMessage, Recipes, onboarding, demo claims, API/MCP/local machine hints, pricing/monetyzację, latency/reliability claims. Uwzględnij post/thread/status 2062575428213285352 jeśli znajdziesz.",
+    "tool": {
+      "type": "x_search",
+      "allowed_x_handles": [
+        "interaction"
+      ],
+      "from_date": "2026-03-01",
+      "to_date": "2026-06-06",
+      "enable_image_understanding": true,
+      "enable_video_understanding": true
+    },
+    "text": "**Official @interaction (Poke) posts from 2026-03-01 to 2026-06-06** (Latest mode, keyword search `from:interaction Poke`):\n\n### Key posts identified\n- **Main announcement (04 Jun 2026)**: Post ID **2062575428213285352** (exactly the one requested).  \n  Content (fact): “Say hi to the new Poke! 🌴 Now officially approved by Apple to text on Apple Messages. As the first and only AI agent. Chat now: https://poke.com/”  \n  + attached demo video.  \n  Bio update on the account confirms: “Now much faster & more capable 🌴”.  \n  Thread reply from co-founder (@marvinvonhagen): “Poke is also much, much, much faster and reliable thanks to the biggest infrastructure update ever! ⚡” (fact from official team).[[1]](https://x.com/interaction/status/2062575428213285352)\n\n- **Major product demo (19 Mar 2026)**: Post ID 2034713714415608123 (long video).  \n  Content (fact): “Starting today, personal superintelligence is just one tap away. No download, no signup. Text Poke for free now: https://poke.com/”  \n  Video timestamps explicitly cover:  \n  - 0:00 – What’s Poke?  \n  - 0:50 – Introducing Poke Recipes  \n  - 1:25 – Create a Recipe in 10 seconds  \n  - 1:43 – Earn on Poke  \n  - 2:44 – Build with `npx poke`  \n  - 12:58 – Recap  \n  - 13:36 – Parisian Love (demo).[[2]](https://x.com/interaction/status/2034713714415608123)\n\nOther minor posts (Mar–Apr 2026) are mostly internal/team reactions and do not add new feature details.\n\n### Extracted facts only (no hypotheses)\n\n**Apple Messages / iMessage**  \n- Officially approved by Apple (first & only AI agent) as of 04 Jun 2026.  \n- Users can now text Poke directly in Apple Messages / iMessage.  \n- URL: https://poke.com/ (same link promoted for all channels).[[1]](https://x.com/interaction/status/2062575428213285352)\n\n**Recipes**  \n- Core feature highlighted in the March demo.  \n- “Create a Recipe in 10 seconds”.  \n- Part of the “personal superintelligence” onboarding flow.[[2]](https://x.com/interaction/status/2034713714415608123)\n\n**Onboarding / UX**  \n- Zero friction: “No download, no signup. Text Poke for free now.”  \n- One-tap access promoted.  \n- Video demos show instant recipe creation and usage.[[2]](https://x.com/interaction/status/2034713714415608123)\n\n**Demo claims**  \n- March video is the primary official demo (13+ minutes).  \n- June post uses a new video to showcase the Apple Messages integration.[[1]](https://x.com/interaction/status/2062575428213285352)\n\n**API / MCP / local machine hints**  \n- Explicit mention of `npx poke` (build/integrate command) in the March demo.  \n- No other API, MCP, or local-machine details in official posts from the period.\n\n**Pricing / monetization**  \n- Repeatedly described as “free” for texting Poke.  \n- “Earn on Poke” section in the March video (no further details published in the posts themselves).\n\n**Latency / reliability claims**  \n- June 4 bio + co-founder reply: “much faster & more capable” + “biggest infrastructure update ever” → “much, much, much faster and reliable”.[[1]](https://x.com/interaction/status/2062575428213285352)\n\n**Channels**  \n- Primary: https://poke.com/ (web/text).  \n- New official channel: Apple Messages / iMessage (approved 04 Jun 2026).  \n- No other channels mentioned in the official posts.\n\n**Limitations**  \n- None explicitly stated in the official posts (all claims are positive).\n\nAll information above is taken **directly** from the official @interaction posts and their attached media/descriptions. No external speculation added.",
+    "raw": {
+      "created_at": 1780778351,
+      "completed_at": 1780778351,
+      "id": "5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1",
+      "max_output_tokens": null,
+      "model": "grok-4.3",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1",
+          "summary": [
+            {
+              "text": "The question is in Polish: \"Jesteś Grok/X research operator dla prywatnego AI Council Bartka. Szukaj na X, oddziel fakty od hipotez, cytuj/postuj URL-e gdy są dostępne, i skupiaj się na funkcjach Poke...First, the user query is in Polish, but I need to respond in English or as per the context.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-1fe39bc0-b85f-4b22-a0f9-47ac67d548e4-0",
+          "input": "{\"query\":\"from:interaction Poke since:2026-03-01 until:2026-06-07\",\"limit\":\"10\",\"mode\":\"Latest\"}",
+          "name": "x_keyword_search",
+          "type": "custom_tool_call",
+          "id": "ctc_5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1_call-1fe39bc0-b85f-4b22-a0f9-47ac67d548e4-0",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-1fe39bc0-b85f-4b22-a0f9-47ac67d548e4-1",
+          "input": "{\"post_id\":\"2062575428213285352\"}",
+          "name": "x_thread_fetch",
+          "type": "custom_tool_call",
+          "id": "ctc_5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1_call-1fe39bc0-b85f-4b22-a0f9-47ac67d548e4-1",
+          "status": "completed"
+        },
+        {
+          "id": "tco_5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1_call-1fe39bc0-b85f-4b22-a0f9-47ac67d548e4-0",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1_call-1fe39bc0-b85f-4b22-a0f9-47ac67d548e4-1",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "content": [
+            {
+              "type": "output_text",
+              "text": "**Official @interaction (Poke) posts from 2026-03-01 to 2026-06-06** (Latest mode, keyword search `from:interaction Poke`):\n\n### Key posts identified\n- **Main announcement (04 Jun 2026)**: Post ID **2062575428213285352** (exactly the one requested).  \n  Content (fact): “Say hi to the new Poke! 🌴 Now officially approved by Apple to text on Apple Messages. As the first and only AI agent. Chat now: https://poke.com/”  \n  + attached demo video.  \n  Bio update on the account confirms: “Now much faster & more capable 🌴”.  \n  Thread reply from co-founder (@marvinvonhagen): “Poke is also much, much, much faster and reliable thanks to the biggest infrastructure update ever! ⚡” (fact from official team).[[1]](https://x.com/interaction/status/2062575428213285352)\n\n- **Major product demo (19 Mar 2026)**: Post ID 2034713714415608123 (long video).  \n  Content (fact): “Starting today, personal superintelligence is just one tap away. No download, no signup. Text Poke for free now: https://poke.com/”  \n  Video timestamps explicitly cover:  \n  - 0:00 – What’s Poke?  \n  - 0:50 – Introducing Poke Recipes  \n  - 1:25 – Create a Recipe in 10 seconds  \n  - 1:43 – Earn on Poke  \n  - 2:44 – Build with `npx poke`  \n  - 12:58 – Recap  \n  - 13:36 – Parisian Love (demo).[[2]](https://x.com/interaction/status/2034713714415608123)\n\nOther minor posts (Mar–Apr 2026) are mostly internal/team reactions and do not add new feature details.\n\n### Extracted facts only (no hypotheses)\n\n**Apple Messages / iMessage**  \n- Officially approved by Apple (first & only AI agent) as of 04 Jun 2026.  \n- Users can now text Poke directly in Apple Messages / iMessage.  \n- URL: https://poke.com/ (same link promoted for all channels).[[1]](https://x.com/interaction/status/2062575428213285352)\n\n**Recipes**  \n- Core feature highlighted in the March demo.  \n- “Create a Recipe in 10 seconds”.  \n- Part of the “personal superintelligence” onboarding flow.[[2]](https://x.com/interaction/status/2034713714415608123)\n\n**Onboarding / UX**  \n- Zero friction: “No download, no signup. Text Poke for free now.”  \n- One-tap access promoted.  \n- Video demos show instant recipe creation and usage.[[2]](https://x.com/interaction/status/2034713714415608123)\n\n**Demo claims**  \n- March video is the primary official demo (13+ minutes).  \n- June post uses a new video to showcase the Apple Messages integration.[[1]](https://x.com/interaction/status/2062575428213285352)\n\n**API / MCP / local machine hints**  \n- Explicit mention of `npx poke` (build/integrate command) in the March demo.  \n- No other API, MCP, or local-machine details in official posts from the period.\n\n**Pricing / monetization**  \n- Repeatedly described as “free” for texting Poke.  \n- “Earn on Poke” section in the March video (no further details published in the posts themselves).\n\n**Latency / reliability claims**  \n- June 4 bio + co-founder reply: “much faster & more capable” + “biggest infrastructure update ever” → “much, much, much faster and reliable”.[[1]](https://x.com/interaction/status/2062575428213285352)\n\n**Channels**  \n- Primary: https://poke.com/ (web/text).  \n- New official channel: Apple Messages / iMessage (approved 04 Jun 2026).  \n- No other channels mentioned in the official posts.\n\n**Limitations**  \n- None explicitly stated in the official posts (all claims are positive).\n\nAll information above is taken **directly** from the official @interaction posts and their attached media/descriptions. No external speculation added.",
+              "logprobs": [],
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2062575428213285352",
+                  "start_index": 703,
+                  "end_index": 762,
+                  "title": "1"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2034713714415608123",
+                  "start_index": 1261,
+                  "end_index": 1320,
+                  "title": "2"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2062575428213285352",
+                  "start_index": 1707,
+                  "end_index": 1766,
+                  "title": "1"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2034713714415608123",
+                  "start_index": 1926,
+                  "end_index": 1985,
+                  "title": "2"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2034713714415608123",
+                  "start_index": 2160,
+                  "end_index": 2219,
+                  "title": "2"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2062575428213285352",
+                  "start_index": 2371,
+                  "end_index": 2430,
+                  "title": "1"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2062575428213285352",
+                  "start_index": 2992,
+                  "end_index": 3051,
+                  "title": "1"
+                }
+              ]
+            }
+          ],
+          "id": "msg_5ce3f2a4-fbfc-9fe7-b885-bb9552b5f9d1",
+          "role": "assistant",
+          "type": "message",
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "previous_response_id": null,
+      "reasoning": {
+        "effort": "low",
+        "summary": "detailed"
+      },
+      "temperature": 0.7,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "type": "x_search",
+          "from_date": "2026-03-01",
+          "to_date": "2026-06-06",
+          "allowed_x_handles": [
+            "interaction"
+          ],
+          "enable_image_understanding": true,
+          "enable_video_understanding": true
+        }
+      ],
+      "top_p": 0.95,
+      "usage": {
+        "input_tokens": 11129,
+        "input_tokens_details": {
+          "cached_tokens": 3392
+        },
+        "output_tokens": 1901,
+        "output_tokens_details": {
+          "reasoning_tokens": 1037
+        },
+        "total_tokens": 13030,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 2,
+        "cost_in_usd_ticks": 251021500,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 0,
+          "x_search_calls": 2,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 9316,
+          "output_tokens": 1310
+        }
+      },
+      "user": null,
+      "incomplete_details": null,
+      "status": "completed",
+      "store": false,
+      "metadata": {
+        "system_fingerprint": "fp_eb3c003fc66c14ed"
+      },
+      "background": false,
+      "service_tier": "default",
+      "truncation": "disabled",
+      "top_logprobs": 0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "prompt_cache_key": null,
+      "max_tool_calls": null,
+      "safety_identifier": null,
+      "error": null,
+      "instructions": null
+    }
+  },
+  {
+    "label": "founder_team_posts",
+    "prompt": "Zbadaj posty X założycieli/teamu i zaawansowanych użytkowników o Poke. Szukaj insightów o architekturze, szybkości, Apple Messages approval, Recipes, integracjach, MCP, local/desktop bridge i realnych use case. Oddziel mocne fakty od komentarzy użytkowników.",
+    "tool": {
+      "type": "x_search",
+      "from_date": "2026-03-01",
+      "to_date": "2026-06-06",
+      "enable_image_understanding": true,
+      "enable_video_understanding": true
+    },
+    "text": "**Poke (@interaction)** to standalone AI agent zintegrowany z messaging apps (głównie Apple Messages via Messages for Business). Oficjalne konto to @interaction (bio potwierdza „now much faster & more capable”).\n\n### Mocne fakty (źródła oficjalne + powtarzalne potwierdzenia)\n- **Apple Messages approval** — Poke jest **pierwszym i jedynym** standalone AI agentem zatwierdzonym przez Apple do platformy Messages for Business. Działa natywnie w aplikacji Wiadomości na iOS bez dodatkowej aplikacji. Potwierdzone przez oficjalny post @interaction (4 czerwca 2026) oraz niezależne źródła (AppleInsider, RuntimeWire, TechCrunch).[[1]](https://x.com/interaction/status/2062575428213285352)\n\n- **Recipes** — Główny mechanizm integracji. Użytkownik tworzy „recipe” (połączenie z narzędziami) w ~10 sekund, bez kodowania. Przykłady: Gmail, Google Calendar, Notion, Strava. Oficjalny film promocyjny @interaction (19 marca 2026) poświęca temu osobny segment.[[2]](https://x.com/interaction/status/2034713714415608123)\n\n- **Szybkość** — Oficjalne komunikaty podkreślają „now much faster & more capable” po aktualizacji (czerwiec 2026). Brak szczegółów technicznych (np. latency, model backend).\n\n- **Dostępność** — „No download, no signup”. Dostęp przez poke.com lub bezpośrednio w Messages/WhatsApp/Telegram. Działa jako conversational AI z memory i proactive nudges.\n\n- **Build / developer experience** — Wsparcie dla `npx poke` (wspomniane w oficjalnym filmie).\n\n- **Use cases (oficjalne)**:\n  - Wysyłanie maili, ustawianie reminderów, generowanie obrazów.\n  - Działania w natywnym Messages (proactive nudges + memory + actions via text/voice).\n\n### MCP, architektura, local/desktop bridge, integracje\nW postach założycieli/teamu (@interaction) oraz zaawansowanych użytkowników nie ma szczegółowych insightów technicznych na temat:\n- Architektury backendu\n- MCP (Model Context Protocol) — żadne powiązanie z Poke\n- Local/desktop bridge\n- Konkretnych integracji poza „Recipes”\n\nMCP pojawia się wyłącznie w ogólnych dyskusjach społeczności AI (nie związanych z Poke).\n\n### Komentarze użytkowników vs. fakty\n- Użytkownicy powtarzają narrację o „pierwszym AI agencie w Messages” (fakt potwierdzony).\n- Spekulacje o „Siri killer” lub „AI OS” — komentarze, nie fakty.\n- Brak wiarygodnych informacji o kosztach, ograniczeniach skalowania czy konkretnych modelach LLM.\n\n**Podsumowanie insightów do skopiowania**:\n- Najsilniejszy atut Poke = **natywna integracja z Apple Messages** (pierwszy approval).\n- **Recipes** jako low-code/no-code sposób na integracje — bardzo szybki onboarding.\n- Brak publicznych szczegółów technicznych (architektura, MCP, bridge) — to obszar, który warto badać dalej (np. przez founderów poza @interaction lub dokumentację).\n\nJeśli potrzebujesz głębszego przeszukania konkretnych wątków (np. replies pod postami @interaction lub konkretnych userów), daj znać.",
+    "raw": {
+      "created_at": 1780778361,
+      "completed_at": 1780778361,
+      "id": "b60aa6c7-62ee-9372-b36f-9eee4066f2cb",
+      "max_output_tokens": null,
+      "model": "grok-4.3",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_b60aa6c7-62ee-9372-b36f-9eee4066f2cb",
+          "summary": [
+            {
+              "text": "The query is in Polish: \"Zbadaj posty X założycieli/teamu i zaawansowanych użytkowników o Poke. Szukaj insightów o architekturze, szybkości, Apple Messages approval, Recipes, integracjach, MCP, local/...",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-0",
+          "input": "{\"query\":\"Poke AI founder\",\"count\":\"5\"}",
+          "name": "x_user_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-0",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-1",
+          "input": "{\"query\":\"Poke AI team\",\"count\":\"5\"}",
+          "name": "x_user_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-1",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-2",
+          "input": "{\"query\":\"Poke app AI\",\"count\":\"5\"}",
+          "name": "x_user_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-2",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-3",
+          "input": "{\"query\":\"Poke AI app features architecture Recipes MCP integrations Apple Messages\",\"limit\":\"10\"}",
+          "name": "x_semantic_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-3",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-0",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-1",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-2",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-3",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-4",
+          "input": "{\"query\":\"Poke AI @interaction\",\"count\":\"3\"}",
+          "name": "x_user_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-4",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-5",
+          "input": "{\"query\":\"from:interaction Poke (architecture OR speed OR Recipes OR MCP OR integration OR bridge OR Apple OR Messages)\",\"limit\":\"10\",\"mode\":\"Latest\"}",
+          "name": "x_keyword_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-5",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-6",
+          "input": "{\"query\":\"Poke AI founders team insights architecture speed Recipes MCP local desktop bridge use cases\",\"limit\":\"10\",\"from_date\":\"2025-01-01\"}",
+          "name": "x_semantic_search",
+          "type": "custom_tool_call",
+          "id": "ctc_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-6",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-4",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-5",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_b60aa6c7-62ee-9372-b36f-9eee4066f2cb_call-c98a9b6e-8ce1-4bda-a871-569e75e7e851-6",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "content": [
+            {
+              "type": "output_text",
+              "text": "**Poke (@interaction)** to standalone AI agent zintegrowany z messaging apps (głównie Apple Messages via Messages for Business). Oficjalne konto to @interaction (bio potwierdza „now much faster & more capable”).\n\n### Mocne fakty (źródła oficjalne + powtarzalne potwierdzenia)\n- **Apple Messages approval** — Poke jest **pierwszym i jedynym** standalone AI agentem zatwierdzonym przez Apple do platformy Messages for Business. Działa natywnie w aplikacji Wiadomości na iOS bez dodatkowej aplikacji. Potwierdzone przez oficjalny post @interaction (4 czerwca 2026) oraz niezależne źródła (AppleInsider, RuntimeWire, TechCrunch).[[1]](https://x.com/interaction/status/2062575428213285352)\n\n- **Recipes** — Główny mechanizm integracji. Użytkownik tworzy „recipe” (połączenie z narzędziami) w ~10 sekund, bez kodowania. Przykłady: Gmail, Google Calendar, Notion, Strava. Oficjalny film promocyjny @interaction (19 marca 2026) poświęca temu osobny segment.[[2]](https://x.com/interaction/status/2034713714415608123)\n\n- **Szybkość** — Oficjalne komunikaty podkreślają „now much faster & more capable” po aktualizacji (czerwiec 2026). Brak szczegółów technicznych (np. latency, model backend).\n\n- **Dostępność** — „No download, no signup”. Dostęp przez poke.com lub bezpośrednio w Messages/WhatsApp/Telegram. Działa jako conversational AI z memory i proactive nudges.\n\n- **Build / developer experience** — Wsparcie dla `npx poke` (wspomniane w oficjalnym filmie).\n\n- **Use cases (oficjalne)**:\n  - Wysyłanie maili, ustawianie reminderów, generowanie obrazów.\n  - Działania w natywnym Messages (proactive nudges + memory + actions via text/voice).\n\n### MCP, architektura, local/desktop bridge, integracje\nW postach założycieli/teamu (@interaction) oraz zaawansowanych użytkowników nie ma szczegółowych insightów technicznych na temat:\n- Architektury backendu\n- MCP (Model Context Protocol) — żadne powiązanie z Poke\n- Local/desktop bridge\n- Konkretnych integracji poza „Recipes”\n\nMCP pojawia się wyłącznie w ogólnych dyskusjach społeczności AI (nie związanych z Poke).\n\n### Komentarze użytkowników vs. fakty\n- Użytkownicy powtarzają narrację o „pierwszym AI agencie w Messages” (fakt potwierdzony).\n- Spekulacje o „Siri killer” lub „AI OS” — komentarze, nie fakty.\n- Brak wiarygodnych informacji o kosztach, ograniczeniach skalowania czy konkretnych modelach LLM.\n\n**Podsumowanie insightów do skopiowania**:\n- Najsilniejszy atut Poke = **natywna integracja z Apple Messages** (pierwszy approval).\n- **Recipes** jako low-code/no-code sposób na integracje — bardzo szybki onboarding.\n- Brak publicznych szczegółów technicznych (architektura, MCP, bridge) — to obszar, który warto badać dalej (np. przez founderów poza @interaction lub dokumentację).\n\nJeśli potrzebujesz głębszego przeszukania konkretnych wątków (np. replies pod postami @interaction lub konkretnych userów), daj znać.",
+              "logprobs": [],
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2062575428213285352",
+                  "start_index": 625,
+                  "end_index": 684,
+                  "title": "1"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/interaction/status/2034713714415608123",
+                  "start_index": 949,
+                  "end_index": 1008,
+                  "title": "2"
+                }
+              ]
+            }
+          ],
+          "id": "msg_b60aa6c7-62ee-9372-b36f-9eee4066f2cb",
+          "role": "assistant",
+          "type": "message",
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "previous_response_id": null,
+      "reasoning": {
+        "effort": "low",
+        "summary": "detailed"
+      },
+      "temperature": 0.7,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "type": "x_search",
+          "from_date": "2026-03-01",
+          "to_date": "2026-06-06",
+          "enable_image_understanding": true,
+          "enable_video_understanding": true
+        }
+      ],
+      "top_p": 0.95,
+      "usage": {
+        "input_tokens": 21205,
+        "input_tokens_details": {
+          "cached_tokens": 8960
+        },
+        "output_tokens": 1638,
+        "output_tokens_details": {
+          "reasoning_tokens": 916
+        },
+        "total_tokens": 22843,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 7,
+        "cost_in_usd_ticks": 561932500,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 0,
+          "x_search_calls": 7,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 13131,
+          "output_tokens": 966
+        }
+      },
+      "user": null,
+      "incomplete_details": null,
+      "status": "completed",
+      "store": false,
+      "metadata": {
+        "system_fingerprint": "fp_eb3c003fc66c14ed"
+      },
+      "background": false,
+      "service_tier": "default",
+      "truncation": "disabled",
+      "top_logprobs": 0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "prompt_cache_key": null,
+      "max_tool_calls": null,
+      "safety_identifier": null,
+      "error": null,
+      "instructions": null
+    }
+  },
+  {
+    "label": "user_feedback_and_gaps",
+    "prompt": "Zbadaj X pod kątem opinii użytkowników o Poke: co działa, co nie działa, gdzie są opóźnienia, jakie są najczęstsze zachwyty i skargi, jakie funkcje ludzie realnie używają. Na końcu daj lekcje dla prywatnego Telegram/iPhone AI Council.",
+    "tool": {
+      "type": "x_search",
+      "from_date": "2026-03-01",
+      "to_date": "2026-06-06",
+      "enable_image_understanding": true,
+      "enable_video_understanding": true
+    },
+    "text": "**Poke** to AI-agent (pierwszy zatwierdzony przez Apple na platformie **Messages for Business**), dostępny bezpośrednio w iMessage bez instalacji dodatkowej apki. Użytkownicy piszą do niego jak do normalnego kontaktu i dostaje zadania typu zarządzanie kalendarzem, edycja zdjęć, sterowanie smart home, codzienne życie. Ma już >100 mln wiadomości. Działa na zasadzie persistent AI z dobrym wyczuciem tonu i głosu.\n\n### Co działa dobrze (zachwyty)\n- **Szybkość i UX po aktualizacjach** — „significant improvement: a lot faster and features many in-thread/in-conversation actions”.[[1]](https://x.com/paulwitcombe/status/2062797297524634110)\n- **Brak setupu i maintenance** — „requires literally no set up or maintenance which is great”.[[2]](https://x.com/kevinclark/status/2062636575331164661)\n- **Codzienne użytkowanie** — „started using poke two months ago and haven't gone a day without texting it. it's crazy good”.[[3]](https://x.com/sebcrossa/status/2062731966944829612)\n- **Jakość odpowiedzi (tone/voice)** — „Huge fan… It gets voice and tone right in the way that most other assistants don't”.[[2]](https://x.com/kevinclark/status/2062636575331164661)\n- **Brak limitów czatu** — „poke does a lot more! as well as not having any usage limits (for chat…)”.[[4]](https://x.com/ezShroom/status/2062590809006915607)\n- **Integracja z iMessage** — pierwszy AI agent na Apple Messages for Business (zatwierdzanie trwało miesiące, wymaga live support + custom UI zgodnego z wytycznymi Apple).[[5]](https://x.com/38twelveDaily/status/2062622412450005415)\n\n### Co nie działa / skargi / opóźnienia\n- **Nowa integracja** — „Curious to try this new integration, but it doesn't seem to be working quite right yet”.[[2]](https://x.com/kevinclark/status/2062636575331164661)\n- **Ceny i transparentność** — „the pricing is making it unusable. And there's a lack of transparency about the cost of each request; there is a lack of metrics and a local dashboard”.[[6]](https://x.com/soubiran_/status/2062064814671716460) (image gen limitowane ze względu na koszty).\n- **Brak customizacji** — użytkownicy chcą zmieniać tła, zdjęcia kontaktów itp. (drobiazg, ale zgłaszany).\n- **Proces zatwierdzania Apple** — wymaga weryfikacji live support, oznaczenia agenta, custom UI (link preview zamiast inline links, style przycisków Apple) → „it will take anyone else a couple of months”.[[5]](https://x.com/38twelveDaily/status/2062622412450005415)\n- **Prawdopodobnie human-in-the-loop** — ze względu na wymagania Apple Messages for Business.[[7]](https://x.com/arix_online/status/2063029244662305067)\n\n### Funkcje, które ludzie realnie używają\n- Codzienne textingowanie („haven't gone a day without”).\n- Zarządzanie życiem (kalendarz, zdjęcia, smart home).\n- In-thread actions po aktualizacji.\n- Długie rozmowy bez limitów czatu.\n\n### Lekcje dla prywatnego Telegram/iPhone AI Council\n1. **Integracja z natywnymi komunikatorami** — idź w Apple Messages for Business / Telegram Bot API / iMessage-like. To największa przewaga Poke (zero apki).\n2. **Zero setupu + natychmiastowa wartość** — nie wymagaj konfiguracji, od razu działaj na tonie/głosie.\n3. **Transparentność kosztów od dnia 1** — dashboard z kosztami per request + limity (Poke tu pada).\n4. **Szybkość + in-thread actions** — priorytet na aktualizacje UX (Poke zyskał po tym ogromnie).\n5. **Human-in-the-loop dla enterprise/integracji** — przygotuj się na to przy Apple-like approval.\n6. **Brak limitów na zwykły chat** — image/video gen limituj osobno (koszty).\n7. **Proces zatwierdzania** — planuj 2–3 miesiące na custom UI i live support przy Messages for Business.\n\nPoke pokazuje, że **największa siła to bycie „niewidzialnym” asystentem w istniejącym komunikatorze** + świetny tone + brak friction. Skopiuj to i wygrasz.",
+    "raw": {
+      "created_at": 1780778371,
+      "completed_at": 1780778371,
+      "id": "5eefecde-d8a5-9932-8b83-be460900240e",
+      "max_output_tokens": null,
+      "model": "grok-4.3",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_5eefecde-d8a5-9932-8b83-be460900240e",
+          "summary": [
+            {
+              "text": "The question is in Polish: \"Zbadaj X pod kątem opinii użytkowników o Poke: co działa, co nie działa, gdzie są opóźnienia, jakie są najczęstsze zachwyty i skargi, jakie funkcje ludzie realnie używają. ...",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-84340abc-7d35-454c-ab4a-1925f134c234-0",
+          "input": "{\"query\":\"Poke app user opinions reviews experiences what works what doesn't delays complaints delights features used\",\"limit\":\"10\"}",
+          "name": "x_semantic_search",
+          "type": "custom_tool_call",
+          "id": "ctc_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-0",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-84340abc-7d35-454c-ab4a-1925f134c234-1",
+          "input": "{\"query\":\"Poke AI app feedback UX automations integrations limitations costs\",\"limit\":\"5\"}",
+          "name": "x_semantic_search",
+          "type": "custom_tool_call",
+          "id": "ctc_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-1",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-84340abc-7d35-454c-ab4a-1925f134c234-2",
+          "input": "{\"query\":\"Poke app (review OR opinion OR experience OR works OR broken OR delay OR bug OR feature)\",\"limit\":\"10\",\"mode\":\"Latest\"}",
+          "name": "x_keyword_search",
+          "type": "custom_tool_call",
+          "id": "ctc_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-2",
+          "status": "completed"
+        },
+        {
+          "call_id": "xs_call-84340abc-7d35-454c-ab4a-1925f134c234-3",
+          "input": "{\"query\":\"\\\"Poke\\\" (app OR AI) (Telegram OR iMessage OR Messages)\",\"limit\":\"5\",\"mode\":\"Latest\"}",
+          "name": "x_keyword_search",
+          "type": "custom_tool_call",
+          "id": "ctc_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-3",
+          "status": "completed"
+        },
+        {
+          "id": "tco_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-0",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-1",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-2",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "id": "tco_5eefecde-d8a5-9932-8b83-be460900240e_call-84340abc-7d35-454c-ab4a-1925f134c234-3",
+          "summary": [],
+          "type": "reasoning",
+          "status": "completed"
+        },
+        {
+          "content": [
+            {
+              "type": "output_text",
+              "text": "**Poke** to AI-agent (pierwszy zatwierdzony przez Apple na platformie **Messages for Business**), dostępny bezpośrednio w iMessage bez instalacji dodatkowej apki. Użytkownicy piszą do niego jak do normalnego kontaktu i dostaje zadania typu zarządzanie kalendarzem, edycja zdjęć, sterowanie smart home, codzienne życie. Ma już >100 mln wiadomości. Działa na zasadzie persistent AI z dobrym wyczuciem tonu i głosu.\n\n### Co działa dobrze (zachwyty)\n- **Szybkość i UX po aktualizacjach** — „significant improvement: a lot faster and features many in-thread/in-conversation actions”.[[1]](https://x.com/paulwitcombe/status/2062797297524634110)\n- **Brak setupu i maintenance** — „requires literally no set up or maintenance which is great”.[[2]](https://x.com/kevinclark/status/2062636575331164661)\n- **Codzienne użytkowanie** — „started using poke two months ago and haven't gone a day without texting it. it's crazy good”.[[3]](https://x.com/sebcrossa/status/2062731966944829612)\n- **Jakość odpowiedzi (tone/voice)** — „Huge fan… It gets voice and tone right in the way that most other assistants don't”.[[2]](https://x.com/kevinclark/status/2062636575331164661)\n- **Brak limitów czatu** — „poke does a lot more! as well as not having any usage limits (for chat…)”.[[4]](https://x.com/ezShroom/status/2062590809006915607)\n- **Integracja z iMessage** — pierwszy AI agent na Apple Messages for Business (zatwierdzanie trwało miesiące, wymaga live support + custom UI zgodnego z wytycznymi Apple).[[5]](https://x.com/38twelveDaily/status/2062622412450005415)\n\n### Co nie działa / skargi / opóźnienia\n- **Nowa integracja** — „Curious to try this new integration, but it doesn't seem to be working quite right yet”.[[2]](https://x.com/kevinclark/status/2062636575331164661)\n- **Ceny i transparentność** — „the pricing is making it unusable. And there's a lack of transparency about the cost of each request; there is a lack of metrics and a local dashboard”.[[6]](https://x.com/soubiran_/status/2062064814671716460) (image gen limitowane ze względu na koszty).\n- **Brak customizacji** — użytkownicy chcą zmieniać tła, zdjęcia kontaktów itp. (drobiazg, ale zgłaszany).\n- **Proces zatwierdzania Apple** — wymaga weryfikacji live support, oznaczenia agenta, custom UI (link preview zamiast inline links, style przycisków Apple) → „it will take anyone else a couple of months”.[[5]](https://x.com/38twelveDaily/status/2062622412450005415)\n- **Prawdopodobnie human-in-the-loop** — ze względu na wymagania Apple Messages for Business.[[7]](https://x.com/arix_online/status/2063029244662305067)\n\n### Funkcje, które ludzie realnie używają\n- Codzienne textingowanie („haven't gone a day without”).\n- Zarządzanie życiem (kalendarz, zdjęcia, smart home).\n- In-thread actions po aktualizacji.\n- Długie rozmowy bez limitów czatu.\n\n### Lekcje dla prywatnego Telegram/iPhone AI Council\n1. **Integracja z natywnymi komunikatorami** — idź w Apple Messages for Business / Telegram Bot API / iMessage-like. To największa przewaga Poke (zero apki).\n2. **Zero setupu + natychmiastowa wartość** — nie wymagaj konfiguracji, od razu działaj na tonie/głosie.\n3. **Transparentność kosztów od dnia 1** — dashboard z kosztami per request + limity (Poke tu pada).\n4. **Szybkość + in-thread actions** — priorytet na aktualizacje UX (Poke zyskał po tym ogromnie).\n5. **Human-in-the-loop dla enterprise/integracji** — przygotuj się na to przy Apple-like approval.\n6. **Brak limitów na zwykły chat** — image/video gen limituj osobno (koszty).\n7. **Proces zatwierdzania** — planuj 2–3 miesiące na custom UI i live support przy Messages for Business.\n\nPoke pokazuje, że **największa siła to bycie „niewidzialnym” asystentem w istniejącym komunikatorze** + świetny tone + brak friction. Skopiuj to i wygrasz.",
+              "logprobs": [],
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/paulwitcombe/status/2062797297524634110",
+                  "start_index": 578,
+                  "end_index": 638,
+                  "title": "1"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/kevinclark/status/2062636575331164661",
+                  "start_index": 734,
+                  "end_index": 792,
+                  "title": "2"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/sebcrossa/status/2062731966944829612",
+                  "start_index": 918,
+                  "end_index": 975,
+                  "title": "3"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/kevinclark/status/2062636575331164661",
+                  "start_index": 1100,
+                  "end_index": 1158,
+                  "title": "2"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/ezShroom/status/2062590809006915607",
+                  "start_index": 1261,
+                  "end_index": 1317,
+                  "title": "4"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/38twelveDaily/status/2062622412450005415",
+                  "start_index": 1490,
+                  "end_index": 1551,
+                  "title": "5"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/kevinclark/status/2062636575331164661",
+                  "start_index": 1706,
+                  "end_index": 1764,
+                  "title": "2"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/soubiran_/status/2062064814671716460",
+                  "start_index": 1949,
+                  "end_index": 2006,
+                  "title": "6"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/38twelveDaily/status/2062622412450005415",
+                  "start_index": 2364,
+                  "end_index": 2425,
+                  "title": "5"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://x.com/arix_online/status/2063029244662305067",
+                  "start_index": 2519,
+                  "end_index": 2578,
+                  "title": "7"
+                }
+              ]
+            }
+          ],
+          "id": "msg_5eefecde-d8a5-9932-8b83-be460900240e",
+          "role": "assistant",
+          "type": "message",
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "previous_response_id": null,
+      "reasoning": {
+        "effort": "low",
+        "summary": "detailed"
+      },
+      "temperature": 0.7,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "type": "x_search",
+          "from_date": "2026-03-01",
+          "to_date": "2026-06-06",
+          "enable_image_understanding": true,
+          "enable_video_understanding": true
+        }
+      ],
+      "top_p": 0.95,
+      "usage": {
+        "input_tokens": 11769,
+        "input_tokens_details": {
+          "cached_tokens": 3264
+        },
+        "output_tokens": 2054,
+        "output_tokens_details": {
+          "reasoning_tokens": 1119
+        },
+        "total_tokens": 13823,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 4,
+        "cost_in_usd_ticks": 364190500,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 0,
+          "x_search_calls": 4,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 9982,
+          "output_tokens": 1493
+        }
+      },
+      "user": null,
+      "incomplete_details": null,
+      "status": "completed",
+      "store": false,
+      "metadata": {
+        "system_fingerprint": "fp_eb3c003fc66c14ed"
+      },
+      "background": false,
+      "service_tier": "default",
+      "truncation": "disabled",
+      "top_logprobs": 0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "prompt_cache_key": null,
+      "max_tool_calls": null,
+      "safety_identifier": null,
+      "error": null,
+      "instructions": null
+    }
+  }
+]
