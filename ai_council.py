@@ -90,6 +90,9 @@ MODEL_COMMANDS = {
     "/flow",
     "@grok",
     "@research",
+    "@xresearch",
+    "/xresearch",
+    "/poke-research",
     "@all",
     "/council",
 }
@@ -101,6 +104,9 @@ BACKGROUND_COMMANDS = {
     "/flow",
     "@grok",
     "@research",
+    "@xresearch",
+    "/xresearch",
+    "/poke-research",
     "@all",
     "/council",
 }
@@ -1000,9 +1006,9 @@ def capabilities_response() -> str:
     ensure_council_dirs()
     return (
         "[Council] Capabilities L2.5 active.\n"
-        "Teraz: Telegram, natural intent routing, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "Teraz: Telegram, natural intent routing, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council.\n"
+        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -1017,9 +1023,9 @@ def system_status_response() -> str:
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
         "[Council] Online na Desktopie 24/7. L2.5 active: natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; brak shell/external actions bez approval.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L2.5: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost."
+        "Komendy L2.5: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /xresearch, /poke-research."
     )
 
 
@@ -2622,6 +2628,26 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    xresearch_prefixes = ["deep research x", "głęboki research x", "gleboki research x", "research x", "x research"]
+    if any(lower.startswith(prefix) for prefix in xresearch_prefixes):
+        return {
+            "command": "/xresearch",
+            "operators": ["grok"],
+            "prompt": strip_intent_prefix(stripped, xresearch_prefixes),
+            "mode": "xresearch",
+            "intent": "natural",
+        }
+
+    poke_prefixes = ["zbadaj poke", "research poke", "poke research", "sklonuj poke"]
+    if any(lower.startswith(prefix) for prefix in poke_prefixes):
+        return {
+            "command": "/poke-research",
+            "operators": ["grok"],
+            "prompt": strip_intent_prefix(stripped, poke_prefixes),
+            "mode": "poke_research",
+            "intent": "natural",
+        }
+
     return None
 
 
@@ -2670,6 +2696,8 @@ def route_text(text: str) -> dict:
         return {"command": "@grok", "operators": ["grok"], "prompt": stripped[5:].strip()}
     if lower.startswith("@research"):
         return {"command": "@research", "operators": ["grok"], "prompt": stripped[9:].strip()}
+    if lower.startswith("@xresearch"):
+        return {"command": "@xresearch", "operators": ["grok"], "prompt": stripped[10:].strip(), "mode": "xresearch"}
     if lower.startswith("@all"):
         return {"command": "@all", "operators": ["codex", "claude", "grok"], "prompt": stripped[4:].strip()}
     if lower.startswith("/plan"):
@@ -2712,6 +2740,10 @@ def route_text(text: str) -> dict:
         return {"command": "/flow", "operators": ["claude-flow"], "prompt": stripped[5:].strip(), "mode": "flow"}
     if lower.startswith("/council"):
         return {"command": "/council", "operators": ["codex", "claude", "grok"], "prompt": stripped[8:].strip(), "mode": "council"}
+    if lower.startswith("/xresearch"):
+        return {"command": "/xresearch", "operators": ["grok"], "prompt": stripped[10:].strip(), "mode": "xresearch"}
+    if lower.startswith("/poke-research"):
+        return {"command": "/poke-research", "operators": ["grok"], "prompt": stripped[14:].strip(), "mode": "poke_research"}
     if lower.startswith("/jobs"):
         return {"command": "/jobs", "operators": ["host"], "prompt": "", "mode": "jobs"}
     if lower.startswith("/propose"):
@@ -2916,6 +2948,108 @@ def grok_response(prompt: str, max_chars: int | None = None, task_id: str = "") 
     return f"[Grok]\n{text[:limit]}"
 
 
+def xai_response_text(data: dict) -> str:
+    chunks: list[str] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            node_type = str(node.get("type") or "")
+            if node_type in {"output_text", "text"} and isinstance(node.get("text"), str):
+                chunks.append(node["text"])
+            elif isinstance(node.get("content"), str):
+                chunks.append(node["content"])
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(data.get("output"))
+    return "\n".join(chunk.strip() for chunk in chunks if chunk.strip())
+
+
+def build_x_research_prompt(prompt: str) -> str:
+    topic = prompt.strip() or "Poke AI agent, @interaction, Apple Messages, Recipes, Poke UX"
+    return (
+        "Przeprowadź deep research na X po polsku. Oddziel fakty od hipotez. "
+        "Podawaj linki do postów, gdy są dostępne. Skup się na: funkcjach, sposobie działania, UX, "
+        "automatyzacjach, integracjach, ograniczeniach, kosztach, Apple Messages/iMessage, "
+        "lekcjach do skopiowania do prywatnego Telegram/iPhone AI Council.\n\n"
+        f"Temat: {topic}"
+    )
+
+
+def build_poke_research_prompt(prompt: str) -> str:
+    extra = prompt.strip()
+    suffix = f"\nDodatkowy fokus Bartka: {extra}" if extra else ""
+    return (
+        "Zbadaj Poke / @interaction na X. Obowiązkowo uwzględnij post/thread/status "
+        "2062575428213285352 oraz oficjalne i użytkownicze informacje od 2026-03-01 do 2026-06-06. "
+        "Wyciągnij: wszystkie publicznie widoczne funkcje, kanały, Apple Messages approval, Recipes, "
+        "onboarding, in-thread actions, proactive nudges, memory, developer hints typu npx poke, "
+        "feedback użytkowników, skargi, koszty, opóźnienia i ograniczenia. "
+        "Na końcu daj konkretne wymagania do sklonowania w Bartek Agent OS."
+        f"{suffix}"
+    )
+
+
+def grok_x_research_response(prompt: str, max_chars: int | None = None, task_id: str = "") -> str:
+    started = time.time()
+    allowed, reason = operator_call_allowed("grok")
+    if not allowed:
+        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail=reason)
+        return f"[Grok X Research] blocked: {reason}"
+    key = cfg("XAI_API_KEY")
+    if not key:
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, detail="missing XAI_API_KEY")
+        return "[Grok X Research] error: missing XAI_API_KEY"
+    research_prompt = build_x_research_prompt(prompt)
+    memory_context = memory_context_for_prompt(research_prompt)
+    if memory_context:
+        research_prompt = f"{research_prompt}\n\nKontekst z pamięci AI Council:\n{memory_context}"
+    payload = {
+        "model": cfg("AI_COUNCIL_GROK_X_MODEL", "grok-4.3"),
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Jesteś Grok/X research operator dla prywatnego AI Council Bartka. "
+                    "Używaj X search, oznaczaj niepewność, nie zmyślaj źródeł i pisz po polsku."
+                ),
+            },
+            {"role": "user", "content": research_prompt},
+        ],
+        "tools": [
+            {
+                "type": "x_search",
+                "from_date": cfg("AI_COUNCIL_GROK_X_FROM_DATE", "2026-03-01"),
+                "to_date": cfg("AI_COUNCIL_GROK_X_TO_DATE", "2026-06-06"),
+                "enable_image_understanding": True,
+                "enable_video_understanding": True,
+            }
+        ],
+        "store": False,
+    }
+    data = request_json(
+        "https://api.x.ai/v1/responses",
+        headers={"Authorization": f"Bearer {key}"},
+        method="POST",
+        payload=payload,
+        timeout=int_cfg("AI_COUNCIL_GROK_X_TIMEOUT", 240),
+    )
+    duration_ms = int((time.time() - started) * 1000)
+    if data.get("ok") is False:
+        detail = redact_secrets(str(data.get("body_preview", "")))[:800]
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=detail[:240])
+        return f"[Grok X Research] error: {data.get('error')} {detail}".strip()
+    text = xai_response_text(data)
+    if not text:
+        text = redact_secrets(json.dumps(data, ensure_ascii=False))[:1600]
+    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    limit = max_chars if max_chars is not None else int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000)
+    return f"[Grok X Research] ({duration_ms}ms)\n{text[:limit]}"
+
+
 def grok_route_response(prompt: str, *, max_chars: int | None = None, task_id: str = "") -> str:
     if task_id:
         return grok_response(prompt, max_chars=max_chars, task_id=task_id)
@@ -2934,11 +3068,11 @@ def build_research_prompt(prompt: str) -> str:
 
 def host_response(prompt: str) -> str:
     if not prompt:
-        return "[Council] AI Council online. Rozumiem też naturalne intencje: status, health, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, council, flow, zapisz/dopisz/zmień plik. Komendy: @codex, @claude, @claude-flow, @grok, @research, @all."
+        return "[Council] AI Council online. Rozumiem też naturalne intencje: status, health, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, council, flow, zapisz/dopisz/zmień plik. Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all."
     return (
         "[Council]\n"
         "Odebrałem. Routing działa.\n"
-        "Komendy: @codex, @claude, @claude-flow, @grok, @research, @all, /task, /queue, /artifacts, /actions, /approve, /deny, /memory, /write, /append, /patch, /flow, /council, /details <id>, /facts <id>, /next <id>, /capabilities, /health, /status <id>, /cancel <id>, /cost."
+        "Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all, /task, /queue, /artifacts, /actions, /approve, /deny, /memory, /write, /append, /patch, /flow, /council, /details <id>, /facts <id>, /next <id>, /capabilities, /health, /status <id>, /cancel <id>, /cost."
     )
 
 
@@ -3026,6 +3160,12 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return grok_route_response(prompt, max_chars=int_cfg("AI_COUNCIL_MAX_CHARS", 900), task_id=task_id)
     if command == "@research":
         return grok_route_response(build_research_prompt(prompt), max_chars=int_cfg("AI_COUNCIL_RESEARCH_MAX_CHARS", 1800), task_id=task_id)
+    if command == "@xresearch":
+        return grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000), task_id=task_id)
+    if command == "/xresearch":
+        return grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000), task_id=task_id)
+    if command == "/poke-research":
+        return grok_x_research_response(build_poke_research_prompt(prompt), max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 7000), task_id=task_id)
     if command == "@all":
         parts = [
             codex_response(prompt, task_id=task_id),

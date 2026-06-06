@@ -78,6 +78,37 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("Kontekst z pamięci AI Council", args[0][-1])
         self.assertIn("ważny kontekst", args[0][-1])
 
+    def test_route_poke_research_to_background_grok_x_search(self):
+        route = ai_council.route_text("/poke-research sklonuj funkcje Poke")
+
+        self.assertEqual(route["command"], "/poke-research")
+        self.assertEqual(route["operators"], ["grok"])
+        self.assertEqual(route["mode"], "poke_research")
+        self.assertTrue(ai_council.route_needs_task(route))
+        self.assertTrue(ai_council.route_should_background(route))
+
+    def test_xresearch_natural_intent_routes_to_grok(self):
+        route = ai_council.route_text("deep research x Poke Apple Messages")
+
+        self.assertEqual(route["command"], "/xresearch")
+        self.assertEqual(route["operators"], ["grok"])
+        self.assertEqual(route["mode"], "xresearch")
+
+    def test_xai_response_text_extracts_nested_output_text(self):
+        data = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "Pierwszy fakt."},
+                        {"type": "output_text", "text": "Drugi fakt."},
+                    ],
+                }
+            ]
+        }
+
+        self.assertEqual(ai_council.xai_response_text(data), "Pierwszy fakt.\nDrugi fakt.")
+
     def test_claude_flow_uses_opus_48_without_default_budget_cap(self):
         completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout="FLOW OK", stderr="")
 
