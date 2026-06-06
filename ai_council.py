@@ -960,6 +960,75 @@ def grok_image_analysis(local_path: Path, caption: str = "", task_id: str = "") 
     return f"[Grok Vision]\n{text[: int_cfg('AI_COUNCIL_MEDIA_ANALYSIS_MAX_CHARS', 2400)]}"
 
 
+def xai_stt_text(data: dict) -> str:
+    for key in ("text", "transcript", "transcription"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return xai_response_text(data)
+
+
+def xai_stt_transcribe(local_path: Path, mime_type: str = "", task_id: str = "") -> dict:
+    started = time.time()
+    allowed, reason = operator_call_allowed("grok")
+    if not allowed:
+        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail=reason)
+        return {"status": "transcription_blocked", "provider": "xai_stt", "text": "", "summary": reason}
+    key = cfg("XAI_API_KEY")
+    if not key:
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, estimated_usd=0.0, detail="missing XAI_API_KEY")
+        return {"status": "transcription_unavailable", "provider": "xai_stt", "text": "", "summary": "missing XAI_API_KEY"}
+    if not local_path.exists():
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, estimated_usd=0.0, detail="media file missing")
+        return {"status": "transcription_failed", "provider": "xai_stt", "text": "", "summary": "media file missing"}
+    max_bytes = int_cfg("AI_COUNCIL_STT_MAX_BYTES", 25_000_000)
+    file_size = local_path.stat().st_size
+    if file_size > max_bytes:
+        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail="audio too large")
+        return {
+            "status": "transcription_blocked",
+            "provider": "xai_stt",
+            "text": "",
+            "summary": f"audio too large ({file_size} bytes > {max_bytes})",
+        }
+    fields = []
+    if bool_cfg("AI_COUNCIL_STT_FORMAT", True):
+        fields.append(("format", "true"))
+        language = cfg("AI_COUNCIL_STT_LANGUAGE", "pl")
+        if language:
+            fields.append(("language", language))
+    keyterms = [item.strip() for item in cfg("AI_COUNCIL_STT_KEYTERMS", "Bartek,Codex,Claude,Grok,AI Council,OpenClaw,Poke").split(",") if item.strip()]
+    for term in keyterms[:20]:
+        fields.append(("keyterm", term))
+    detected_mime = mime_type or mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
+    data = request_multipart_json(
+        cfg("AI_COUNCIL_STT_URL", "https://api.x.ai/v1/stt"),
+        headers={"Authorization": f"Bearer {key}"},
+        fields=fields,
+        file_field="file",
+        file_path=local_path,
+        mime_type=detected_mime,
+        timeout=int_cfg("AI_COUNCIL_STT_TIMEOUT", 180),
+    )
+    duration_ms = int((time.time() - started) * 1000)
+    if data.get("ok") is False:
+        detail = redact_secrets(str(data.get("body_preview") or data.get("reason") or data.get("error") or ""))[:500]
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=f"stt: {detail}"[:240])
+        return {"status": "transcription_failed", "provider": "xai_stt", "text": "", "summary": detail or "xAI STT failed"}
+    text = xai_stt_text(data)
+    if not text:
+        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail="stt empty response")
+        return {"status": "transcription_failed", "provider": "xai_stt", "text": "", "summary": "empty STT response"}
+    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    return {
+        "status": "transcribed",
+        "provider": "xai_stt",
+        "text": text[: int_cfg("AI_COUNCIL_STT_MAX_CHARS", 8000)],
+        "summary": compact_line(text, 700),
+        "raw": data,
+    }
+
+
 def analyze_downloaded_media(metadata: dict) -> dict:
     local_path = Path(str(metadata.get("local_path") or ""))
     media = metadata.get("media") or {}
@@ -985,12 +1054,7 @@ def analyze_downloaded_media(metadata: dict) -> dict:
             "summary": compact_line(analysis, 700),
         }
     if kind in {"voice", "audio", "video"} or mime_type.startswith(("audio/", "video/")):
-        return {
-            "status": "transcription_pending",
-            "provider": "none",
-            "text": "",
-            "summary": "Audio/video captured. STT/OCR pipeline is not enabled in L3.2.",
-        }
+        return xai_stt_transcribe(local_path, mime_type=mime_type, task_id=str(metadata.get("task_id") or ""))
     return {
         "status": "unsupported_media_type",
         "provider": "none",
@@ -1059,11 +1123,11 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
     result = {
         "decision": "Telegram media captured and analyzed as AI Council task.",
         "facts": facts,
-        "dispute": "L3.2 analizuje tekst i obrazy; voice/audio/video są przechwycone, ale transkrypcja wymaga osobnego STT pipeline.",
+        "dispute": "L3.3 analizuje tekst, obrazy i audio przez STT; jeśli API lub format zawiedzie, media zostaje zapisane z jawnym statusem błędu.",
         "next_actions": [
             f"Przejrzyj artefakt: /details {task_id}",
             "Dodaj opis/cel do tego taska albo poproś o kolejny krok na podstawie analizy.",
-            "Następny sprint: voice transcription przez STT WebSocket i automatyczne zadania z transkryptu.",
+            "Następny sprint: automatyczne tworzenie zadań z transkryptu i lepsze streszczenia voice notes.",
         ],
         "ask_user": "Napisz, co mam zrobić z tym plikiem albo wyślij kolejną wiadomość z kontekstem.",
         "raw_output": json.dumps(metadata, ensure_ascii=False, indent=2),
@@ -1687,8 +1751,8 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.2 active.\n"
-        "Teraz: Telegram, voice/photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.3 active.\n"
+        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -1704,8 +1768,8 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.2 active: Telegram media capture + text/image analysis, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction; photo/screenshot -> Grok vision/OCR; voice/audio/video -> capture + transcription_pending; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L3.3 active: Telegram media capture + text/image/STT analysis, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction; photo/screenshot -> Grok vision/OCR; voice/audio/video -> xAI STT REST jeśli XAI_API_KEY i format są obsługiwane; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
@@ -3163,6 +3227,47 @@ def request_json(
     except HTTPError as exc:
         body = redact_secrets(exc.read().decode("utf-8", errors="replace"))[:500]
         return {"ok": False, "error": f"http_{exc.code}", "body_preview": body}
+    except URLError as exc:
+        return {"ok": False, "error": "url_error", "reason": str(exc.reason)}
+    except TimeoutError:
+        return {"ok": False, "error": "timeout"}
+
+
+def request_multipart_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    fields: list[tuple[str, str]] | None = None,
+    file_field: str,
+    file_path: Path,
+    mime_type: str = "application/octet-stream",
+    timeout: int = 180,
+) -> dict:
+    boundary = f"ai-council-{short_hash(str(time.time()))}"
+    body = bytearray()
+    for key, value in fields or []:
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        body.extend(str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+    filename = safe_filename(file_path.name, "audio")
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode("utf-8")
+    )
+    body.extend(f"Content-Type: {mime_type or 'application/octet-stream'}\r\n\r\n".encode("utf-8"))
+    body.extend(file_path.read_bytes())
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    final_headers = headers.copy() if headers else {}
+    final_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    req = Request(url, data=bytes(body), headers=final_headers, method="POST")
+    try:
+        with urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read().decode("utf-8", errors="replace"))
+    except HTTPError as exc:
+        body_preview = redact_secrets(exc.read().decode("utf-8", errors="replace"))[:500]
+        return {"ok": False, "error": f"http_{exc.code}", "body_preview": body_preview}
     except URLError as exc:
         return {"ok": False, "error": "url_error", "reason": str(exc.reason)}
     except TimeoutError:

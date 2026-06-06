@@ -817,7 +817,110 @@ class L25BackgroundTests(unittest.TestCase):
             root = Path(tmp)
             audio = root / "voice.ogg"
             audio.write_bytes(b"audio")
-            analysis = ai_council.analyze_downloaded_media(
+            with patch.object(ai_council, "xai_stt_transcribe", return_value={"status": "transcribed", "provider": "xai_stt", "text": "Cześć Bartek", "summary": "Cześć Bartek"}):
+                analysis = ai_council.analyze_downloaded_media(
+                    {
+                        "task_id": "task-audio",
+                        "local_path": str(audio),
+                        "media": {"kind": "voice", "mime_type": "audio/ogg"},
+                    }
+                )
+
+        self.assertEqual(analysis["status"], "transcribed")
+        self.assertIn("Bartek", analysis["text"])
+
+    def test_xai_stt_transcribe_builds_multipart_request(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "XAI_API_KEY": "xai-test-key",
+                "AI_COUNCIL_STT_URL": "https://api.x.ai/v1/stt",
+                "AI_COUNCIL_STT_LANGUAGE": "pl",
+                "AI_COUNCIL_STT_FORMAT": "true",
+                "AI_COUNCIL_STT_KEYTERMS": "Bartek,Codex",
+                "AI_COUNCIL_STT_MAX_BYTES": "1000",
+                "AI_COUNCIL_STT_MAX_CHARS": "500",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audio = root / "voice.ogg"
+            audio.write_bytes(b"audio")
+            with patch.object(ai_council, "COSTS_FILE", root / "costs.jsonl"), patch.object(
+                ai_council, "cfg", side_effect=fake_cfg
+            ), patch.object(
+                ai_council, "request_multipart_json", return_value={"text": "Transkrypt głosówki."}
+            ) as request_multipart:
+                result = ai_council.xai_stt_transcribe(audio, mime_type="audio/ogg", task_id="task-stt")
+
+        self.assertEqual(result["status"], "transcribed")
+        self.assertIn("Transkrypt", result["text"])
+        kwargs = request_multipart.call_args.kwargs
+        self.assertEqual(kwargs["file_field"], "file")
+        self.assertEqual(kwargs["mime_type"], "audio/ogg")
+        self.assertIn(("format", "true"), kwargs["fields"])
+        self.assertIn(("language", "pl"), kwargs["fields"])
+        self.assertIn(("keyterm", "Bartek"), kwargs["fields"])
+
+    def test_xai_stt_transcribe_reports_missing_key(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audio = root / "voice.ogg"
+            audio.write_bytes(b"audio")
+            with patch.object(ai_council, "COSTS_FILE", root / "costs.jsonl"), patch.object(
+                ai_council, "cfg", return_value=""
+            ):
+                result = ai_council.xai_stt_transcribe(audio, mime_type="audio/ogg", task_id="task-stt")
+
+        self.assertEqual(result["status"], "transcription_unavailable")
+
+    def test_request_multipart_json_puts_file_after_fields(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"text":"ok"}'
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=180):
+            captured["body"] = req.data
+            captured["content_type"] = req.headers.get("Content-type") or req.headers.get("Content-Type")
+            return FakeResponse()
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audio = root / "voice.ogg"
+            audio.write_bytes(b"audio")
+            with patch("ai_council.urlopen", side_effect=fake_urlopen):
+                data = ai_council.request_multipart_json(
+                    "https://api.x.ai/v1/stt",
+                    headers={"Authorization": "Bearer test"},
+                    fields=[("format", "true"), ("language", "pl")],
+                    file_field="file",
+                    file_path=audio,
+                    mime_type="audio/ogg",
+                )
+
+        body = captured["body"]
+        self.assertEqual(data["text"], "ok")
+        self.assertIn("multipart/form-data", captured["content_type"])
+        self.assertLess(body.index(b'name="format"'), body.index(b'name="file"'))
+        self.assertIn(b"audio", body)
+
+    def test_audio_media_analysis_is_unavailable_without_key(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audio = root / "voice.ogg"
+            audio.write_bytes(b"audio")
+            with patch.object(ai_council, "COSTS_FILE", root / "costs.jsonl"), patch.object(
+                ai_council, "cfg", return_value=""
+            ):
+                analysis = ai_council.analyze_downloaded_media(
                 {
                     "task_id": "task-audio",
                     "local_path": str(audio),
@@ -825,7 +928,7 @@ class L25BackgroundTests(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(analysis["status"], "transcription_pending")
+        self.assertEqual(analysis["status"], "transcription_unavailable")
 
     def test_health_response_is_available_without_network_calls(self):
         with temp_dir() as tmp:
