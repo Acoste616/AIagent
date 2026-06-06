@@ -85,6 +85,8 @@ NOISE_PREFIXES = (
 )
 SECRET_MARKERS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
 WORKSPACE_WRITE_MAX_CHARS = 20000
+RISK_LEVELS = ("R0", "R1", "R2", "R3", "R4")
+AUTO_EXECUTABLE_WORKSPACE_RISKS = {"R1", "low"}
 MODEL_COMMANDS = {
     "codex_default",
     "@codex",
@@ -1345,10 +1347,10 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L2.7 active.\n"
-        "Teraz: Telegram, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.0 active.\n"
+        "Teraz: Telegram, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
+        "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -1362,10 +1364,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L2.7 active: inline buttons, recipes scheduler, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L3.0 active: inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L2.7: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -1588,9 +1590,62 @@ def memory_response(prompt: str) -> str:
     return "[Council] Memory: użyj /memory recent, /memory search <tekst>, /memory save klucz = treść."
 
 
+def risk_level_for_text(text: str) -> tuple[str, str]:
+    lower = (text or "").lower()
+    if any(token in lower for token in ["billing", "płat", "payment", "money", "stripe", "dns", "auth", "delete", "usuń", "publish", "opublikuj", "contact", "wyślij do klienta"]):
+        return "R4", "money/publish/contact/delete/DNS/auth/billing risk"
+    if any(token in lower for token in ["gmail", "calendar", "drive", "github", "external api", "api write", "email", "send mail", "schedule meeting"]):
+        return "R3", "external write/API/contact integration risk"
+    if any(token in lower for token in ["shell", "terminal", "powershell", "cmd.exe", "subprocess", "install", "pip install", "npm install", "run command"]):
+        return "R2", "sandbox/test/build or command execution risk"
+    if any(token in lower for token in ["write", "append", "patch", "zapisz", "dopisz", "zmień", "workspace", "plik"]):
+        return "R1", "local reversible workspace write risk"
+    return "R0", "read-only response/planning risk"
+
+
+def normalize_risk(risk: str, description: str = "") -> tuple[str, str]:
+    value = (risk or "").strip().upper()
+    if value in RISK_LEVELS:
+        return value, f"explicit {value}"
+    legacy = (risk or "").strip().lower()
+    if legacy == "low":
+        return "R1", "legacy low mapped to R1"
+    if legacy == "high":
+        return "R2", "legacy high mapped to R2"
+    return risk_level_for_text(description)
+
+
+def risk_policy(level: str) -> str:
+    return {
+        "R0": "auto: read-only response, no side effects",
+        "R1": "approval required: local reversible workspace write",
+        "R2": "approval + sandbox required: local build/test/shell-like risk",
+        "R3": "explicit approval required: external write/API/integration",
+        "R4": "manual approval outside automation: money/publish/contact/DNS/auth/billing/delete",
+    }.get(level, "unknown risk policy")
+
+
+def risk_response(prompt: str) -> str:
+    target = prompt.strip()
+    action = get_latest_action(target) if target.startswith("act-") else None
+    if action:
+        level, reason = normalize_risk(str(action.get("risk") or ""), action.get("description", ""))
+        return (
+            f"[Risk Officer] {action['action_id']}\n"
+            f"risk: {level}\n"
+            f"reason: {action.get('risk_reason') or reason}\n"
+            f"policy: {risk_policy(level)}\n"
+            f"status: {action.get('status')}\n"
+            f"type: {action.get('type')}"
+        )
+    level, reason = risk_level_for_text(target)
+    return f"[Risk Officer]\nrisk: {level}\nreason: {reason}\npolicy: {risk_policy(level)}"
+
+
 def create_action(description: str, *, action_type: str = "manual", risk: str = "medium", payload: dict | None = None) -> dict:
     ensure_council_dirs()
     clean_description = description.strip() or "Brak opisu akcji"
+    risk_level, risk_reason = normalize_risk(risk, clean_description)
     action_id = f"act-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(clean_description)[:6]}"
     action = {
         "action_id": action_id,
@@ -1598,10 +1653,12 @@ def create_action(description: str, *, action_type: str = "manual", risk: str = 
         "updated_at": utc_now(),
         "status": "pending",
         "type": action_type,
-        "risk": risk,
+        "risk": risk_level,
+        "risk_reason": risk_reason,
+        "approval_policy": risk_policy(risk_level),
         "description": clean_description,
         "path_scope": "D:\\ai-council\\workspaces only",
-        "execution": "not_implemented_l2_mini",
+        "execution": "risk_officer_l3",
         "payload": payload or {},
     }
     append_jsonl(ACTIONS_FILE, action)
@@ -1743,13 +1800,16 @@ def create_workspace_write_action(prompt: str) -> dict | None:
             payload={"raw_path": raw_path, "reason": error},
         )
     diff_preview = unified_diff_preview(target, content)
+    before_content = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
     return create_action(
         f"Write workspace file {target}",
         action_type="workspace_write",
-        risk="low",
+        risk="R1",
         payload={
             "path": str(target),
             "content": content,
+            "before_exists": target.exists(),
+            "before_content": before_content,
             "diff_preview": diff_preview,
             "max_chars": WORKSPACE_WRITE_MAX_CHARS,
         },
@@ -1782,10 +1842,12 @@ def create_workspace_append_action(prompt: str) -> dict | None:
     return create_action(
         f"Append workspace file {target}",
         action_type="workspace_append",
-        risk="low",
+        risk="R1",
         payload={
             "path": str(target),
             "append_content": append_content,
+            "before_exists": target.exists(),
+            "before_content": old_content,
             "diff_preview": diff_preview,
             "max_chars": WORKSPACE_WRITE_MAX_CHARS,
         },
@@ -1839,11 +1901,13 @@ def create_workspace_patch_action(prompt: str) -> dict | None:
     return create_action(
         f"Patch workspace file {target}",
         action_type="workspace_patch",
-        risk="low",
+        risk="R1",
         payload={
             "path": str(target),
             "old": old,
             "new": new,
+            "before_exists": True,
+            "before_content": current,
             "diff_preview": diff_preview,
             "max_chars": WORKSPACE_WRITE_MAX_CHARS,
         },
@@ -2021,24 +2085,24 @@ def approve_response(prompt: str) -> str:
     updated = update_action_status(parts[0], "approved", parts[1] if len(parts) > 1 else "")
     if not updated:
         return f"[Council] Nie znalazłem action `{parts[0]}`."
-    if updated.get("type") == "workspace_write" and updated.get("risk") == "low":
+    if updated.get("type") == "workspace_write" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_write_action(updated)
         if executed.get("status") == "executed":
             return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
-    if updated.get("type") == "workspace_append" and updated.get("risk") == "low":
+    if updated.get("type") == "workspace_append" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_append_action(updated)
         if executed.get("status") == "executed":
             return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
-    if updated.get("type") == "workspace_patch" and updated.get("risk") == "low":
+    if updated.get("type") == "workspace_patch" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_patch_action(updated)
         if executed.get("status") == "executed":
             return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
     return (
         f"[Council] Approved: {updated['action_id']}.\n"
-        "Ta akcja nie ma automatycznego wykonania w L2.5."
+        "Ta akcja nie ma automatycznego wykonania w L3.0."
     )
 
 
@@ -2050,6 +2114,116 @@ def deny_response(prompt: str) -> str:
     if not updated:
         return f"[Council] Nie znalazłem action `{parts[0]}`."
     return f"[Council] Denied: {updated['action_id']}."
+
+
+def execute_response(prompt: str) -> str:
+    target_id = prompt.strip().split()[0] if prompt.strip() else ""
+    if not target_id:
+        return "[Council] Użyj: /execute <action_id>."
+    action = get_latest_action(target_id)
+    if not action:
+        return f"[Council] Nie znalazłem action `{target_id}`."
+    level, _ = normalize_risk(str(action.get("risk") or ""), action.get("description", ""))
+    if level in {"R3", "R4"}:
+        return f"[Council] Execute zablokowane przez Risk Officer: {level}. {risk_policy(level)}"
+    if action.get("type") not in {"workspace_write", "workspace_append", "workspace_patch"}:
+        return f"[Council] Execute nieobsługiwane dla `{action.get('type')}`. {risk_policy(level)}"
+    return approve_response(target_id)
+
+
+def verify_action(action: dict) -> tuple[bool, str]:
+    payload = action.get("payload") or {}
+    action_type = action.get("type")
+    target, error = resolve_workspace_path(str(payload.get("path", "")))
+    if error or target is None:
+        return False, f"blocked: {error}"
+    if action.get("status") == "rolled_back":
+        before_exists = bool(payload.get("before_exists", False))
+        before_content = str(payload.get("before_content", ""))
+        if not before_exists:
+            return (not target.exists()), "rollback verified: file removed"
+        if not target.exists():
+            return False, "rollback failed: file missing"
+        restored = target.read_text(encoding="utf-8", errors="replace") == before_content
+        return restored, "rollback verified: before snapshot restored"
+    if action.get("status") != "executed":
+        return False, f"not executed: {action.get('status')}"
+    if not target.exists():
+        return False, "target file missing"
+    current = target.read_text(encoding="utf-8", errors="replace")
+    if action_type == "workspace_write":
+        return current == str(payload.get("content", "")), "write content matches expected payload"
+    if action_type == "workspace_append":
+        expected = str(payload.get("before_content", "")) + str(payload.get("append_content", ""))
+        return current == expected, "append content matches before snapshot + appended text"
+    if action_type == "workspace_patch":
+        expected = str(payload.get("before_content", "")).replace(str(payload.get("old", "")), str(payload.get("new", "")), 1)
+        return current == expected, "patch content matches expected replacement"
+    return False, f"unsupported action type: {action_type}"
+
+
+def verify_response(prompt: str) -> str:
+    target_id = prompt.strip().split()[0] if prompt.strip() else ""
+    if not target_id:
+        return "[Council] Użyj: /verify <action_id|task_id>."
+    action = get_latest_action(target_id)
+    if action:
+        ok, detail = verify_action(action)
+        status = "OK" if ok else "FAILED"
+        return f"[Verifier] {status}: {target_id}\n{detail}"
+    task = get_latest_task(target_id)
+    if task:
+        report_path = str(task.get("report_path") or "")
+        report_exists = bool(report_path and Path(report_path).exists())
+        if task.get("status") == "completed" and report_exists:
+            return f"[Verifier] OK: {target_id}\ncompleted with report: {report_path}"
+        return f"[Verifier] FAILED: {target_id}\nstatus={task.get('status')} report_exists={report_exists}"
+    return f"[Verifier] Nie znalazłem action/task `{target_id}`."
+
+
+def rollback_response(prompt: str) -> str:
+    target_id = prompt.strip().split()[0] if prompt.strip() else ""
+    if not target_id:
+        return "[Council] Użyj: /rollback <action_id>."
+    action = get_latest_action(target_id)
+    if not action:
+        return f"[Council] Nie znalazłem action `{target_id}`."
+    if action.get("status") == "rolled_back":
+        return f"[Council] Rollback pominięty: `{target_id}` już ma status rolled_back."
+    if action.get("status") != "executed":
+        return f"[Council] Rollback wymaga executed action, teraz: `{action.get('status')}`."
+    if action.get("type") not in {"workspace_write", "workspace_append", "workspace_patch"}:
+        return f"[Council] Rollback nieobsługiwany dla `{action.get('type')}`."
+    payload = action.get("payload") or {}
+    if "before_exists" not in payload or "before_content" not in payload:
+        return "[Council] Rollback zablokowany: brak snapshotu sprzed wykonania."
+    target, error = resolve_workspace_path(str(payload.get("path", "")))
+    if error or target is None:
+        return f"[Council] Rollback zablokowany: {error}"
+    if payload.get("before_exists"):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(payload.get("before_content", "")), encoding="utf-8")
+        result = f"restored {target}"
+    else:
+        if target.exists():
+            target.unlink()
+        result = f"removed {target}"
+    rolled_back = {
+        **action,
+        "status": "rolled_back",
+        "updated_at": utc_now(),
+        "rollback_result": result,
+    }
+    append_jsonl(ACTIONS_FILE, rolled_back)
+    memory_save(
+        f"workspace-rollback:{action.get('action_id')}",
+        result,
+        kind="action",
+        agent="host",
+        source="rollback",
+        task_id=action.get("action_id", ""),
+    )
+    return f"[Council] Rollback executed: {target_id}.\n{result}"
 
 
 def write_response(prompt: str) -> str:
@@ -2066,6 +2240,7 @@ def write_response(prompt: str) -> str:
     return (
         "[Council] Pending workspace write utworzony.\n"
         f"id: {action['action_id']}\n"
+        f"risk: {action.get('risk')}\n"
         f"approve: /approve {action['action_id']}\n"
         f"diff:\n{diff_preview[:1200]}"
     )
@@ -2085,6 +2260,7 @@ def append_response(prompt: str) -> str:
     return (
         "[Council] Pending workspace append utworzony.\n"
         f"id: {action['action_id']}\n"
+        f"risk: {action.get('risk')}\n"
         f"approve: /approve {action['action_id']}\n"
         f"diff:\n{diff_preview[:1200]}"
     )
@@ -2104,6 +2280,7 @@ def patch_response(prompt: str) -> str:
     return (
         "[Council] Pending workspace patch utworzony.\n"
         f"id: {action['action_id']}\n"
+        f"risk: {action.get('risk')}\n"
         f"approve: /approve {action['action_id']}\n"
         f"diff:\n{diff_preview[:1200]}"
     )
@@ -3167,6 +3344,14 @@ def route_text(text: str) -> dict:
         return {"command": "/approve", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "approve"}
     if lower.startswith("/deny"):
         return {"command": "/deny", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "deny"}
+    if lower.startswith("/risk"):
+        return {"command": "/risk", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "risk"}
+    if lower.startswith("/execute"):
+        return {"command": "/execute", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "execute"}
+    if lower.startswith("/verify"):
+        return {"command": "/verify", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "verify"}
+    if lower.startswith("/rollback"):
+        return {"command": "/rollback", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "rollback"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
     if lower.startswith("/flow"):
@@ -3562,6 +3747,14 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return approve_response(prompt)
     if command == "/deny":
         return deny_response(prompt)
+    if command == "/risk":
+        return risk_response(prompt)
+    if command == "/execute":
+        return execute_response(prompt)
+    if command == "/verify":
+        return verify_response(prompt)
+    if command == "/rollback":
+        return rollback_response(prompt)
     if command == "/memory":
         return memory_response(prompt)
     if command == "/recipe":
@@ -3573,10 +3766,11 @@ def build_response(route: dict, chat_id: str = "") -> str:
     if command == "/jobs":
         return council_jobs_response()
     if command == "/propose":
-        action = create_action(prompt, action_type="manual_proposal", risk="medium")
+        action = create_action(prompt, action_type="manual_proposal", risk="")
         return (
             "[Council] Pending action utworzona.\n"
             f"id: {action['action_id']}\n"
+            f"risk: {action.get('risk')}\n"
             "Zatwierdź: /approve <id> albo odrzuć: /deny <id>."
         )
     if command == "/write":

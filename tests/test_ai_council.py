@@ -280,6 +280,10 @@ class RoutingTests(unittest.TestCase):
             "/actions": ("/actions", ["host"]),
             "/approve act-1": ("/approve", ["host"]),
             "/deny act-1": ("/deny", ["host"]),
+            "/risk wyślij email": ("/risk", ["host"]),
+            "/execute act-1": ("/execute", ["host"]),
+            "/verify act-1": ("/verify", ["host"]),
+            "/rollback act-1": ("/rollback", ["host"]),
             "/memory recent": ("/memory", ["host"]),
             "/jobs": ("/jobs", ["host"]),
             "/propose test": ("/propose", ["host"]),
@@ -462,7 +466,39 @@ class L2LedgerTests(unittest.TestCase):
                 action = ai_council.create_workspace_write_action("../outside.txt = no")
 
         self.assertEqual(action["type"], "workspace_write_rejected")
-        self.assertEqual(action["risk"], "high")
+        self.assertEqual(action["risk"], "R2")
+
+    def test_risk_officer_classifies_risk_levels(self):
+        self.assertEqual(ai_council.risk_level_for_text("odpowiedz na pytanie")[0], "R0")
+        self.assertEqual(ai_council.risk_level_for_text("zapisz plik workspace")[0], "R1")
+        self.assertEqual(ai_council.risk_level_for_text("run command in powershell")[0], "R2")
+        self.assertEqual(ai_council.risk_level_for_text("gmail api write")[0], "R3")
+        self.assertEqual(ai_council.risk_level_for_text("publish and billing change")[0], "R4")
+
+    def test_execute_verify_and_rollback_workspace_write(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            workspaces = root / "workspaces"
+            target = workspaces / "shared" / "hello.txt"
+            with patch.object(ai_council, "WORKSPACES_DIR", workspaces), patch.object(
+                ai_council, "ACTIONS_FILE", root / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_workspace_write_action("shared/hello.txt = hello L3")
+                executed = ai_council.execute_response(action["action_id"])
+                verified = ai_council.verify_response(action["action_id"])
+                rolled_back = ai_council.rollback_response(action["action_id"])
+                rollback_verified = ai_council.verify_response(action["action_id"])
+                latest = ai_council.latest_by_id(root / "actions.jsonl", "action_id", limit=1)[0]
+
+        self.assertEqual(action["risk"], "R1")
+        self.assertIn("Approved + executed", executed)
+        self.assertIn("OK", verified)
+        self.assertIn("Rollback executed", rolled_back)
+        self.assertIn("OK", rollback_verified)
+        self.assertFalse(target.exists())
+        self.assertEqual(latest["status"], "rolled_back")
 
     def test_workspace_append_requires_approval_and_stays_in_workspace(self):
         with temp_dir() as tmp:
