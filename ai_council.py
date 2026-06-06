@@ -5,6 +5,7 @@ import argparse
 import base64
 from datetime import datetime, timezone
 import difflib
+import hmac
 import hashlib
 import json
 import mimetypes
@@ -18,7 +19,8 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlencode
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -1228,6 +1230,361 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
     return response, task
 
 
+def payload_bool(payload: dict, key: str, default: bool = False) -> bool:
+    if key not in payload:
+        return default
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def shortcut_text_from_payload(payload: dict) -> str:
+    parts: list[str] = []
+    for key in ("text", "prompt", "query", "transcript", "note"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            parts.append(value)
+    title = str(payload.get("title") or "").strip()
+    url = str(payload.get("url") or payload.get("share_url") or "").strip()
+    caption = str(payload.get("caption") or "").strip()
+    if caption and caption not in parts:
+        parts.append(caption)
+    if title:
+        parts.append(f"Tytuł: {title}")
+    if url:
+        parts.append(f"URL: {url}")
+    return "\n\n".join(parts).strip()
+
+
+def shortcut_media_kind(mime_type: str, filename: str, explicit_kind: str = "") -> str:
+    kind = explicit_kind.strip().lower()
+    if kind in {"photo", "image", "screenshot"}:
+        return "photo"
+    if kind in {"voice", "audio"}:
+        return "voice" if kind == "voice" else "audio"
+    if kind == "video":
+        return "video"
+    mime = mime_type.lower()
+    if mime.startswith("image/"):
+        return "photo"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("video/"):
+        return "video"
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"}:
+        return "photo"
+    if suffix in {".mp3", ".m4a", ".ogg", ".wav", ".aac"}:
+        return "audio"
+    if suffix in {".mp4", ".mov", ".webm"}:
+        return "video"
+    return "document"
+
+
+def shortcut_media_from_payload(payload: dict) -> tuple[dict | None, bytes, str]:
+    encoded = str(payload.get("media_base64") or payload.get("file_base64") or payload.get("attachment_base64") or "").strip()
+    if not encoded:
+        return None, b"", ""
+    mime_from_data_url = ""
+    if encoded.startswith("data:") and "," in encoded:
+        header, encoded = encoded.split(",", 1)
+        mime_from_data_url = header[5:].split(";", 1)[0]
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return None, b"", "invalid_base64"
+    max_bytes = int_cfg("AI_COUNCIL_SHORTCUT_MAX_BODY_BYTES", 25_000_000)
+    if len(data) > max_bytes:
+        return None, b"", f"media_too_large:{len(data)}>{max_bytes}"
+    filename = safe_filename(str(payload.get("filename") or payload.get("file_name") or "shortcut-media"), "shortcut-media")
+    mime_type = str(payload.get("mime_type") or mime_from_data_url or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    if "." not in filename:
+        suffix = mimetypes.guess_extension(mime_type) or ""
+        filename += suffix
+    kind = shortcut_media_kind(mime_type, filename, str(payload.get("kind") or ""))
+    caption = shortcut_text_from_payload(payload)
+    media = {
+        "kind": kind,
+        "file_id": "",
+        "file_unique_id": short_hash(f"{filename}:{len(data)}:{data[:128].hex()}"),
+        "file_size": len(data),
+        "mime_type": mime_type,
+        "caption": caption,
+        "file_name": filename,
+    }
+    return media, data, ""
+
+
+def shortcut_send_to_telegram(payload: dict) -> bool:
+    return payload_bool(payload, "send_telegram", bool_cfg("AI_COUNCIL_SHORTCUT_SEND_TELEGRAM", True))
+
+
+def shortcut_chat_id(payload: dict, send_telegram: bool) -> str:
+    if not send_telegram:
+        return ""
+    requested = str(payload.get("chat_id") or "").strip()
+    allowed = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    if requested and requested == allowed:
+        return requested
+    return allowed
+
+
+def capture_shortcut_media_payload(payload: dict, remote_addr: str = "") -> dict:
+    send_telegram = shortcut_send_to_telegram(payload)
+    chat_id = shortcut_chat_id(payload, send_telegram)
+    media, data, media_error = shortcut_media_from_payload(payload)
+    if media_error:
+        return {"ok": False, "status": "failed", "error": media_error}
+    if not media:
+        return {"ok": False, "status": "failed", "error": "missing_media"}
+    prompt = shortcut_text_from_payload(payload) or f"iPhone Shortcut {media.get('kind')} capture"
+    idem_key = str(payload.get("idempotency_key") or f"shortcut-media:{media.get('file_unique_id')}:{short_hash(prompt)}")
+    duplicate = find_recent_duplicate(idem_key)
+    if duplicate:
+        response = duplicate_response(duplicate)
+        if send_telegram and chat_id:
+            telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+        return {"ok": True, "status": "duplicate", "task_id": duplicate.get("task_id"), "response": response}
+    task = create_task(
+        prompt,
+        source="iphone_shortcut_media",
+        status="running",
+        command="/capture",
+        operators=["host"],
+        request_id=short_hash(f"{remote_addr}:{idem_key}"),
+        idempotency_key=idem_key,
+        chat_id_hash=short_hash(chat_id),
+    )
+    task_id = task["task_id"]
+    artifact_dir = task_artifact_dir(task_id)
+    target = media_target_path(artifact_dir, media, file_path=str(media.get("file_name") or "shortcut-media"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    metadata = {
+        "task_id": task_id,
+        "created_at": utc_now(),
+        "source": "iphone_shortcut",
+        "remote_addr_hash": short_hash(remote_addr),
+        "media": media,
+        "local_path": str(target),
+        "download_status": "provided_by_shortcut",
+    }
+    analysis = analyze_downloaded_media(metadata)
+    metadata["analysis"] = analysis
+    derived = run_media_derived_route(media_intent_text(media, analysis), chat_id, task, send_progress=send_telegram)
+    metadata["derived_intent"] = derived
+    metadata_path = artifact_dir / "media.json"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    facts = [
+        f"type={media.get('kind')}",
+        f"download_status=provided_by_shortcut",
+        f"local_path={target}",
+        f"analysis_status={analysis.get('status')}",
+        f"derived_status={derived.get('status')}",
+    ]
+    next_actions = []
+    if derived.get("task_id"):
+        next_actions.append(f"Sprawdź pracę z iPhone Shortcut media intent: /details {derived.get('task_id')}")
+    else:
+        next_actions.append(f"Przejrzyj capture: /details {task_id}")
+    result = {
+        "decision": "iPhone Shortcut media captured, analyzed and routed as AI Council intent.",
+        "facts": facts,
+        "dispute": "Shortcut ingress is private/token-gated; no external writes were executed.",
+        "next_actions": next_actions,
+        "ask_user": "Sprawdź wynik i zdecyduj, czy kontynuować child task.",
+        "raw_output": (
+            f"# iPhone Shortcut media capture {task_id}\n\n"
+            f"Media: {json.dumps(media, ensure_ascii=False, indent=2)}\n\n"
+            f"Local path: {target}\n\n"
+            f"Analysis status: {analysis.get('status')}\n\n"
+            f"## Analysis\n\n{analysis.get('text') or analysis.get('summary') or '(none)'}\n\n"
+            f"## Derived intent\n\n{json.dumps(derived, ensure_ascii=False, indent=2)}\n\n"
+            f"Metadata: {metadata_path}\n"
+        ),
+        "report": (
+            f"# iPhone Shortcut media capture {task_id}\n\n"
+            f"Local path: {target}\n\n"
+            f"Analysis: {analysis.get('status')}\n\n"
+            f"Derived: {json.dumps(derived, ensure_ascii=False, indent=2)}\n"
+        ),
+    }
+    artifact = save_task_artifacts(task_id, {"command": "/capture", "operators": ["host"], "prompt": prompt}, result)
+    update_task_status(
+        task_id,
+        "completed",
+        "iphone shortcut media captured",
+        report_path=artifact.get("report_path"),
+        summary_path=artifact.get("summary_path"),
+    )
+    response = str(artifact.get("summary") or format_telegram_summary(result, task_id))
+    if derived.get("response"):
+        response += "\n\n[Shortcut media intent]\n" + str(derived["response"])
+    if send_telegram and chat_id:
+        telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+    audit(
+        {
+            "command": "shortcut_media",
+            "operators": ["host"],
+            "status": "completed",
+            "task_id": task_id,
+            "remote_addr_hash": short_hash(remote_addr),
+            "output_preview": response[:300],
+        }
+    )
+    return {"ok": True, "status": "completed", "task_id": task_id, "response": response, "derived": derived}
+
+
+def process_shortcut_payload(payload: dict, remote_addr: str = "") -> dict:
+    ensure_council_dirs()
+    if any(payload.get(key) for key in ("media_base64", "file_base64", "attachment_base64")):
+        return capture_shortcut_media_payload(payload, remote_addr=remote_addr)
+    text = shortcut_text_from_payload(payload)
+    if not text:
+        return {"ok": False, "status": "failed", "error": "missing_text_or_media"}
+    send_telegram = shortcut_send_to_telegram(payload)
+    chat_id = shortcut_chat_id(payload, send_telegram)
+    route = route_text(text)
+    idem_key = str(payload.get("idempotency_key") or f"shortcut-text:{short_hash(text)}")
+    duplicate = find_recent_duplicate(idem_key) if route_needs_task(route) else None
+    task = None
+    background_started = False
+    if duplicate:
+        response = duplicate_response(duplicate)
+        status = "duplicate"
+        task_id = str(duplicate.get("task_id") or "")
+    elif route_needs_task(route):
+        task = create_task(
+            text,
+            source="iphone_shortcut",
+            status="running",
+            command=str(route.get("command") or ""),
+            operators=route.get("operators", []),
+            request_id=short_hash(f"{remote_addr}:{idem_key}"),
+            idempotency_key=idem_key,
+            chat_id_hash=short_hash(chat_id),
+        )
+        task_id = task["task_id"]
+        route = {**route, "task_id": task_id}
+        if route_should_background(route):
+            background_started = True
+            response = start_background_job(route, chat_id=chat_id, task_id=task_id, send_progress=send_telegram)
+            status = "running_background"
+        else:
+            response = build_response(route, chat_id=chat_id)
+            status = "waiting_approval" if route.get("command") in SIDE_EFFECT_COMMANDS else "completed"
+        update_task_status(task_id, status, "shortcut response built")
+    else:
+        response = build_response(route, chat_id=chat_id)
+        status = "responded"
+        task_id = ""
+    if send_telegram and chat_id:
+        telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+    audit(
+        {
+            "command": route.get("command"),
+            "operators": route.get("operators", []),
+            "status": status,
+            "task_id": task_id,
+            "source": "iphone_shortcut",
+            "remote_addr_hash": short_hash(remote_addr),
+            "background_started": background_started,
+            "output_preview": str(response)[:300],
+        }
+    )
+    return {
+        "ok": True,
+        "status": status,
+        "task_id": task_id,
+        "command": route.get("command"),
+        "operators": route.get("operators", []),
+        "response": response,
+    }
+
+
+def shortcut_authorized(headers: dict) -> tuple[bool, str]:
+    token = cfg("AI_COUNCIL_SHORTCUT_TOKEN")
+    if not token:
+        return False, "shortcut_token_not_configured"
+    supplied = str(headers.get("X-AI-Council-Token") or headers.get("x-ai-council-token") or "").strip()
+    auth = str(headers.get("Authorization") or headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        supplied = auth.split(" ", 1)[1].strip()
+    if hmac.compare_digest(token, supplied):
+        return True, "authorized"
+    return False, "invalid_token"
+
+
+def shortcut_json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict) -> None:
+    body = json.dumps(sanitize_for_audit(payload), ensure_ascii=False).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+class ShortcutRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args) -> None:
+        print(f"shortcut_http {compact_line(format % args, 180)}")
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path in {"/health", "/"}:
+            shortcut_json_response(self, 200, {"ok": True, "service": "ai-council-shortcuts", "status": "ready"})
+            return
+        shortcut_json_response(self, 404, {"ok": False, "error": "not_found"})
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path not in {"/shortcut", "/shortcut/task", "/ask"}:
+            shortcut_json_response(self, 404, {"ok": False, "error": "not_found"})
+            return
+        authorized, reason = shortcut_authorized(dict(self.headers.items()))
+        if not authorized:
+            shortcut_json_response(self, 401, {"ok": False, "error": reason})
+            return
+        max_body = int_cfg("AI_COUNCIL_SHORTCUT_MAX_BODY_BYTES", 25_000_000)
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0:
+            shortcut_json_response(self, 400, {"ok": False, "error": "empty_body"})
+            return
+        if length > max_body:
+            shortcut_json_response(self, 413, {"ok": False, "error": "body_too_large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            shortcut_json_response(self, 400, {"ok": False, "error": "invalid_json"})
+            return
+        if not isinstance(payload, dict):
+            shortcut_json_response(self, 400, {"ok": False, "error": "json_object_required"})
+            return
+        result = process_shortcut_payload(payload, remote_addr=str(self.client_address[0] if self.client_address else ""))
+        shortcut_json_response(self, 200 if result.get("ok") else 400, result)
+
+
+def serve_shortcuts(host: str = "", port: int = 0) -> int:
+    token = cfg("AI_COUNCIL_SHORTCUT_TOKEN")
+    if not token:
+        print("shortcut_server=failed missing AI_COUNCIL_SHORTCUT_TOKEN")
+        return 1
+    bind_host = host or cfg("AI_COUNCIL_SHORTCUT_HOST", "127.0.0.1")
+    bind_port = port or int_cfg("AI_COUNCIL_SHORTCUT_PORT", 8788)
+    ensure_council_dirs()
+    server = ThreadingHTTPServer((bind_host, bind_port), ShortcutRequestHandler)
+    print(f"shortcut_server_started host={bind_host} port={bind_port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("shortcut_server_stopped")
+        return 0
+    finally:
+        server.server_close()
+    return 0
+
+
 def extract_fact_lines(text: str, limit: int = 3) -> list[str]:
     facts: list[str] = []
     for raw in (text or "").splitlines():
@@ -1826,8 +2183,8 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.5 active.\n"
-        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, final delivery cards z Status/Details/Facts/Next, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.5 active + L4.0 Shortcuts-ready.\n"
+        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, final delivery cards z Status/Details/Facts/Next, opcjonalny token-gated iPhone Shortcuts ingress przez serve-shortcuts, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -1843,7 +2200,7 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.5 active: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L3.5 active + L4.0 Shortcuts-ready: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
@@ -3511,7 +3868,10 @@ def response_reply_markup(response: str) -> dict | None:
         return action_reply_markup(action_match.group(1))
     task_match = re.search(r"\b(task-[0-9]{8}-[0-9]{6}-[A-Za-z0-9]+)", response or "")
     if task_match:
-        return task_reply_markup(task_match.group(1))
+        task_id = task_match.group(1)
+        if "DECYZJA:" in (response or "") or f"Details: /details {task_id}" in (response or ""):
+            return task_delivery_reply_markup(task_id)
+        return task_reply_markup(task_id)
     return None
 
 
@@ -4739,6 +5099,9 @@ def main() -> int:
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--send", action="store_true", default=True, help="Actually send Telegram replies")
     serve_parser.add_argument("--limit", type=int, default=10)
+    shortcuts = sub.add_parser("serve-shortcuts")
+    shortcuts.add_argument("--host", default="", help="Shortcuts bind host, default AI_COUNCIL_SHORTCUT_HOST or 127.0.0.1")
+    shortcuts.add_argument("--port", type=int, default=0, help="Shortcuts bind port, default AI_COUNCIL_SHORTCUT_PORT or 8788")
     worker = sub.add_parser("run-background-job")
     worker.add_argument("--task-id", required=True)
     route = sub.add_parser("dry-route")
@@ -4765,6 +5128,8 @@ def main() -> int:
         return listen_loop(send=args.send, seconds=args.seconds, limit=args.limit)
     if args.cmd == "serve":
         return serve(send=args.send, limit=args.limit)
+    if args.cmd == "serve-shortcuts":
+        return serve_shortcuts(host=args.host, port=args.port)
     if args.cmd == "run-background-job":
         return run_background_job(args.task_id)
     if args.cmd == "dry-route":

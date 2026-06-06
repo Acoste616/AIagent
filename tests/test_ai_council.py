@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import subprocess
@@ -122,6 +123,20 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "status:task-20260606-120000-abcdef")
         self.assertEqual(markup["inline_keyboard"][1][0]["callback_data"], "cancel:task-20260606-120000-abcdef")
+
+    def test_response_reply_markup_for_completed_task_uses_delivery_card(self):
+        markup = ai_council.response_reply_markup(
+            "[AI Council] task-20260606-120000-abcdef\nDECYZJA: gotowe\nDetails: /details task-20260606-120000-abcdef"
+        )
+        callback_data = [
+            button["callback_data"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+
+        self.assertIn("facts:task-20260606-120000-abcdef", callback_data)
+        self.assertIn("next:task-20260606-120000-abcdef", callback_data)
+        self.assertNotIn("cancel:task-20260606-120000-abcdef", callback_data)
 
     def test_task_delivery_reply_markup_has_artifact_buttons_without_cancel(self):
         markup = ai_council.task_delivery_reply_markup("task-20260606-120000-abcdef")
@@ -864,6 +879,79 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertEqual(child["status"], "waiting_approval")
         self.assertEqual(action["status"], "pending")
         self.assertFalse((workspaces / "shared" / "from-voice.txt").exists())
+
+    def test_shortcut_authorized_requires_matching_token(self):
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_SHORTCUT_TOKEN":
+                return "secret-token"
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg):
+            ok, reason = ai_council.shortcut_authorized({"X-AI-Council-Token": "secret-token"})
+            bad_ok, bad_reason = ai_council.shortcut_authorized({"X-AI-Council-Token": "wrong"})
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "authorized")
+        self.assertFalse(bad_ok)
+        self.assertEqual(bad_reason, "invalid_token")
+
+    def test_shortcut_text_payload_starts_background_task(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] shortcut child started"
+            ) as start:
+                result = ai_council.process_shortcut_payload(
+                    {"text": "uruchom flow zrób plan", "send_telegram": False},
+                    remote_addr="127.0.0.1",
+                )
+                task = ai_council.get_latest_task(result["task_id"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "running_background")
+        self.assertEqual(result["command"], "/flow")
+        self.assertEqual(task["source"], "iphone_shortcut")
+        start.assert_called_once()
+
+    def test_shortcut_media_payload_saves_capture_and_routes_intent(self):
+        media_text = "uruchom flow zrób plan z tego pliku"
+        payload = {
+            "filename": "note.txt",
+            "mime_type": "text/plain",
+            "media_base64": base64.b64encode(media_text.encode("utf-8")).decode("ascii"),
+            "send_telegram": False,
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] shortcut media child started"
+            ) as start:
+                result = ai_council.process_shortcut_payload(payload, remote_addr="127.0.0.1")
+                parent = ai_council.get_latest_task(result["task_id"])
+                artifact = ai_council.get_latest_task_artifact(result["task_id"])
+                metadata = json.loads((root / "artifacts" / result["task_id"] / "media.json").read_text(encoding="utf-8"))
+                report_exists = Path(artifact["report_path"]).exists()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(parent["source"], "iphone_shortcut_media")
+        self.assertEqual(metadata["analysis"]["status"], "text_extracted")
+        self.assertEqual(result["derived"]["status"], "running_background")
+        self.assertIn("Details:", result["response"])
+        self.assertTrue(report_exists)
+        start.assert_called_once()
 
     def test_grok_image_analysis_sends_data_url(self):
         def fake_cfg(key, default=""):
