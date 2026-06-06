@@ -724,6 +724,62 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertNotIn("RUNNING: worker działa", sent_text)
         self.assertIn("Tak, działam.", sent_text)
 
+    def test_telegram_media_from_message_picks_largest_photo(self):
+        message = {
+            "caption": "screenshot do analizy",
+            "photo": [
+                {"file_id": "small", "file_unique_id": "u-small", "file_size": 10, "width": 90, "height": 90},
+                {"file_id": "large", "file_unique_id": "u-large", "file_size": 100, "width": 1280, "height": 900},
+            ],
+        }
+
+        media = ai_council.telegram_media_from_message(message)
+
+        self.assertEqual(media["kind"], "photo")
+        self.assertEqual(media["file_id"], "large")
+        self.assertEqual(media["caption"], "screenshot do analizy")
+
+    def test_capture_telegram_media_message_saves_artifact(self):
+        def fake_download(file_path, target, timeout=60):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"hello")
+            return True, str(target)
+
+        message = {
+            "message_id": 42,
+            "caption": "plik do taska",
+            "document": {
+                "file_id": "file-1",
+                "file_unique_id": "unique-1",
+                "file_name": "brief.txt",
+                "mime_type": "text/plain",
+                "file_size": 5,
+            },
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(
+                ai_council, "telegram_get_file_info", return_value={"ok": True, "result": {"file_path": "documents/brief.txt"}}
+            ), patch.object(ai_council, "telegram_download_file", side_effect=fake_download):
+                response, task = ai_council.capture_telegram_media_message(message, chat_id="553", update_id=100)
+                latest = ai_council.get_latest_task(task["task_id"])
+                artifact = ai_council.get_latest_task_artifact(task["task_id"])
+                media_files = list((root / "artifacts" / task["task_id"] / "media").glob("*"))
+                report_exists = Path(artifact["report_path"]).exists()
+                media_content = media_files[0].read_bytes()
+
+        self.assertIn("Details:", response)
+        self.assertEqual(latest["status"], "completed")
+        self.assertTrue(report_exists)
+        self.assertEqual(len(media_files), 1)
+        self.assertEqual(media_content, b"hello")
+
     def test_health_response_is_available_without_network_calls(self):
         with temp_dir() as tmp:
             root = Path(tmp)

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import difflib
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import signal
@@ -749,6 +750,207 @@ def task_artifact_dir(task_id: str) -> Path:
     return ARTIFACTS_DIR / safe_id
 
 
+def safe_filename(value: str, fallback: str = "telegram-media") -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_.-]", "_", (value or "").strip())
+    clean = clean.strip("._")
+    return clean or fallback
+
+
+def telegram_media_from_message(message: dict) -> dict | None:
+    caption = str(message.get("caption") or "").strip()
+    if message.get("voice"):
+        item = message["voice"]
+        return {
+            "kind": "voice",
+            "file_id": item.get("file_id", ""),
+            "file_unique_id": item.get("file_unique_id", ""),
+            "file_size": item.get("file_size", 0),
+            "mime_type": item.get("mime_type", "audio/ogg"),
+            "duration": item.get("duration", 0),
+            "caption": caption,
+            "file_name": "voice.ogg",
+        }
+    if message.get("audio"):
+        item = message["audio"]
+        return {
+            "kind": "audio",
+            "file_id": item.get("file_id", ""),
+            "file_unique_id": item.get("file_unique_id", ""),
+            "file_size": item.get("file_size", 0),
+            "mime_type": item.get("mime_type", ""),
+            "duration": item.get("duration", 0),
+            "caption": caption,
+            "file_name": item.get("file_name") or "audio",
+        }
+    if message.get("document"):
+        item = message["document"]
+        return {
+            "kind": "document",
+            "file_id": item.get("file_id", ""),
+            "file_unique_id": item.get("file_unique_id", ""),
+            "file_size": item.get("file_size", 0),
+            "mime_type": item.get("mime_type", ""),
+            "caption": caption,
+            "file_name": item.get("file_name") or "document",
+        }
+    if message.get("photo"):
+        photos = list(message.get("photo") or [])
+        if not photos:
+            return None
+        item = max(photos, key=lambda row: int(row.get("file_size") or row.get("width", 0) * row.get("height", 0) or 0))
+        return {
+            "kind": "photo",
+            "file_id": item.get("file_id", ""),
+            "file_unique_id": item.get("file_unique_id", ""),
+            "file_size": item.get("file_size", 0),
+            "mime_type": "image/jpeg",
+            "width": item.get("width", 0),
+            "height": item.get("height", 0),
+            "caption": caption,
+            "file_name": "photo.jpg",
+        }
+    if message.get("video"):
+        item = message["video"]
+        return {
+            "kind": "video",
+            "file_id": item.get("file_id", ""),
+            "file_unique_id": item.get("file_unique_id", ""),
+            "file_size": item.get("file_size", 0),
+            "mime_type": item.get("mime_type", "video/mp4"),
+            "duration": item.get("duration", 0),
+            "width": item.get("width", 0),
+            "height": item.get("height", 0),
+            "caption": caption,
+            "file_name": item.get("file_name") or "video.mp4",
+        }
+    return None
+
+
+def telegram_get_file_info(file_id: str) -> dict:
+    if not file_id:
+        return {"ok": False, "error": "missing_file_id"}
+    return request_json(telegram_url("getFile", {"file_id": file_id}), timeout=20)
+
+
+def telegram_file_download_url(file_path: str) -> str:
+    token = cfg("TELEGRAM_BOT_TOKEN")
+    return f"https://api.telegram.org/file/bot{token}/{file_path}"
+
+
+def telegram_download_file(file_path: str, target: Path, timeout: int = 60) -> tuple[bool, str]:
+    if not file_path:
+        return False, "missing file_path"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    req = Request(telegram_file_download_url(file_path), method="GET")
+    try:
+        with urlopen(req, timeout=timeout) as res:
+            target.write_bytes(res.read())
+        return True, str(target)
+    except HTTPError as exc:
+        return False, f"http_{exc.code}"
+    except URLError as exc:
+        return False, f"url_error: {exc.reason}"
+    except TimeoutError:
+        return False, "timeout"
+
+
+def media_target_path(artifact_dir: Path, media: dict, file_path: str = "") -> Path:
+    source_name = media.get("file_name") or Path(file_path).name or media.get("kind") or "telegram-media"
+    name = safe_filename(str(source_name), "telegram-media")
+    if "." not in name:
+        suffix = Path(file_path).suffix
+        if not suffix:
+            suffix = mimetypes.guess_extension(str(media.get("mime_type") or "")) or ""
+        name += suffix
+    unique = safe_filename(str(media.get("file_unique_id") or media.get("file_id") or short_hash(name)), "file")
+    return artifact_dir / "media" / f"{unique}-{name}"
+
+
+def capture_telegram_media_message(message: dict, chat_id: str, update_id: int | None = None) -> tuple[str, dict | None]:
+    media = telegram_media_from_message(message)
+    if not media:
+        return "[Council] Nie znalazłem obsługiwanego media w wiadomości.", None
+    media_id = str(media.get("file_unique_id") or media.get("file_id") or update_id or "")
+    caption = str(media.get("caption") or "").strip()
+    prompt = caption or f"Telegram {media.get('kind')} capture"
+    idem_key = f"telegram-media:{chat_id}:{message.get('message_id')}:{media_id}"
+    duplicate = find_recent_duplicate(idem_key)
+    if duplicate:
+        return duplicate_response(duplicate), duplicate
+    task = create_task(
+        prompt,
+        source="telegram_media",
+        status="running",
+        command="/capture",
+        operators=["host"],
+        request_id=short_hash(f"{chat_id}:{message.get('message_id')}:{media_id}"),
+        idempotency_key=idem_key,
+        chat_id_hash=short_hash(chat_id),
+        update_id=update_id,
+    )
+    task_id = task["task_id"]
+    artifact_dir = task_artifact_dir(task_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    file_info = telegram_get_file_info(str(media.get("file_id") or ""))
+    file_path = ""
+    local_path = ""
+    download_status = "not_downloaded"
+    if file_info.get("ok"):
+        file_path = str((file_info.get("result") or {}).get("file_path") or "")
+        target = media_target_path(artifact_dir, media, file_path=file_path)
+        downloaded, detail = telegram_download_file(file_path, target)
+        download_status = "downloaded" if downloaded else f"failed: {detail}"
+        local_path = str(target) if downloaded else ""
+    else:
+        download_status = f"getFile failed: {file_info.get('error') or file_info.get('description')}"
+
+    metadata = {
+        "task_id": task_id,
+        "created_at": utc_now(),
+        "telegram_message_id": message.get("message_id"),
+        "media": media,
+        "telegram_file_path": file_path,
+        "local_path": local_path,
+        "download_status": download_status,
+    }
+    metadata_path = artifact_dir / "media.json"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    facts = [
+        f"type={media.get('kind')}",
+        f"download_status={download_status}",
+        f"local_path={local_path or 'not saved'}",
+    ]
+    result = {
+        "decision": "Telegram media captured as AI Council task.",
+        "facts": facts,
+        "dispute": "Treść pliku nie jest jeszcze analizowana modelem; L3.1 zapisuje media lokalnie i robi ślad audytowy.",
+        "next_actions": [
+            f"Przejrzyj artefakt: /details {task_id}",
+            "Dodaj opis/cel do tego taska albo poproś o analizę po włączeniu transkrypcji/OCR.",
+            "Następny sprint: voice transcription i screenshot/OCR routing.",
+        ],
+        "ask_user": "Napisz, co mam zrobić z tym plikiem albo wyślij kolejną wiadomość z kontekstem.",
+        "raw_output": json.dumps(metadata, ensure_ascii=False, indent=2),
+        "report": (
+            f"# Telegram media capture: {task_id}\n\n"
+            f"Kind: {media.get('kind')}\n\n"
+            f"Caption: {caption or '(none)'}\n\n"
+            f"Download: {download_status}\n\n"
+            f"Local path: {local_path or '(not saved)'}\n\n"
+            f"Metadata: {metadata_path}\n"
+        ),
+    }
+    artifact = save_task_artifacts(task_id, {"command": "/capture", "operators": ["host"], "prompt": prompt}, result)
+    update_task_status(
+        task_id,
+        "completed",
+        "telegram media captured",
+        report_path=artifact.get("report_path"),
+        summary_path=artifact.get("summary_path"),
+    )
+    return str(artifact.get("summary") or format_telegram_summary(result, task_id)), task
+
+
 def extract_fact_lines(text: str, limit: int = 3) -> list[str]:
     facts: list[str] = []
     for raw in (text or "").splitlines():
@@ -1347,8 +1549,8 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.0 active.\n"
-        "Teraz: Telegram, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.1 active.\n"
+        "Teraz: Telegram, voice/photo/document/video capture, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -1364,8 +1566,8 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.0 active: inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L3.1 active: Telegram media capture, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; voice/photo/document/video -> local capture artifact; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
@@ -3995,12 +4197,17 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
             processed += 1
             continue
         message = update.get("message") or update.get("edited_message") or {}
-        text = message.get("text") or ""
+        media = telegram_media_from_message(message)
+        text = message.get("text") or message.get("caption") or ""
         chat_id = str((message.get("chat") or {}).get("id", ""))
         allowed = is_allowed_message(message)
-        route = route_text(text)
+        route = (
+            {"command": "/capture", "operators": ["host"], "prompt": text or str((media or {}).get("kind") or ""), "mode": "capture"}
+            if media
+            else route_text(text)
+        )
         event = {
-            "request_id": short_hash(f"{update.get('update_id')}:{text}"),
+            "request_id": short_hash(f"{update.get('update_id')}:{text}:{(media or {}).get('file_unique_id', '')}"),
             "update_id": update.get("update_id"),
             "chat_id_hash": short_hash(chat_id),
             "user_id_hash": short_hash(str((message.get("from") or {}).get("id", ""))),
@@ -4010,18 +4217,47 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
             "send_requested": send,
             "dry_send_env": bool_cfg("AI_COUNCIL_DRY_SEND", True),
             "prompt_preview": route.get("prompt", "")[:160],
+            "media_kind": (media or {}).get("kind", ""),
         }
         if not allowed:
             event["status"] = "ignored_not_allowed"
             audit(event)
             continue
-        if not text:
+        if not text and not media:
             event["status"] = "ignored_no_text"
             audit(event)
             continue
 
         print(f"processing update={update.get('update_id')} command={route.get('command')} send={send}")
         started = time.time()
+        if media:
+            try:
+                response, media_task = capture_telegram_media_message(message, chat_id=chat_id, update_id=update.get("update_id"))
+                event["duration_ms"] = int((time.time() - started) * 1000)
+                event["output_preview"] = response[:300]
+                if media_task:
+                    event["task_id"] = media_task.get("task_id")
+                if send:
+                    sent = telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+                    event["status"] = "responded" if sent else "send_failed"
+                else:
+                    event["status"] = "dry_responded"
+                    print(response)
+            except Exception as exc:
+                response = f"[Council] Media capture error: {compact_line(redact_secrets(str(exc)), 500)}"
+                event["duration_ms"] = int((time.time() - started) * 1000)
+                event["output_preview"] = response[:300]
+                event["status"] = "failed"
+                if send:
+                    telegram_send_message(chat_id, response)
+                else:
+                    print(response)
+            audit(event)
+            processed += 1
+            if chat_id:
+                maybe_send_action_nudges(chat_id, send)
+            continue
+
         task = None
         duplicate = None
         background_started = False
