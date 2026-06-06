@@ -767,7 +767,9 @@ class L25BackgroundTests(unittest.TestCase):
                 ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
             ), patch.object(
                 ai_council, "telegram_get_file_info", return_value={"ok": True, "result": {"file_path": "documents/brief.txt"}}
-            ), patch.object(ai_council, "telegram_download_file", side_effect=fake_download):
+            ), patch.object(ai_council, "telegram_download_file", side_effect=fake_download), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] derived-start"
+            ):
                 response, task = ai_council.capture_telegram_media_message(message, chat_id="553", update_id=100)
                 latest = ai_council.get_latest_task(task["task_id"])
                 artifact = ai_council.get_latest_task_artifact(task["task_id"])
@@ -783,6 +785,49 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertEqual(media_content, b"hello")
         self.assertEqual(metadata["analysis"]["status"], "text_extracted")
         self.assertIn("hello", metadata["analysis"]["text"])
+        self.assertIn("derived_intent", metadata)
+
+    def test_media_intent_transcript_starts_background_route(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            parent = {"task_id": "task-parent"}
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] child started"
+            ) as start:
+                result = ai_council.run_media_derived_route("uruchom flow zrób plan", "553", parent)
+                child = ai_council.latest_tasks(limit=1)[0]
+
+        self.assertEqual(result["status"], "running_background")
+        self.assertEqual(result["command"], "/flow")
+        self.assertEqual(child["source"], "telegram_media_intent")
+        start.assert_called_once()
+
+    def test_media_intent_side_effect_creates_pending_action(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            workspaces = root / "workspaces"
+            parent = {"task_id": "task-parent"}
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", workspaces), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ):
+                result = ai_council.run_media_derived_route("/write shared/from-voice.txt = hello", "553", parent)
+                child = ai_council.latest_tasks(limit=1)[0]
+                action = ai_council.latest_by_id(root / "state" / "actions.jsonl", "action_id", limit=1)[0]
+
+        self.assertEqual(result["status"], "waiting_approval")
+        self.assertEqual(child["status"], "waiting_approval")
+        self.assertEqual(action["status"], "pending")
+        self.assertFalse((workspaces / "shared" / "from-voice.txt").exists())
 
     def test_grok_image_analysis_sends_data_url(self):
         def fake_cfg(key, default=""):

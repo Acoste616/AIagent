@@ -1063,6 +1063,69 @@ def analyze_downloaded_media(metadata: dict) -> dict:
     }
 
 
+def media_intent_text(media: dict, analysis: dict) -> str:
+    if not bool_cfg("AI_COUNCIL_MEDIA_AUTO_ROUTE", True):
+        return ""
+    status = str(analysis.get("status") or "")
+    if status not in {"transcribed", "text_extracted", "vision_analyzed"}:
+        return ""
+    text = str(analysis.get("text") or analysis.get("summary") or "").strip()
+    if not text:
+        return ""
+    caption = str(media.get("caption") or "").strip()
+    if caption and caption not in text:
+        text = f"{caption}\n\n{text}"
+    max_chars = int_cfg("AI_COUNCIL_MEDIA_INTENT_MAX_CHARS", 3000)
+    return text[:max_chars].strip()
+
+
+def run_media_derived_route(intent_text: str, chat_id: str, parent_task: dict, send_progress: bool = True) -> dict:
+    clean_text = intent_text.strip()
+    if not clean_text:
+        return {"status": "skipped", "reason": "empty intent"}
+    route = route_text(clean_text)
+    route = {**route, "parent_task_id": parent_task.get("task_id", "")}
+    derived = {
+        "status": "routed",
+        "command": route.get("command", ""),
+        "operators": route.get("operators", []),
+        "prompt_preview": compact_line(clean_text, 240),
+    }
+    if route_needs_task(route):
+        idem_key = f"media-derived:{parent_task.get('task_id')}:{short_hash(clean_text)}"
+        duplicate = find_recent_duplicate(idem_key)
+        if duplicate:
+            return {
+                **derived,
+                "status": "duplicate",
+                "task_id": duplicate.get("task_id"),
+                "response": duplicate_response(duplicate),
+            }
+        child = create_task(
+            clean_text,
+            source="telegram_media_intent",
+            status="running",
+            command=str(route.get("command") or ""),
+            operators=route.get("operators", []),
+            request_id=short_hash(f"{parent_task.get('task_id')}:{clean_text}"),
+            idempotency_key=idem_key,
+            chat_id_hash=short_hash(chat_id),
+        )
+        route = {**route, "task_id": child["task_id"]}
+        if route_should_background(route):
+            response = start_background_job(route, chat_id=chat_id, task_id=child["task_id"], send_progress=send_progress)
+            status = "running_background"
+            update_note = "media-derived background response sent"
+        else:
+            response = build_response(route, chat_id=chat_id)
+            status = "waiting_approval" if route.get("command") in SIDE_EFFECT_COMMANDS else "completed"
+            update_note = "media-derived response built"
+        update_task_status(child["task_id"], status, update_note, parent_task_id=parent_task.get("task_id"))
+        return {**derived, "status": status, "task_id": child["task_id"], "response": response}
+    response = build_response(route, chat_id=chat_id)
+    return {**derived, "status": "responded", "response": response}
+
+
 def capture_telegram_media_message(message: dict, chat_id: str, update_id: int | None = None) -> tuple[str, dict | None]:
     media = telegram_media_from_message(message)
     if not media:
@@ -1112,6 +1175,8 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
     }
     analysis = analyze_downloaded_media(metadata) if local_path else {"status": "not_available", "reason": download_status, "text": ""}
     metadata["analysis"] = analysis
+    derived = run_media_derived_route(media_intent_text(media, analysis), chat_id, task, send_progress=True)
+    metadata["derived_intent"] = derived
     metadata_path = artifact_dir / "media.json"
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     facts = [
@@ -1119,15 +1184,21 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
         f"download_status={download_status}",
         f"local_path={local_path or 'not saved'}",
         f"analysis_status={analysis.get('status')}",
+        f"derived_status={derived.get('status')}",
     ]
+    derived_next = []
+    if derived.get("task_id"):
+        derived_next.append(f"Sprawdź pracę z media intent: /details {derived.get('task_id')}")
+    elif derived.get("response"):
+        derived_next.append("Wynik media intent jest w odpowiedzi capture.")
     result = {
-        "decision": "Telegram media captured and analyzed as AI Council task.",
+        "decision": "Telegram media captured, analyzed and routed as AI Council intent.",
         "facts": facts,
-        "dispute": "L3.3 analizuje tekst, obrazy i audio przez STT; jeśli API lub format zawiedzie, media zostaje zapisane z jawnym statusem błędu.",
+        "dispute": "L3.4 używa tego samego routingu i approval co zwykły tekst; media nie dostaje większych uprawnień.",
         "next_actions": [
             f"Przejrzyj artefakt: /details {task_id}",
+            *derived_next,
             "Dodaj opis/cel do tego taska albo poproś o kolejny krok na podstawie analizy.",
-            "Następny sprint: automatyczne tworzenie zadań z transkryptu i lepsze streszczenia voice notes.",
         ],
         "ask_user": "Napisz, co mam zrobić z tym plikiem albo wyślij kolejną wiadomość z kontekstem.",
         "raw_output": json.dumps(metadata, ensure_ascii=False, indent=2),
@@ -1139,6 +1210,7 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
             f"Local path: {local_path or '(not saved)'}\n\n"
             f"Analysis status: {analysis.get('status')}\n\n"
             f"## Analysis\n\n{analysis.get('text') or analysis.get('summary') or '(none)'}\n\n"
+            f"## Derived intent\n\n{json.dumps(derived, ensure_ascii=False, indent=2)}\n\n"
             f"Metadata: {metadata_path}\n"
         ),
     }
@@ -1150,7 +1222,10 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
         report_path=artifact.get("report_path"),
         summary_path=artifact.get("summary_path"),
     )
-    return str(artifact.get("summary") or format_telegram_summary(result, task_id)), task
+    response = str(artifact.get("summary") or format_telegram_summary(result, task_id))
+    if derived.get("response"):
+        response += "\n\n[Media intent]\n" + str(derived["response"])
+    return response, task
 
 
 def extract_fact_lines(text: str, limit: int = 3) -> list[str]:
@@ -1751,8 +1826,8 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.3 active.\n"
-        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.4 active.\n"
+        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -1768,8 +1843,8 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.3 active: Telegram media capture + text/image/STT analysis, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction; photo/screenshot -> Grok vision/OCR; voice/audio/video -> xAI STT REST jeśli XAI_API_KEY i format są obsługiwane; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L3.4 active: Telegram media capture + text/image/STT analysis + media-to-intent routing, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
