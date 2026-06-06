@@ -1826,8 +1826,8 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.4 active.\n"
-        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Capabilities L3.5 active.\n"
+        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, final delivery cards z Status/Details/Facts/Next, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Komendy i naturalne frazy: status, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -1843,7 +1843,7 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.4 active: Telegram media capture + text/image/STT analysis + media-to-intent routing, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L3.5 active: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
@@ -3071,7 +3071,7 @@ def run_background_job(task_id: str) -> int:
             }
         )
         if send_progress and chat_id:
-            telegram_send_message(chat_id, artifact.get("summary", ""))
+            telegram_send_message_with_markup(chat_id, artifact.get("summary", ""), task_delivery_reply_markup(task_id))
         return 0
     except Exception as exc:
         duration_ms = int((time.time() - started) * 1000)
@@ -3492,6 +3492,15 @@ def task_reply_markup(task_id: str) -> dict:
         [
             [("Status", f"status:{task_id}"), ("Details", f"details:{task_id}")],
             [("Cancel", f"cancel:{task_id}")],
+        ]
+    )
+
+
+def task_delivery_reply_markup(task_id: str) -> dict:
+    return inline_keyboard(
+        [
+            [("Status", f"status:{task_id}"), ("Details", f"details:{task_id}")],
+            [("Facts", f"facts:{task_id}"), ("Next", f"next:{task_id}")],
         ]
     )
 
@@ -4460,6 +4469,10 @@ def handle_callback_query(callback: dict) -> tuple[str, str]:
         return task_status_response(target), "status"
     if action == "details":
         return details_response(target), "details"
+    if action == "facts":
+        return facts_response(target), "facts"
+    if action == "next":
+        return next_response(target), "next"
     if action == "actions":
         return actions_response(), "actions"
     return f"[Council] Nieznany callback `{compact_line(data, 80)}`.", "unknown_callback"

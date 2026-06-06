@@ -123,6 +123,19 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "status:task-20260606-120000-abcdef")
         self.assertEqual(markup["inline_keyboard"][1][0]["callback_data"], "cancel:task-20260606-120000-abcdef")
 
+    def test_task_delivery_reply_markup_has_artifact_buttons_without_cancel(self):
+        markup = ai_council.task_delivery_reply_markup("task-20260606-120000-abcdef")
+        callback_data = [
+            button["callback_data"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+
+        self.assertIn("details:task-20260606-120000-abcdef", callback_data)
+        self.assertIn("facts:task-20260606-120000-abcdef", callback_data)
+        self.assertIn("next:task-20260606-120000-abcdef", callback_data)
+        self.assertNotIn("cancel:task-20260606-120000-abcdef", callback_data)
+
     def test_callback_approve_routes_to_approve_response(self):
         with patch.object(ai_council, "approve_response", return_value="[Council] Approved: act-1") as approve:
             response, status = ai_council.handle_callback_query({"data": "approve:act-1"})
@@ -130,6 +143,20 @@ class OperatorOutputTests(unittest.TestCase):
         approve.assert_called_once_with("act-1")
         self.assertEqual(status, "approved")
         self.assertIn("Approved", response)
+
+    def test_callback_facts_and_next_route_to_artifact_responses(self):
+        with patch.object(ai_council, "facts_response", return_value="[Council] Facts task-1") as facts, patch.object(
+            ai_council, "next_response", return_value="[Council] Next task-1"
+        ) as next_response:
+            facts_text, facts_status = ai_council.handle_callback_query({"data": "facts:task-1"})
+            next_text, next_status = ai_council.handle_callback_query({"data": "next:task-1"})
+
+        facts.assert_called_once_with("task-1")
+        next_response.assert_called_once_with("task-1")
+        self.assertEqual(facts_status, "facts")
+        self.assertEqual(next_status, "next")
+        self.assertIn("Facts", facts_text)
+        self.assertIn("Next", next_text)
 
     def test_recipe_run_needs_background_task(self):
         route = ai_council.route_text("/recipe run daily_system_digest")
@@ -712,7 +739,7 @@ class L25BackgroundTests(unittest.TestCase):
                 ai_council, "LOG_DIR", root / "logs"
             ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
                 ai_council, "codex_response", return_value="[Codex]\nTak, działam."
-            ), patch.object(ai_council, "telegram_send_message", return_value=True) as send:
+            ), patch.object(ai_council, "telegram_send_message_with_markup", return_value=True) as send:
                 task = ai_council.create_task("Działasz?", status="running_background", command="codex_default", operators=["codex"])
                 task_id = task["task_id"]
                 route = {"command": "codex_default", "operators": ["codex"], "prompt": "Działasz?", "task_id": task_id}
@@ -722,8 +749,17 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(send.call_count, 1)
         sent_text = send.call_args.args[1]
+        sent_markup = send.call_args.args[2]
         self.assertNotIn("RUNNING: worker działa", sent_text)
         self.assertIn("Tak, działam.", sent_text)
+        callback_data = [
+            button["callback_data"]
+            for row in sent_markup["inline_keyboard"]
+            for button in row
+        ]
+        self.assertIn(f"details:{task_id}", callback_data)
+        self.assertIn(f"facts:{task_id}", callback_data)
+        self.assertIn(f"next:{task_id}", callback_data)
 
     def test_telegram_media_from_message_picks_largest_photo(self):
         message = {
