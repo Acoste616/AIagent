@@ -1910,7 +1910,7 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.33", response)
+        self.assertIn("Connectors L4.34", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
@@ -2396,7 +2396,7 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("wymaga najpierw /approve", blocked_pending)
         self.assertIn("Approved provider write request checkpoint", approved)
         self.assertIn("wymagany confirm token", wrong_token)
-        self.assertIn("Write gate L4.33", executed)
+        self.assertIn("Write gate L4.34", executed)
         self.assertIn("external_write_performed: false", executed)
         self.assertIn("OK", verified)
         self.assertIn("provider write request dry-run verified", verified)
@@ -2464,7 +2464,7 @@ class L2LedgerTests(unittest.TestCase):
                 ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**latest, "status": "verify_failed", "updated_at": ai_council.utc_now()})
                 retry_after_verify_failed = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("GitHub issue executed L4.33", executed)
+        self.assertIn("GitHub issue executed L4.34", executed)
         self.assertIn("external_write_performed: true", executed)
         self.assertIn("https://github.com/Acoste616/AIagent/issues/7", executed)
         self.assertEqual(captured["url"], "https://api.github.com/repos/Acoste616/AIagent/issues")
@@ -2532,7 +2532,7 @@ class L2LedgerTests(unittest.TestCase):
                 verified = ai_council.provider_response(f"verify {request_id}")
                 retry = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("GitHub issue write failed L4.33", failed)
+        self.assertIn("GitHub issue write failed L4.34", failed)
         self.assertIn("manual_check:", failed)
         self.assertIn("external_write_performed: false", failed)
         self.assertNotIn("unit-token", failed)
@@ -2641,7 +2641,7 @@ class L2LedgerTests(unittest.TestCase):
                 decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8", errors="replace")
                 verified = ai_council.provider_response(f"verify {request_id}")
 
-        self.assertIn("Gmail draft executed L4.33", executed)
+        self.assertIn("Gmail draft executed L4.34", executed)
         self.assertIn("external_write_performed: true", executed)
         self.assertEqual(captured["url"], "https://gmail.googleapis.com/gmail/v1/users/me/drafts")
         self.assertEqual(captured["kwargs"]["method"], "POST")
@@ -2700,7 +2700,7 @@ class L2LedgerTests(unittest.TestCase):
                 verified = ai_council.provider_response(f"verify {request_id}")
                 retry = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("Gmail draft write failed L4.33", failed)
+        self.assertIn("Gmail draft write failed L4.34", failed)
         self.assertIn("manual_check:", failed)
         self.assertIn("external_write_performed: false", failed)
         self.assertIn("provider write failed; check provider manually", verified)
@@ -2746,7 +2746,216 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("external_write_performed: false", executed)
         self.assertEqual(latest["status"], "write_blocked")
 
-    def test_provider_write_request_blocks_non_github_even_when_global_gate_enabled(self):
+    def test_calendar_provider_write_request_creates_event_with_gates_and_verifies(self):
+        captured: dict[str, object] = {}
+
+        def fake_request_json(url: str, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return {
+                "id": "evt-123",
+                "htmlLink": "https://calendar.google.com/event?eid=evt-123",
+                "summary": kwargs["payload"]["summary"],
+            }
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED": "true",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
+                ai_council, "google_access_token", return_value=("available", "calendar-access-token")
+            ), patch.object(ai_council, "request_json", side_effect=fake_request_json) as request_json:
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie zespołu", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "summary": "AI Council deployment review",
+                    "start": "2026-06-08T10:00:00+02:00",
+                    "end": "2026-06-08T10:30:00+02:00",
+                    "timezone": "Europe/Warsaw",
+                    "attendees": ["team@example.com"],
+                    "description": "Review L4.34 provider executor.",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                executed_action = ai_council.get_latest_action(request_id)
+                result = (executed_action["payload"] or {}).get("provider_write_result") or {}
+                data = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
+                verified = ai_council.provider_response(f"verify {request_id}")
+
+        self.assertIn("Calendar event executed L4.34", executed)
+        self.assertIn("external_write_performed: true", executed)
+        self.assertIn("/calendar/v3/calendars/primary/events?", captured["url"])
+        self.assertIn("sendUpdates=none", captured["url"])
+        self.assertEqual(captured["kwargs"]["method"], "POST")
+        self.assertEqual(captured["kwargs"]["payload"]["summary"], "AI Council deployment review")
+        self.assertEqual(captured["kwargs"]["payload"]["start"]["timeZone"], "Europe/Warsaw")
+        self.assertEqual(captured["kwargs"]["payload"]["attendees"], [{"email": "team@example.com"}])
+        self.assertEqual(request_json.call_count, 1)
+        self.assertTrue(data["external_write_performed"])
+        self.assertEqual(data["provider_operation"], "calendar.events.insert")
+        self.assertEqual(data["provider_id"], "evt-123")
+        self.assertEqual(data["html_url"], "https://calendar.google.com/event?eid=evt-123")
+        self.assertIn("provider write request result verified", verified)
+
+    def test_calendar_provider_write_failure_is_not_retried(self):
+        def fake_request_json(url: str, **kwargs):
+            return {"ok": False, "error": "http_400", "body_preview": "calendar validation failed"}
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED": "true",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
+                ai_council, "google_access_token", return_value=("available", "calendar-access-token")
+            ), patch.object(ai_council, "request_json", side_effect=fake_request_json) as request_json:
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z błędem API", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "summary": "Calendar failure branch",
+                    "start": "2026-06-08T10:00:00+02:00",
+                    "end": "2026-06-08T10:30:00+02:00",
+                    "timezone": "Europe/Warsaw",
+                    "attendees": [],
+                    "description": "Should fail.",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                failed = ai_council.provider_response(f"execute {request_id} {token}")
+                verified = ai_council.provider_response(f"verify {request_id}")
+                retry = ai_council.provider_response(f"execute {request_id} {token}")
+
+        self.assertIn("Calendar event write failed L4.34", failed)
+        self.assertIn("manual_check:", failed)
+        self.assertIn("external_write_performed: false", failed)
+        self.assertIn("provider write failed; check provider manually", verified)
+        self.assertIn("wcześniejszy provider POST/result", retry)
+        self.assertEqual(request_json.call_count, 1)
+
+    def test_calendar_provider_write_blocks_when_gate_disabled(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {"AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true"}
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
+                ai_council, "request_json", side_effect=AssertionError("Calendar API should not be called")
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie zespołu", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "summary": "Gate disabled",
+                    "start": "2026-06-08T10:00:00+02:00",
+                    "end": "2026-06-08T10:30:00+02:00",
+                    "timezone": "Europe/Warsaw",
+                    "attendees": [],
+                    "description": "Should be blocked.",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                latest = ai_council.get_latest_action(request_id)
+
+        self.assertIn("AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=false", executed)
+        self.assertIn("external_write_performed: false", executed)
+        self.assertEqual(latest["status"], "write_blocked")
+
+    def test_calendar_provider_write_blocks_invalid_time_range_before_network(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED": "true",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
+                ai_council, "request_json", side_effect=AssertionError("Calendar API should not be called")
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z błędnym czasem", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "summary": "Invalid time range",
+                    "start": "2026-06-08T10:30:00+02:00",
+                    "end": "2026-06-08T10:00:00+02:00",
+                    "timezone": "Europe/Warsaw",
+                    "attendees": [],
+                    "description": "Should be blocked before API.",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                latest = ai_council.get_latest_action(request_id)
+
+        self.assertIn("end must be after start", executed)
+        self.assertIn("external_write_performed: false", executed)
+        self.assertEqual(latest["status"], "write_blocked")
+
+    def test_provider_write_request_blocks_drive_even_when_global_gate_enabled(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             env = {
@@ -2763,7 +2972,7 @@ class L2LedgerTests(unittest.TestCase):
             ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
                 ai_council, "github_token", return_value="unit-token"
             ), patch.object(ai_council, "request_json", side_effect=AssertionError("provider API should not be called")):
-                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                action = ai_council.create_integration_draft_action("drive", "utwórz dokument o planie wdrożenia", risk="R3")
                 ai_council.approve_response(action["action_id"])
                 ai_council.execute_response(action["action_id"])
                 ai_council.verify_response(action["action_id"])
@@ -2771,11 +2980,9 @@ class L2LedgerTests(unittest.TestCase):
                 payload = {**(ready["payload"] or {})}
                 payload["missing_fields"] = []
                 payload["draft"] = {
-                    "summary": "Spotkanie zespołu",
-                    "start": "2026-06-08T10:00:00+02:00",
-                    "end": "2026-06-08T10:30:00+02:00",
-                    "attendees": ["team@example.com"],
-                    "description": "Plan wdrożenia AI Council",
+                    "title": "Plan wdrożenia AI Council",
+                    "body": "Drive provider write is not enabled in L4.34.",
+                    "outline": ["Cel", "Zakres", "Następne kroki"],
                 }
                 ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
                 ai_council.provider_response(f"plan {action['action_id']}")
@@ -2787,8 +2994,8 @@ class L2LedgerTests(unittest.TestCase):
                 executed = ai_council.provider_response(f"execute {request_id} {token}")
                 latest = ai_council.get_latest_action(request_id)
 
-        self.assertIn("Write gate L4.33", executed)
-        self.assertIn("L4.33 executor supports github issue and gmail draft only", executed)
+        self.assertIn("Write gate L4.34", executed)
+        self.assertIn("L4.34 executor supports github issue, gmail draft, and calendar event only", executed)
         self.assertIn("external_write_performed: false", executed)
         self.assertEqual(latest["status"], "write_blocked")
 

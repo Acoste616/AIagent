@@ -76,9 +76,6 @@ Failure artifacts with `provider_write_failed` are not marked verified. The same
 
 This is still not full Poke parity.
 
-L4.34 should add one of:
+L4.34 adds Calendar event create with the same approval/confirm/verifier model and `sendUpdates=none`.
 
-- Calendar event create with the same approval/confirm/verifier model, or
-- provider dedupe/read-before-write for GitHub and Gmail.
-
-The system still needs deeper proactive recipes, stronger source-backed memory, iPhone Shortcut hardening, Calendar/Drive write adapters, and eventually a private Messages/iMessage bridge.
+The system still needs provider dedupe/read-before-write, deeper proactive recipes, stronger source-backed memory, iPhone Shortcut hardening, Drive write adapter, and eventually a private Messages/iMessage bridge.
