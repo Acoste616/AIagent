@@ -7,10 +7,12 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -4971,6 +4973,76 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertEqual(reason, "authorized")
         self.assertFalse(bad_ok)
         self.assertEqual(bad_reason, "invalid_token")
+
+    def test_shortcuts_response_reports_l45_service_pack_without_token_leak(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "AI_COUNCIL_SHORTCUT_TOKEN": "secret-token",
+                "AI_COUNCIL_SHORTCUT_HOST": "100.101.53.21",
+                "AI_COUNCIL_SHORTCUT_PORT": "8788",
+                "AI_COUNCIL_SHORTCUT_SEND_TELEGRAM": "true",
+                "AI_COUNCIL_SHORTCUT_MAX_BODY_BYTES": "123456",
+            }
+            return values.get(key, str(default))
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                response = ai_council.shortcuts_response()
+
+        self.assertIn("iPhone Shortcuts L4.45", response)
+        self.assertIn("token: configured", response)
+        self.assertNotIn("secret-token", response)
+        self.assertNotIn("L4.27", response)
+        self.assertIn("endpoint: http://100.101.53.21:8788/shortcut", response)
+        self.assertIn("bind_scope: network_visible", response)
+        self.assertIn("service: not_started_by_default", response)
+        self.assertIn("start-ai-council-shortcuts.ps1", response)
+        self.assertIn("status-ai-council-shortcuts.ps1", response)
+        self.assertIn("stop-ai-council-shortcuts.ps1", response)
+
+    def test_shortcuts_response_missing_token_keeps_service_stopped(self):
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_SHORTCUT_TOKEN":
+                return ""
+            return str(default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                response = ai_council.shortcuts_response()
+
+        self.assertIn("iPhone Shortcuts L4.45", response)
+        self.assertIn("token: missing", response)
+        self.assertIn("bind_scope: local_only", response)
+        self.assertIn("service: not_started_by_default", response)
+        self.assertIn("NEXT: ustaw AI_COUNCIL_SHORTCUT_TOKEN", response)
+        self.assertNotIn("Bearer secret", response)
+
+    def test_shortcut_endpoint_url_brackets_ipv6_hosts(self):
+        self.assertEqual(ai_council.shortcut_endpoint_url("::1", 8788), "http://[::1]:8788/shortcut")
+        self.assertEqual(ai_council.shortcut_bind_scope("[::1]"), "local_only")
+
+    def test_shortcut_health_endpoint_reports_version(self):
+        server = ai_council.ThreadingHTTPServer(("127.0.0.1", 0), ai_council.ShortcutRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+            with urlopen(f"http://{host}:{port}/health", timeout=3) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["service"], "ai-council-shortcuts")
+        self.assertEqual(payload["version"], ai_council.SHORTCUTS_VERSION)
 
     def test_shortcut_text_payload_starts_background_task(self):
         with temp_dir() as tmp:
