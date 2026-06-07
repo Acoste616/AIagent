@@ -2369,7 +2369,7 @@ def integration_drafts_response(prompt: str = "") -> str:
     lines = ["[Council] Integration Drafts L4.28"]
     for action in rows[:10]:
         lines.append("- " + format_integration_draft_action(action))
-    lines.append("Użyj: /drafts show <id>, /approve <id>, /deny <id>. /execute dla R3/R4 jest blokowane.")
+    lines.append("Użyj: /drafts show <id>, /approve <id>, /deny <id>. Po approval: /execute <id> tworzy lokalny execution pack; provider write nadal jest zablokowany.")
     return "\n".join(lines)
 
 
@@ -5188,11 +5188,11 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval bez external write, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval bez external write, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "L4.28: Integration Action Drafts przygotowują Gmail/Calendar/Drive/GitHub drafty jako pending actions; approval zapisuje decyzję, ale nie wykonuje external write.\n"
-        "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, execution adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
+        "L4.29: Integration Execution Packs dodają krok /approve -> /execute -> /verify dla draftów integracji; /execute tworzy lokalny outbox pack JSON/Markdown i nadal nie wykonuje external write.\n"
+        "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, provider-write adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -5206,10 +5206,10 @@ def goal_response() -> str:
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: prywatny iMessage bridge, execution adaptery dla zatwierdzonych integracji, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: prywatny iMessage bridge, provider-write adaptery dla zatwierdzonych integracji, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.29 Integration Execution Adapters - nadal bez auto-write; najpierw adaptery z osobnym execute/verify i twardym approval gate."
+        "Najbliższy cel wdrożeniowy: L4.30 Provider Execution Adapters - nadal z twardym approval gate; dopiero wtedy Gmail/Calendar/Drive/GitHub dostaną kontrolowane write-capable adaptery."
     )
 
 
@@ -5222,10 +5222,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe/draft_action, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.29 Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe/draft_action, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.28: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.29: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5253,7 +5253,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: L4.28 drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: L4.29 execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5285,7 +5285,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -7012,7 +7012,7 @@ def approve_response(prompt: str) -> str:
             f"kind: {payload.get('draft_kind')}\n"
             f"missing_fields: {missing}\n"
             f"Preview: /drafts show {updated['action_id']}\n"
-            "Next: ręczne wykonanie poza botem albo kolejna warstwa L4.29 z oddzielnym execution adapterem."
+            f"Next: /execute {updated['action_id']} utworzy lokalny execution pack bez external write."
         )
     if updated.get("type") == "followup_proposal":
         payload = updated.get("payload") or {}
@@ -7088,6 +7088,106 @@ def deny_response(prompt: str) -> str:
     return f"[Council] Denied: {updated['action_id']}."
 
 
+def integration_outbox_dir(action_id: str) -> Path:
+    safe_id = safe_filename(action_id, "integration-action")
+    return ARTIFACTS_DIR / "integration-outbox" / safe_id
+
+
+def integration_execution_pack(action: dict) -> dict:
+    payload = action.get("payload") or {}
+    action_id = str(action.get("action_id") or "")
+    connector = str(payload.get("connector") or "")
+    draft = payload.get("draft") or {}
+    pack_dir = integration_outbox_dir(action_id)
+    json_path = pack_dir / "execution_pack.json"
+    markdown_path = pack_dir / "execution_pack.md"
+    pack = {
+        "action_id": action_id,
+        "created_at": utc_now(),
+        "connector": connector,
+        "draft_kind": payload.get("draft_kind", ""),
+        "provider_action": "manual_outbox_pack",
+        "external_write": False,
+        "approved_at": action.get("updated_at", ""),
+        "intent": payload.get("intent", ""),
+        "missing_fields": payload.get("missing_fields") or [],
+        "draft": draft,
+        "policy": "No email/event/file/issue was sent, scheduled, written, published, or created.",
+        "next_steps": [
+            "Sprawdź missing_fields i treść draftu.",
+            "Jeśli treść jest poprawna, wykonaj ręcznie albo poczekaj na przyszły jawny provider adapter.",
+            f"Zweryfikuj lokalnie przez /verify {action_id}.",
+        ],
+    }
+    lines = [
+        f"# Integration Execution Pack {action_id}",
+        "",
+        f"- connector: {connector}",
+        f"- kind: {payload.get('draft_kind', '')}",
+        "- external_write: false",
+        f"- approved_at: {action.get('updated_at', '')}",
+        "",
+        "## Missing Fields",
+    ]
+    missing = payload.get("missing_fields") or []
+    lines.extend([f"- {item}" for item in missing] if missing else ["- none"])
+    lines.extend(["", "## Draft"])
+    for key, value in draft.items():
+        rendered = json.dumps(value, ensure_ascii=False, indent=2) if isinstance(value, (list, dict)) else str(value)
+        lines.extend([f"### {key}", rendered, ""])
+    lines.extend(
+        [
+            "## Policy",
+            "No email/event/file/issue was sent, scheduled, written, published, or created.",
+            "",
+            "## Next",
+            f"- /verify {action_id}",
+        ]
+    )
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+    return {**pack, "pack_dir": str(pack_dir), "json_path": str(json_path), "markdown_path": str(markdown_path)}
+
+
+def execute_integration_draft_action(action: dict) -> dict:
+    status = str(action.get("status") or "")
+    if status == "executed":
+        return {
+            **action,
+            "execution_result": "blocked: integration draft already has an execution pack; run /verify or create a new draft",
+        }
+    if status == "verified":
+        return {
+            **action,
+            "execution_result": "blocked: integration draft already verified; create a new draft for changes",
+        }
+    if status not in {"approved", "verify_failed"}:
+        return {
+            **action,
+            "execution_result": f"blocked: integration draft status={status or 'unknown'} requires /approve before /execute",
+        }
+    pack = integration_execution_pack(action)
+    payload = {**(action.get("payload") or {}), "execution_pack": pack}
+    executed = {
+        **action,
+        "status": "executed",
+        "updated_at": utc_now(),
+        "payload": payload,
+        "execution_result": f"created local integration execution pack {pack.get('markdown_path')}",
+    }
+    append_jsonl(ACTIONS_FILE, executed)
+    memory_save(
+        f"integration-pack:{action.get('action_id')}",
+        str(pack.get("markdown_path") or ""),
+        kind="action",
+        agent="host",
+        source="integration_execution_pack",
+        task_id=action.get("action_id", ""),
+    )
+    return executed
+
+
 def execute_response(prompt: str) -> str:
     target_id = prompt.strip().split()[0] if prompt.strip() else ""
     if not target_id:
@@ -7095,6 +7195,20 @@ def execute_response(prompt: str) -> str:
     action = get_latest_action(target_id)
     if not action:
         return f"[Council] Nie znalazłem action `{target_id}`."
+    if action.get("type") == "integration_draft":
+        if action.get("status") == "pending":
+            return f"[Council] Execute zablokowane: integration draft wymaga najpierw /approve {target_id}."
+        executed = execute_integration_draft_action(action)
+        if executed.get("status") != "executed":
+            return f"[Council] Integration execute zablokowane: {executed.get('execution_result')}"
+        pack = (executed.get("payload") or {}).get("execution_pack") or {}
+        return (
+            f"[Council] Integration execution pack created: {target_id}.\n"
+            "external_write: false\n"
+            f"pack: {pack.get('markdown_path')}\n"
+            f"json: {pack.get('json_path')}\n"
+            f"Verify: /verify {target_id}"
+        )
     level, _ = normalize_risk(str(action.get("risk") or ""), action.get("description", ""))
     if level in {"R3", "R4"}:
         return f"[Council] Execute zablokowane przez Risk Officer: {level}. {risk_policy(level)}"
@@ -7118,6 +7232,42 @@ def verify_action_result(action: dict) -> dict:
 
     def add(label: str, ok: bool, detail: str) -> None:
         checks.append({"label": label, "ok": bool(ok), "detail": compact_line(detail, 220)})
+
+    if action_type == "integration_draft":
+        # Integration drafts have no workspace path; their local outbox pack is verified here.
+        if action.get("status") not in {"executed", "verified", "verify_failed"}:
+            add("integration pack executed", False, f"status={action.get('status')}")
+            return {"ok": False, "detail": f"not executed: {action.get('status')}", "checks": checks}
+        pack = payload.get("execution_pack") or {}
+        raw_json_path = str(pack.get("json_path") or "")
+        raw_markdown_path = str(pack.get("markdown_path") or "")
+        json_path = Path(raw_json_path)
+        markdown_path = Path(raw_markdown_path)
+        json_exists = bool(raw_json_path and json_path.exists())
+        markdown_exists = bool(raw_markdown_path and markdown_path.exists())
+        add("pack json exists", json_exists, str(json_path))
+        add("pack markdown exists", markdown_exists, str(markdown_path))
+        if not json_exists or not markdown_exists:
+            return {"ok": False, "detail": "integration execution pack missing files", "checks": checks}
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            add("pack json parse", False, str(exc))
+            return {"ok": False, "detail": "integration execution pack json invalid", "checks": checks}
+        action_match = data.get("action_id") == action.get("action_id")
+        connector_match = data.get("connector") == payload.get("connector")
+        external_write_false = data.get("external_write") is False and payload.get("external_write") is False
+        provider_action = data.get("provider_action") == "manual_outbox_pack"
+        add("action id matches", action_match, str(data.get("action_id")))
+        add("connector matches", connector_match, str(data.get("connector")))
+        add("external write false", external_write_false, f"pack={data.get('external_write')} payload={payload.get('external_write')}")
+        add("provider action safe", provider_action, str(data.get("provider_action")))
+        ok = action_match and connector_match and external_write_false and provider_action
+        return {
+            "ok": ok,
+            "detail": "integration execution pack verified" if ok else "integration execution pack failed verification",
+            "checks": checks,
+        }
 
     target, error = resolve_workspace_path(str(payload.get("path", "")))
     if error or target is None:

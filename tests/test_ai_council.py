@@ -2226,21 +2226,57 @@ class L2LedgerTests(unittest.TestCase):
         self.assertEqual(action["payload"]["risk_reason"], "external write/API/contact integration risk")
         self.assertIn("/drafts show <action_id>", missing)
 
-    def test_approve_integration_draft_is_checkpoint_only(self):
+    def test_integration_draft_execute_requires_approval_then_creates_pack(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
                 ai_council, "LOG_DIR", root / "logs"
             ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
                 action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                blocked = ai_council.execute_response(action["action_id"])
                 approved = ai_council.approve_response(action["action_id"])
-                latest = ai_council.get_latest_action(action["action_id"])
                 execute = ai_council.execute_response(action["action_id"])
+                verified = ai_council.verify_response(action["action_id"])
+                reexecute = ai_council.execute_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+                pack = (latest["payload"] or {}).get("execution_pack") or {}
+                json_exists = Path(pack["json_path"]).exists()
+                markdown_exists = Path(pack["markdown_path"]).exists()
 
-        self.assertEqual(latest["status"], "approved")
+        self.assertIn("wymaga najpierw /approve", blocked)
         self.assertIn("Approved integration draft checkpoint", approved)
         self.assertIn("Nie wykonałem external write", approved)
-        self.assertIn("Execute zablokowane przez Risk Officer: R3", execute)
+        self.assertIn("Integration execution pack created", execute)
+        self.assertIn("external_write: false", execute)
+        self.assertIn("OK", verified)
+        self.assertIn("integration execution pack verified", verified)
+        self.assertIn("already verified", reexecute)
+        self.assertEqual(latest["status"], "verified")
+        self.assertTrue(json_exists)
+        self.assertTrue(markdown_exists)
+
+    def test_integration_draft_verify_fails_when_pack_file_missing(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_integration_draft_action("github", "otwórz issue o L4.29 packach", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+                pack = (latest["payload"] or {}).get("execution_pack") or {}
+                Path(pack["json_path"]).unlink()
+                verified = ai_council.verify_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+
+        self.assertIn("FAILED", verified)
+        self.assertIn("integration execution pack missing files", verified)
+        self.assertEqual(latest["status"], "verify_failed")
 
     def test_agent_inbox_surfaces_integration_draft_approval(self):
         with temp_dir() as tmp:
