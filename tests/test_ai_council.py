@@ -261,6 +261,28 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         start.assert_called_once()
 
+    def test_default_autonomous_loop_recipes_exist(self):
+        recipes = ai_council.default_recipes()
+
+        self.assertIn("error_audit_twice_daily", recipes)
+        self.assertIn("feature_evolution_loop", recipes)
+        error_recipe = recipes["error_audit_twice_daily"]
+        feature_recipe = recipes["feature_evolution_loop"]
+
+        self.assertTrue(error_recipe["enabled"])
+        self.assertEqual(error_recipe["trigger"]["cron"], "0 9,21 * * *")
+        self.assertTrue(any("{previous}" in step.get("prompt", "") for step in error_recipe["steps"]))
+        self.assertTrue(feature_recipe["enabled"])
+        self.assertEqual(feature_recipe["trigger"]["cron"], "15 10 * * *")
+        self.assertTrue(any(step["command"] == "@xresearch" for step in feature_recipe["steps"]))
+        self.assertTrue(any("{previous}" in step.get("prompt", "") for step in feature_recipe["steps"]))
+
+    def test_recipe_prompt_can_use_previous_step_output(self):
+        prompt = ai_council.render_recipe_step_prompt("input={input}\nprevious={previous}", "temat", "wynik groka")
+
+        self.assertIn("input=temat", prompt)
+        self.assertIn("previous=wynik groka", prompt)
+
     def test_claude_flow_uses_opus_48_without_default_budget_cap(self):
         completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout="FLOW OK", stderr="")
 
@@ -352,6 +374,7 @@ class RoutingTests(unittest.TestCase):
             "/append shared/test.txt = ok": ("/append", ["host"]),
             "/patch shared/test.txt :: ok => better": ("/patch", ["host"]),
             "/chat test": ("/chat", ["host"]),
+            "/errors": ("/errors", ["host"]),
             "/flow zrób pełny plan": ("/flow", ["claude-flow"]),
             "@claude-flow zrób pełny plan": ("@claude-flow", ["claude-flow"]),
             "/council zrób plan": ("/council", ["codex", "claude", "grok"]),
@@ -367,6 +390,7 @@ class RoutingTests(unittest.TestCase):
         cases = {
             "status": "/status",
             "koszty": "/cost",
+            "pokaż błędy": "/errors",
             "health": "/health",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
@@ -409,6 +433,37 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("1/2: /status", response)
         self.assertIn("2/2: @claude-flow", response)
         self.assertIn("[Claude Flow]\nok", response)
+
+
+class ErrorStoreTests(unittest.TestCase):
+    def test_record_error_writes_state_and_daily_error_files(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                try:
+                    raise ValueError("telegram boom")
+                except ValueError as exc:
+                    error = ai_council.record_error("telegram_message", exc=exc, event={"command": "/chat"})
+
+                rows = ai_council.read_jsonl(root / "state" / "errors.jsonl")
+                daily_rows = ai_council.read_jsonl(root / "errors" / f"{error['day']}.jsonl")
+                response = ai_council.errors_response("recent 5")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(daily_rows), 1)
+        self.assertEqual(rows[0]["context"], "telegram_message")
+        self.assertEqual(rows[0]["exception_type"], "ValueError")
+        self.assertIn("telegram boom", rows[0]["traceback"])
+        self.assertIn(error["error_id"], response)
+        self.assertIn("telegram_message", response)
 
 
 class L2LedgerTests(unittest.TestCase):

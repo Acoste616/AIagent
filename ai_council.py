@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlparse
@@ -51,6 +52,7 @@ OFFSET_FILE = STATE_DIR / "telegram_offset"
 WORKSPACES_DIR = Path(os.environ.get("AI_COUNCIL_WORKSPACES_DIR", PROJECT_DIR / "workspaces")).expanduser()
 ARTIFACTS_DIR = Path(os.environ.get("AI_COUNCIL_ARTIFACTS_DIR", PROJECT_DIR / "artifacts")).expanduser()
 REPORTS_DIR = Path(os.environ.get("AI_COUNCIL_REPORTS_DIR", PROJECT_DIR / "reports")).expanduser()
+ERRORS_DIR = Path(os.environ.get("AI_COUNCIL_ERRORS_DIR", PROJECT_DIR / "errors")).expanduser()
 TASKS_FILE = STATE_DIR / "tasks.jsonl"
 ACTIONS_FILE = STATE_DIR / "actions.jsonl"
 COUNCIL_JOBS_FILE = STATE_DIR / "council_jobs.jsonl"
@@ -58,6 +60,7 @@ BACKGROUND_JOBS_FILE = STATE_DIR / "background_jobs.jsonl"
 ARTIFACT_INDEX_FILE = STATE_DIR / "artifact_index.jsonl"
 BACKGROUND_JOB_SPECS_DIR = STATE_DIR / "background_job_specs"
 COSTS_FILE = STATE_DIR / "costs.jsonl"
+ERRORS_FILE = STATE_DIR / "errors.jsonl"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
 RECIPES_DIR = PROJECT_DIR / "recipes"
 NUDGES_FILE = STATE_DIR / "nudges.jsonl"
@@ -265,6 +268,7 @@ def ensure_council_dirs() -> None:
         WORKSPACES_DIR / "shared",
         ARTIFACTS_DIR,
         REPORTS_DIR,
+        ERRORS_DIR,
         RECIPES_DIR,
         BACKGROUND_JOB_SPECS_DIR,
     ]:
@@ -298,6 +302,75 @@ def read_jsonl(path: Path) -> list[dict]:
 
 def read_jsonl_tail(path: Path, limit: int = 8) -> list[dict]:
     return read_jsonl(path)[-limit:]
+
+
+def record_error(
+    context: str,
+    *,
+    exc: BaseException | None = None,
+    message: str = "",
+    event: dict | None = None,
+    severity: str = "error",
+) -> dict:
+    ensure_council_dirs()
+    payload = {
+        "error_id": f"err-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{context}:{message}:{time.time()}')[:6]}",
+        "created_at": utc_now(),
+        "day": today_utc(),
+        "context": compact_line(context, 160),
+        "severity": severity,
+        "message": compact_line(redact_secrets(message or (str(exc) if exc else "")), 1000),
+        "exception_type": type(exc).__name__ if exc else "",
+        "traceback": redact_secrets("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))[:5000] if exc else "",
+        "event": sanitize_for_audit(event or {}),
+    }
+    append_jsonl(ERRORS_FILE, payload)
+    append_jsonl(ERRORS_DIR / f"{payload['day']}.jsonl", payload)
+    return payload
+
+
+def error_rows(days: int = 7) -> list[dict]:
+    rows = read_jsonl(ERRORS_FILE)
+    if days <= 0:
+        return rows
+    cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+    filtered = []
+    for row in rows:
+        parsed = parse_utc(str(row.get("created_at") or ""))
+        if parsed and parsed.timestamp() >= cutoff:
+            filtered.append(row)
+    return filtered
+
+
+def errors_response(prompt: str = "") -> str:
+    parts = prompt.strip().split()
+    limit = 8
+    if parts:
+        for token in parts:
+            if token.isdigit():
+                limit = max(1, min(int(token), 25))
+    rows = error_rows(days=7)
+    if not rows:
+        return f"[Council] Errors: brak zapisanych błędów z ostatnich 7 dni.\nFolder: {ERRORS_DIR}"
+    latest = rows[-limit:]
+    counts: dict[str, int] = {}
+    for row in rows:
+        context = str(row.get("context") or "unknown")
+        counts[context] = counts.get(context, 0) + 1
+    lines = [
+        "[Council] Errors",
+        f"last_7d: {len(rows)} | showing: {len(latest)}",
+        "top_contexts: "
+        + ", ".join(f"{name}:{count}" for name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:5]),
+        f"folder: {ERRORS_DIR}",
+    ]
+    for row in latest:
+        lines.append(
+            f"- {row.get('error_id')} {row.get('created_at')} {row.get('context')} "
+            f"{compact_line(str(row.get('message') or row.get('exception_type') or ''), 180)}"
+        )
+    lines.append("Audit: /recipe run error_audit_twice_daily albo poczekaj na cykl 09:00/21:00.")
+    return "\n".join(lines)
 
 
 def latest_by_id(path: Path, id_key: str, limit: int = 10) -> list[dict]:
@@ -1904,6 +1977,53 @@ def default_recipes() -> dict[str, dict]:
             "approval_policy": "auto",
             "steps": [{"command": "/cost", "prompt": ""}],
         },
+        "error_audit_twice_daily": {
+            "name": "error_audit_twice_daily",
+            "description": "Dwa razy dziennie audytuje folder errors i proponuje naprawy kodu.",
+            "enabled": True,
+            "trigger": {"type": "schedule", "cron": "0 9,21 * * *"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [
+                {"command": "/errors", "prompt": "recent 20"},
+                {
+                    "command": "/flow",
+                    "prompt": (
+                        "Zrób audyt błędów AI Council na bazie kontekstu poniżej. "
+                        "Oceń prawdopodobną przyczynę, wskaż konkretne pliki/funkcje do poprawy, "
+                        "zaproponuj minimalny patch i testy. Nie wykonuj zmian zewnętrznych.\n\n"
+                        "ERROR_CONTEXT:\n{previous}"
+                    ),
+                },
+            ],
+        },
+        "feature_evolution_loop": {
+            "name": "feature_evolution_loop",
+            "description": "Codzienny research Poke/Hermes/OpenClaw i plan kolejnej funkcji do wdrożenia.",
+            "enabled": True,
+            "trigger": {"type": "schedule", "cron": "15 10 * * *"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "steps": [
+                {
+                    "command": "@xresearch",
+                    "prompt": (
+                        "Najnowsze funkcje Poke/@interaction, agentów messaging-first, recipes, "
+                        "proactive alerts, iPhone/Apple Messages integrations, Hermes/OpenClaw-style execution. "
+                        "Wyciągnij fakty, wzorce UX, braki i jedną najważniejszą funkcję do skopiowania lub ulepszenia."
+                    ),
+                },
+                {
+                    "command": "/flow",
+                    "prompt": (
+                        "Na podstawie researchu poniżej oraz repo D:\\ai-council przygotuj plan jednej kolejnej "
+                        "implementacji, która najbardziej zbliża system Bartka do Poke-like OpenClaw Agent OS. "
+                        "Wynik: decyzja, scope, pliki, testy, ryzyka, acceptance criteria.\n\n"
+                        "RESEARCH:\n{previous}"
+                    ),
+                },
+            ],
+        },
         "project_next_action": {
             "name": "project_next_action",
             "description": "Claude Flow wybiera najbliższy bezpieczny krok dla projektu.",
@@ -2134,8 +2254,13 @@ def run_due_recipes(send: bool = False, now: datetime | None = None) -> int:
     return started
 
 
-def render_recipe_step_prompt(template: str, recipe_input: str) -> str:
-    return (template or "").replace("{input}", recipe_input.strip())
+def render_recipe_step_prompt(template: str, recipe_input: str, previous_output: str = "") -> str:
+    previous_limit = int_cfg("AI_COUNCIL_RECIPE_PREVIOUS_MAX_CHARS", 6000)
+    return (
+        (template or "")
+        .replace("{input}", recipe_input.strip())
+        .replace("{previous}", previous_output.strip()[:previous_limit])
+    )
 
 
 def run_recipe_background(prompt: str, task_id: str = "") -> dict:
@@ -2161,11 +2286,18 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
         response = f"[Council] Recipe `{name}` jest disabled."
         return {"decision": response, "facts": [response], "dispute": "", "next_actions": [f"/recipe show {name}"], "ask_user": "Włącz recipe zanim ją uruchomisz.", "raw_output": response, "report": response}
     outputs = []
+    previous_output = ""
     for index, step in enumerate(recipe.get("steps") or [], start=1):
-        route = {"command": step.get("command", ""), "operators": [], "prompt": render_recipe_step_prompt(str(step.get("prompt", "")), recipe_input), "task_id": task_id}
+        route = {
+            "command": step.get("command", ""),
+            "operators": [],
+            "prompt": render_recipe_step_prompt(str(step.get("prompt", "")), recipe_input, previous_output),
+            "task_id": task_id,
+        }
         if not route["command"]:
             continue
         step_response = build_response(route)
+        previous_output = step_response
         outputs.append(f"## Step {index}: {route['command']}\n\n{step_response}")
     raw = "\n\n".join(outputs) or "Recipe nie ma kroków."
     facts = extract_fact_lines(raw, limit=3)
@@ -2185,9 +2317,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż błędy`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2213,6 +2345,7 @@ def health_response() -> str:
     status = operator_binary_status()
     running = [task for task in latest_tasks(limit=50) if task.get("status") in {"running", "running_background"}]
     stuck = stuck_tasks(limit=5)
+    recent_errors = error_rows(days=1)
     offset = read_offset()
     lines = [
         "[Council] Health",
@@ -2221,6 +2354,7 @@ def health_response() -> str:
         f"telegram_offset: {offset if offset is not None else 'none'}",
         f"running_tasks: {len(running)}",
         f"stuck_tasks: {len(stuck)}",
+        f"errors_24h: {len(recent_errors)}",
     ]
     for name, item in status.items():
         marker = "OK" if item.get("configured") else "missing"
@@ -3839,6 +3973,12 @@ def telegram_send_message_with_markup(chat_id: str, text: str, reply_markup: dic
         data = request_json(telegram_url("sendMessage"), method="POST", payload=payload)
         if not data.get("ok"):
             print(f"telegram_sendMessage=failed {data.get('error') or data.get('description')}")
+            record_error(
+                "telegram_sendMessage",
+                message=str(data.get("error") or data.get("description") or data.get("body_preview") or "send failed"),
+                event={"chat_id_hash": short_hash(str(chat_id)), "chunk": index, "chunks": len(chunks)},
+                severity="warning",
+            )
             ok = False
             continue
         if len(chunks) > 1:
@@ -4002,6 +4142,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż koszty", "pokaz koszty", "pokaż usage", "pokaz usage")
     ):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost", "intent": "natural"}
+
+    if lower in {"błędy", "bledy", "errors", "error log", "log błędów", "log bledow"} or lower.startswith(
+        ("pokaż błędy", "pokaz bledy", "pokaż errors", "pokaz errors", "sprawdź błędy", "sprawdz bledy")
+    ):
+        return {"command": "/errors", "operators": ["host"], "prompt": "recent", "mode": "errors", "intent": "natural"}
 
     status_id_prefixes = ["status "]
     if any(lower.startswith(prefix) for prefix in status_id_prefixes):
@@ -4319,6 +4464,8 @@ def route_text(text: str) -> dict:
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/cost"):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
+    if lower.startswith("/errors"):
+        return {"command": "/errors", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "errors"}
     if lower.startswith("/recipes"):
         return {"command": "/recipes", "operators": ["host"], "prompt": "", "mode": "recipes"}
     if lower.startswith("/recipe"):
@@ -4801,6 +4948,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return poke_chat_response(prompt)
     if command == "/cost":
         return cost_response()
+    if command == "/errors":
+        return errors_response(prompt)
     if command == "/recipes":
         return recipes_response()
     if command == "/cancel":
@@ -5039,6 +5188,12 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
     data = request_json(telegram_url("getUpdates", params), timeout=5)
     if not data.get("ok"):
         print(f"telegram_getUpdates=failed {data.get('error') or data.get('description')}")
+        record_error(
+            "telegram_getUpdates",
+            message=str(data.get("error") or data.get("description") or data.get("body_preview") or "getUpdates failed"),
+            event={"offset": offset, "limit": limit},
+            severity="warning",
+        )
         return 1
 
     updates = data.get("result", [])
@@ -5056,15 +5211,34 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
             response = ""
             status = "ignored_not_allowed"
             if allowed:
-                response, status = handle_callback_query(callback)
-                if send:
-                    telegram_answer_callback_query(str(callback.get("id") or ""), status)
-                    message_id = str((callback.get("message") or {}).get("message_id") or "")
-                    if chat_id and message_id:
-                        telegram_edit_message_reply_markup(chat_id, message_id)
-                    telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
-                else:
-                    print(response)
+                try:
+                    response, status = handle_callback_query(callback)
+                    if send:
+                        telegram_answer_callback_query(str(callback.get("id") or ""), status)
+                        message_id = str((callback.get("message") or {}).get("message_id") or "")
+                        if chat_id and message_id:
+                            telegram_edit_message_reply_markup(chat_id, message_id)
+                        sent = telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+                        if not sent:
+                            status = "send_failed"
+                    else:
+                        print(response)
+                except Exception as exc:
+                    response = f"[Council] Callback error: {compact_line(redact_secrets(str(exc)), 500)}"
+                    status = "failed"
+                    record_error(
+                        "telegram_callback",
+                        exc=exc,
+                        event={
+                            "update_id": update.get("update_id"),
+                            "callback_data": compact_line(str(callback.get("data") or ""), 120),
+                            "chat_id_hash": short_hash(chat_id),
+                        },
+                    )
+                    if send and chat_id:
+                        telegram_send_message(chat_id, response)
+                    else:
+                        print(response)
             event = {
                 "request_id": short_hash(f"{update.get('update_id')}:{callback.get('data', '')}"),
                 "update_id": update.get("update_id"),
@@ -5132,6 +5306,7 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
                 event["duration_ms"] = int((time.time() - started) * 1000)
                 event["output_preview"] = response[:300]
                 event["status"] = "failed"
+                record_error("telegram_media_capture", exc=exc, event=event)
                 if send:
                     telegram_send_message(chat_id, response)
                 else:
@@ -5179,6 +5354,7 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         except Exception as exc:
             response = f"[Council] Error: {compact_line(redact_secrets(str(exc)), 500)}"
             response_failed = True
+            record_error("telegram_message", exc=exc, event=event)
             if task:
                 update_task_status(task["task_id"], "failed", redact_secrets(str(exc))[:300])
         event["duration_ms"] = int((time.time() - started) * 1000)
@@ -5193,6 +5369,8 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         if send:
             sent = telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
             event["status"] = "duplicate" if duplicate else ("responded" if sent else "send_failed")
+            if not sent:
+                record_error("telegram_response_send", message=response[:1000], event=event, severity="warning")
         else:
             event["status"] = "duplicate" if duplicate else "dry_responded"
             print(response)
