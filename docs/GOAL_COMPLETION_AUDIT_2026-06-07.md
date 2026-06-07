@@ -51,7 +51,7 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.20 Streaming/progress UX for long jobs and recipe steps.
+1. L4.21 Unified Front Orchestrator: one host voice that hides raw Codex/Claude/Grok differences and drives the user through the task.
 2. Stronger cost-ledger serialization/reservation before high-concurrency execution.
 3. Longer-term project memory and source-grounded operator recall.
 4. iPhone Shortcuts as primary capture layer.
@@ -66,6 +66,7 @@ Completed layers in the current implementation state:
 - L4.17 Follow-up Runner: completed recipes create follow-up proposals; approved safe follow-ups can start the next task, while R3/R4 stay checkpoint-only.
 - L4.18 Budget Guard/Kill Switch: `/control` can pause/kill model calls, scheduled recipes, and proactive scan; daily total and per-operator limits guard expensive calls.
 - L4.19 Verifier Evidence: `/verify` persists `verified` or `verify_failed` evidence with concrete checks; `/rollback` works after `executed`, `verified`, and `verify_failed`.
+- L4.20 Progress UX: background jobs now show START, RUNNING, and final delivery-card stages in Telegram instead of looking silent while work is running.
 
 ## External Follow-up
 

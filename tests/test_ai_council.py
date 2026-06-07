@@ -2283,13 +2283,17 @@ class L25BackgroundTests(unittest.TestCase):
                 response = ai_council.start_background_job(route, chat_id="553", task_id=task_id, send_progress=False)
                 latest = ai_council.get_latest_task(task_id)
                 spec_path = ai_council.background_job_spec_path(task_id)
+                spec = ai_council.load_background_job_spec(task_id)
                 spec_exists = spec_path.exists()
 
-        self.assertIn("START: praca uruchomiona w tle", response)
+        self.assertIn("ETAP: START", response)
+        self.assertIn("Robię: /flow / claude-flow / duży plan", response)
+        self.assertIn(f"Status: /status {task_id}", response)
         self.assertIn(f"/details {task_id}", response)
         self.assertEqual(latest["status"], "running_background")
         self.assertEqual(latest["worker_pid"], 4321)
         self.assertTrue(spec_exists)
+        self.assertFalse(spec["send_running"])
         args, kwargs = popen.call_args
         self.assertIn("run-background-job", args[0])
         self.assertIn("--task-id", args[0])
@@ -2403,7 +2407,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Tak, działam.", result["summary"])
         self.assertIn("Details: /details task-1", result["summary"])
 
-    def test_background_worker_sends_final_without_duplicate_running_message(self):
+    def test_background_worker_sends_running_and_final_progress_messages(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
@@ -2424,10 +2428,12 @@ class L25BackgroundTests(unittest.TestCase):
                 code = ai_council.run_background_job(task_id)
 
         self.assertEqual(code, 0)
-        self.assertEqual(send.call_count, 1)
-        sent_text = send.call_args.args[1]
-        sent_markup = send.call_args.args[2]
-        self.assertNotIn("RUNNING: worker działa", sent_text)
+        self.assertEqual(send.call_count, 2)
+        running_text = send.call_args_list[0].args[1]
+        sent_text = send.call_args_list[1].args[1]
+        sent_markup = send.call_args_list[1].args[2]
+        self.assertIn("ETAP: RUNNING", running_text)
+        self.assertIn(f"Status: /status {task_id}", running_text)
         self.assertIn("Tak, działam.", sent_text)
         callback_data = [
             button["callback_data"]
@@ -2437,6 +2443,37 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn(f"details:{task_id}", callback_data)
         self.assertIn(f"facts:{task_id}", callback_data)
         self.assertIn(f"next:{task_id}", callback_data)
+
+    def test_background_worker_cancelled_before_run_does_not_send_running(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "codex_response", return_value="[Codex]\nNie powinno się wykonać."
+            ) as codex, patch.object(ai_council, "telegram_send_message", return_value=True) as send, patch.object(
+                ai_council, "telegram_send_message_with_markup", return_value=True
+            ) as send_markup:
+                task = ai_council.create_task("Działasz?", status="running_background", command="codex_default", operators=["codex"])
+                task_id = task["task_id"]
+                route = {"command": "codex_default", "operators": ["codex"], "prompt": "Działasz?", "task_id": task_id}
+                ai_council.save_background_job_spec(route, "553", task_id, send_progress=True)
+                ai_council.update_task_status(task_id, "cancelled", "test pre-cancel")
+                code = ai_council.run_background_job(task_id)
+                latest = ai_council.get_latest_task(task_id)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(latest["status"], "cancelled")
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("ETAP: CANCELLED", send.call_args.args[1])
+        self.assertEqual(send_markup.call_count, 0)
+        codex.assert_not_called()
 
     def test_telegram_media_from_message_picks_largest_photo(self):
         message = {
@@ -2796,9 +2833,10 @@ class L25BackgroundTests(unittest.TestCase):
 
         self.assertIn("Goal: Bartek Agent OS", response)
         self.assertIn("NIE jest ukończony", response)
-        self.assertIn("Dlaczego nie czuje się jak Poke", response)
+        self.assertIn("Dlaczego nie czuje się jeszcze jak Poke", response)
         self.assertIn("Brakuje do Poke-level", response)
-        self.assertIn("L4.20 Streaming/Progress UX", response)
+        self.assertIn("Progress UX L4.20", response)
+        self.assertIn("L4.21 Unified Front Orchestrator", response)
 
     def test_selftest_response_is_available_without_model_calls(self):
         with temp_dir() as tmp:

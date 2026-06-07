@@ -864,14 +864,21 @@ def background_job_spec_path(task_id: str) -> Path:
     return BACKGROUND_JOB_SPECS_DIR / f"{task_id}.json"
 
 
-def save_background_job_spec(route: dict, chat_id: str, task_id: str, send_progress: bool = True) -> Path:
+def save_background_job_spec(
+    route: dict,
+    chat_id: str,
+    task_id: str,
+    send_progress: bool = True,
+    send_running: bool | None = None,
+) -> Path:
     ensure_council_dirs()
+    running_enabled = send_progress if send_running is None else send_running
     spec = {
         "task_id": task_id,
         "chat_id": chat_id,
         "route": route,
         "send_progress": send_progress,
-        "send_running": False,
+        "send_running": running_enabled,
         "created_at": utc_now(),
     }
     path = background_job_spec_path(task_id)
@@ -891,6 +898,45 @@ def load_background_job_spec(task_id: str) -> dict | None:
 
 def background_log_path(task_id: str) -> Path:
     return LOG_DIR / f"background-{task_id}.log"
+
+
+def background_route_summary(route: dict) -> str:
+    command = str(route.get("command") or "task")
+    operators = ", ".join(str(item) for item in (route.get("operators") or [])) or "host"
+    prompt = compact_line(str(route.get("prompt") or ""), 130)
+    if prompt:
+        return f"{command} / {operators} / {prompt}"
+    return f"{command} / {operators}"
+
+
+def background_progress_message(task_id: str, route: dict, stage: str, detail: str = "") -> str:
+    stage = stage.upper().strip()
+    lines = [
+        f"[AI Council] {task_id}",
+        f"ETAP: {stage}",
+        f"Robię: {background_route_summary(route)}",
+    ]
+    if detail:
+        lines.append(f"Info: {compact_line(detail, 220)}")
+    if stage in {"START", "RUNNING"}:
+        lines.extend(
+            [
+                "NEXT: poczekaj na wynik albo sprawdź status.",
+                f"Status: /status {task_id}",
+                f"Cancel: /cancel {task_id}",
+                f"Details: /details {task_id}",
+            ]
+        )
+    elif stage == "FAILED":
+        lines.extend(
+            [
+                f"Details: /details {task_id}",
+                "NEXT: sprawdź błąd albo uruchom ponownie z doprecyzowaniem.",
+            ]
+        )
+    elif stage == "CANCELLED":
+        lines.append("NEXT: zadanie przerwane; możesz uruchomić je ponownie z krótszym zakresem.")
+    return "\n".join(lines)
 
 
 def start_background_job(route: dict, chat_id: str, task_id: str, send_progress: bool = True) -> str:
@@ -948,13 +994,7 @@ def start_background_job(route: dict, chat_id: str, task_id: str, send_progress:
         spec_path=str(spec_path),
         background_log=str(log_path),
     )
-    return (
-        f"[AI Council] task-{task_id.split('task-', 1)[-1]}\n"
-        "START: praca uruchomiona w tle.\n"
-        f"status: /status {task_id}\n"
-        f"cancel: /cancel {task_id}\n"
-        f"Details: /details {task_id}"
-    )
+    return background_progress_message(task_id, clean_route, "START", f"worker pid={proc.pid}")
 
 
 def terminate_pid(pid: int) -> tuple[bool, str]:
@@ -4383,10 +4423,10 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "To nadal nie jest pełny Poke: brakuje szybszego streaming/progress UX, mocniejszej pamięci projektowej, iPhone Shortcuts jako głównego wejścia i prywatnego iMessage bridge.\n"
+        "To nadal nie jest pełny Poke: brakuje jednolitego frontowego operatora, pełnego token-level streamingu, mocniejszej pamięci projektowej, iPhone Shortcuts jako głównego wejścia i prywatnego iMessage bridge.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4399,11 +4439,11 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Dlaczego nie czuje się jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale UX/proaktywność/integracje nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: streaming/progress UX dla długich zadań, długoterminowa pamięć projektowa, lepszy frontowy orchestrator zamiast wielu widocznych operatorów, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations oraz natywna ścieżka GitHub CLI auth.\n"
+        "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, jednolitym głosem, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale frontowy orchestrator/proaktywność/integracje nie są jeszcze na tym poziomie.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: jednolity frontowy orchestrator zamiast wielu widocznych operatorów, pełny token-level streaming, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations oraz natywna ścieżka GitHub CLI auth.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.20 Streaming/Progress UX - długie zadania mają od razu pokazywać start, etap, timeout, rezultat i następny krok jak jeden sprawny operator."
+        "Najbliższy cel wdrożeniowy: L4.21 Unified Front Orchestrator - jedna rozmowa i jeden host, który ukrywa surowe różnice Codex/Claude/Grok i prowadzi zadanie jak operator."
     )
 
 
@@ -4416,10 +4456,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.19 Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.20 Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.19: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.20: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4478,7 +4518,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.19 Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.20 Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -6370,24 +6410,31 @@ def run_background_job(task_id: str) -> int:
     send_running = bool(spec.get("send_running", False))
     started = time.time()
     pid = os.getpid()
-    update_task_status(task_id, "running_background", "background worker running", worker_pid=pid)
-    append_background_job_event(
-        {
-            "job_id": f"bg-{task_id}",
-            "task_id": task_id,
-            "updated_at": utc_now(),
-            "status": "running",
-            "pid": pid,
-            "command": route.get("command", ""),
-            "operators": route.get("operators", []),
-        }
-    )
-    if send_running and chat_id:
-        telegram_send_message(chat_id, f"[AI Council] {task_id}\nRUNNING: worker działa.\nstatus: /status {task_id}")
     try:
         if is_cancelled_id(task_id):
+            update_task_status(task_id, "cancelled", "background worker cancelled before run", worker_pid=pid)
             append_background_job_event({"job_id": f"bg-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "cancelled", "pid": pid})
+            if send_progress and chat_id:
+                telegram_send_message(chat_id, background_progress_message(task_id, route, "CANCELLED"))
             return 0
+        update_task_status(task_id, "running_background", "background worker running", worker_pid=pid)
+        append_background_job_event(
+            {
+                "job_id": f"bg-{task_id}",
+                "task_id": task_id,
+                "updated_at": utc_now(),
+                "status": "running",
+                "pid": pid,
+                "command": route.get("command", ""),
+                "operators": route.get("operators", []),
+            }
+        )
+        if send_running and chat_id:
+            telegram_send_message_with_markup(
+                chat_id,
+                background_progress_message(task_id, route, "RUNNING", "worker działa"),
+                task_reply_markup(task_id),
+            )
         result = execute_route_for_background(route, chat_id, task_id)
         artifact = save_task_artifacts(task_id, route, result)
         duration_ms = int((time.time() - started) * 1000)
@@ -6396,7 +6443,7 @@ def run_background_job(task_id: str) -> int:
             update_task_status(task_id, "cancelled", "background worker cancelled after artifact write", duration_ms=duration_ms, report_path=artifact.get("report_path"))
             append_background_job_event({"job_id": f"bg-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "cancelled", "pid": pid})
             if send_progress and chat_id:
-                telegram_send_message(chat_id, f"[AI Council] {task_id}\nCANCELLED.")
+                telegram_send_message(chat_id, background_progress_message(task_id, route, "CANCELLED"))
             return 0
         if result_status in {"blocked", "failed"}:
             update_task_status(
@@ -6459,7 +6506,7 @@ def run_background_job(task_id: str) -> int:
             }
         )
         if send_progress and chat_id:
-            telegram_send_message(chat_id, f"[AI Council] {task_id}\nFAILED: {compact_line(error, 260)}")
+            telegram_send_message(chat_id, background_progress_message(task_id, route, "FAILED", error))
         return 1
 
 
