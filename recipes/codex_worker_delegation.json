@@ -1,0 +1,33 @@
+{
+  "name": "codex_worker_delegation",
+  "description": "Tworzy pętlę wdrożeniową: Grok source pack -> Claude plan -> Codex worker -> host audit.",
+  "enabled": true,
+  "trigger": {
+    "type": "manual"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "intent_keywords": [
+    "deleguj",
+    "codex worker",
+    "codex 5.3",
+    "spark",
+    "worker",
+    "wdroż",
+    "wdroz",
+    "implementuj"
+  ],
+  "integrations": [
+    "grok",
+    "claude-flow",
+    "codex-worker",
+    "artifacts"
+  ],
+  "steps": [
+    {
+      "command": "/delegate",
+      "prompt": "{input}"
+    }
+  ]
+}

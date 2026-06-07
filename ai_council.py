@@ -14,6 +14,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import signal
 import shutil
 import sqlite3
@@ -163,6 +164,7 @@ READONLY_RECIPE_COMMANDS = {
     "/progress",
     "/agent",
     "/shortcuts",
+    "/delegate",
     "/drafts",
     "/cost",
     "/control",
@@ -240,6 +242,9 @@ POKE_GAP_VERSION = "L4.48"
 AUTONOMOUS_LOOP_VERSION = "L4.43"
 SHORTCUTS_VERSION = "L4.48"
 AGENT_INBOX_VERSION = "L4.46"
+CODEX_WORKER_VERSION = "L4.49"
+CODEX_WORKER_DEFAULT_MODEL = "codex-5.3-spark"
+CODEX_WORKER_FALLBACK_MODEL = "codex-5.3"
 AUTONOMOUS_LOOP_NAMES = ("error_audit_twice_daily", "feature_evolution_loop")
 POKE_CHAT_FOLLOWUP_PREFIXES = (
     "a teraz",
@@ -4630,6 +4635,18 @@ def default_recipes() -> dict[str, dict]:
             "integrations": ["grok", "x_search", "artifacts"],
             "steps": [{"command": "@xresearch", "prompt": "{input}"}],
         },
+        "codex_worker_delegation": {
+            "name": "codex_worker_delegation",
+            "description": "Tworzy pętlę wdrożeniową: Grok source pack -> Claude plan -> Codex worker -> host audit.",
+            "enabled": True,
+            "trigger": {"type": "manual"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "planner_selectable": True,
+            "intent_keywords": ["deleguj", "codex worker", "codex 5.3", "spark", "worker", "wdroż", "wdroz", "implementuj"],
+            "integrations": ["grok", "claude-flow", "codex-worker", "artifacts"],
+            "steps": [{"command": "/delegate", "prompt": "{input}"}],
+        },
         "gmail_context_brief": {
             "name": "gmail_context_brief",
             "description": "Synchronizuje Gmail read-only i robi source-backed brief.",
@@ -5574,15 +5591,652 @@ def shortcuts_response(prompt: str = "") -> str:
     return "\n".join(lines)
 
 
+def shell_arg(value: str) -> str:
+    text = str(value)
+    if os.name == "nt":
+        return '"' + text.replace('"', '""') + '"'
+    return shlex.quote(text)
+
+
+def codex_worker_model() -> str:
+    return cfg("AI_COUNCIL_CODEX_WORKER_MODEL", CODEX_WORKER_DEFAULT_MODEL) or CODEX_WORKER_DEFAULT_MODEL
+
+
+def codex_worker_fallback_model() -> str:
+    return cfg("AI_COUNCIL_CODEX_WORKER_FALLBACK_MODEL", CODEX_WORKER_FALLBACK_MODEL) or CODEX_WORKER_FALLBACK_MODEL
+
+
+def codex_worker_sandbox() -> str:
+    sandbox = cfg("AI_COUNCIL_CODEX_WORKER_SANDBOX", "workspace-write") or "workspace-write"
+    return sandbox if sandbox in {"read-only", "workspace-write"} else "workspace-write"
+
+
+def codex_worker_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_CODEX_WORKER_ENABLED", False)
+
+
+def codex_worker_paths(task_id: str) -> dict[str, Path]:
+    artifact_dir = task_artifact_dir(task_id)
+    return {
+        "artifact_dir": artifact_dir,
+        "worker_prompt": artifact_dir / "worker-prompt.md",
+        "grok_prompt": artifact_dir / "grok-research-prompt.md",
+        "grok_research": artifact_dir / "grok-research.md",
+        "claude_prompt": artifact_dir / "claude-flow-prompt.md",
+        "claude_plan": artifact_dir / "claude-plan.md",
+        "host_checklist": artifact_dir / "host-review-checklist.md",
+        "metadata": artifact_dir / "worker-metadata.json",
+        "worker_final": artifact_dir / "worker-final.md",
+        "worker_log": LOG_DIR / f"codex-worker-{task_id}.log",
+    }
+
+
+def codex_worker_manual_command(task_id: str, model: str | None = None, sandbox: str | None = None) -> str:
+    paths = codex_worker_paths(task_id)
+    selected_model = model or codex_worker_model()
+    selected_sandbox = sandbox or codex_worker_sandbox()
+    parts = [
+        command_path("CODEX_BIN", "codex", DEFAULT_CODEX_BIN),
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        selected_sandbox,
+        "--model",
+        selected_model,
+        "--cd",
+        str(PROJECT_DIR),
+        "--output-last-message",
+        str(paths["worker_final"]),
+        "-",
+    ]
+    return " ".join(shell_arg(part) for part in parts) + " < " + shell_arg(str(paths["worker_prompt"]))
+
+
+def codex_worker_exec_command(task_id: str, model: str, sandbox: str | None = None) -> list[str]:
+    paths = codex_worker_paths(task_id)
+    return [
+        command_path("CODEX_BIN", "codex", DEFAULT_CODEX_BIN),
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        sandbox or codex_worker_sandbox(),
+        "--model",
+        model,
+        "--cd",
+        str(PROJECT_DIR),
+        "--output-last-message",
+        str(paths["worker_final"]),
+        "-",
+    ]
+
+
+def codex_worker_grok_prompt(intent: str, task_id: str) -> str:
+    return (
+        "Zrób source-backed research pack dla Claude przed planowaniem i delegowaniem kodowania do Codex workera.\n\n"
+        f"task_id: {task_id}\n"
+        f"Cel produktu: skopiować i ulepszyć Poke jako prywatny agent przez Telegram/iPhone, "
+        "z GPT/Codex i Claude przez subskrypcje/OAuth, Grokiem przez API oraz lokalnym serwerem OpenClaw/Hermes.\n"
+        f"Zakres tego kroku: {intent}\n\n"
+        "Sprawdź i opisz mechanikę funkcji oraz rozwiązania do wdrożenia. Priorytet źródeł: X/Twitter, GitHub, Reddit, oficjalne strony/docs, internet. "
+        "Jeśli dane źródło nie jest dostępne w narzędziu, oznacz lukę i napisz, co host ma uzupełnić przed Claude.\n\n"
+        "Zwróć po polsku w formacie:\n"
+        "1. Poke behavior/mechanics do skopiowania,\n"
+        "2. materiały i linki/źródła dla Claude,\n"
+        "3. implikacje dla naszego kodu AI Council,\n"
+        "4. integracja z OpenClaw/Hermes/local Desktop server,\n"
+        "5. ryzyka, niepewności, kryteria akceptacji,\n"
+        "6. czego worker ma nie robić bez approval."
+    )
+
+
+def codex_worker_claude_prompt(intent: str, task_id: str) -> str:
+    return (
+        "Jesteś Claude Opus 4.8 jako planner AI Council Dynamic Workflow.\n\n"
+        f"task_id: {task_id}\n"
+        "North Star: Poke-like agent skopiowany i ulepszony o OpenClaw/Hermes execution na lokalnym Desktop serverze. "
+        "Modele: GPT/Codex i Claude przez subskrypcje/OAuth; Grok przez API key.\n"
+        f"Zakres tego kroku: {intent}\n\n"
+        "Masz użyć materiałów Groka jako wejścia, a następnie patrzeć na nasz kod, target 100% Poke, OpenClaw/Hermes memory/execution i styl odpowiedzi/operatora. "
+        "Zaplanuj minimalny patch, pliki/funkcje do sprawdzenia, testy, rollback i checklistę host audit. "
+        "Nie wykonuj external write, deploy, push, daemonów ani operacji na sekretach."
+    )
+
+
+def codex_worker_prompt(intent: str, task_id: str) -> str:
+    paths = codex_worker_paths(task_id)
+    memory_context = memory_context_for_prompt(intent)
+    memory_block = f"\n\n## Memory Context\n{memory_context}\n" if memory_context else ""
+    return (
+        "# Delegated Codex Worker Task\n\n"
+        "You are a delegated Codex implementation worker inside Bartek AI Council. "
+        "You are not the host and you do not replace Grok, Claude, or final host review.\n\n"
+        f"task_id: {task_id}\n"
+        f"project_dir: {PROJECT_DIR}\n"
+        f"step_goal: {intent}\n\n"
+        "## Product North Star\n"
+        "Build a private Poke-like agent, then improve it with OpenClaw/Hermes-style local execution. "
+        "Telegram/iPhone is the main interface first; GPT/Codex and Claude are used through Bartek's subscriptions/OAuth where possible; Grok is used through API key for research/red-team.\n\n"
+        "## Required Council Loop\n"
+        "Grok source-backed research pack -> Claude Opus 4.8 code/workflow plan -> Codex worker implementation -> host Codex audit/tests/deploy. "
+        "Read grok-research.md and claude-plan.md first when present. If they are missing, do not invent Poke mechanics; keep the patch conservative and state the missing inputs.\n\n"
+        "## Artifact Inputs\n"
+        f"- Grok prompt: {paths['grok_prompt']}\n"
+        f"- Grok research pack: {paths['grok_research']}\n"
+        f"- Claude prompt: {paths['claude_prompt']}\n"
+        f"- Claude plan: {paths['claude_plan']}\n"
+        f"- Host checklist: {paths['host_checklist']}\n\n"
+        "## Hard Boundaries\n"
+        "- Work only inside the project/workspace.\n"
+        "- Do not read, print, edit, or create secrets, tokens, credentials, or .env files.\n"
+        "- Do not start daemons, listeners, servers, schedulers, or background services.\n"
+        "- Do not push, deploy, publish, contact people, spend money, alter billing/auth/DNS, or call external write APIs.\n"
+        "- Do not delete user data. Keep changes surgical and consistent with existing patterns.\n\n"
+        "## Output Required\n"
+        "Report changed files, tests/checks run, remaining risks, and exact next step for host review.\n"
+        f"{memory_block}"
+    )
+
+
+def codex_worker_host_checklist(intent: str, task_id: str) -> str:
+    return (
+        "# Host Review Checklist\n\n"
+        f"task_id: {task_id}\n"
+        f"goal: {intent}\n\n"
+        "1. Confirm this supports the real goal: Poke clone + GPT/Claude subscriptions/OAuth + Grok API + local OpenClaw/Hermes server.\n"
+        "2. Confirm Grok research/red-team and Claude plan were considered, or document why the task was small/local enough to skip live calls.\n"
+        "3. Inspect git diff for scope creep, secret exposure, daemon starts, external write, deploy, push, or broad refactors.\n"
+        "4. Run py_compile and targeted tests for changed behavior.\n"
+        "5. Run full AI Council tests before deploy.\n"
+        "6. Ask Claude Code for review on non-trivial diffs.\n"
+        "7. Deploy to Windows only after tests are green and no forbidden action is present.\n"
+        "8. Smoke Telegram command after deploy and update durable implementation/audit docs.\n"
+    )
+
+
+def write_codex_worker_pack(task: dict) -> dict[str, str]:
+    task_id = str(task["task_id"])
+    intent = str(task.get("prompt") or "").strip()
+    paths = codex_worker_paths(task_id)
+    paths["artifact_dir"].mkdir(parents=True, exist_ok=True)
+    paths["grok_prompt"].write_text(codex_worker_grok_prompt(intent, task_id), encoding="utf-8")
+    paths["claude_prompt"].write_text(codex_worker_claude_prompt(intent, task_id), encoding="utf-8")
+    paths["worker_prompt"].write_text(codex_worker_prompt(intent, task_id), encoding="utf-8")
+    paths["host_checklist"].write_text(codex_worker_host_checklist(intent, task_id), encoding="utf-8")
+    metadata = {
+        "version": CODEX_WORKER_VERSION,
+        "task_id": task_id,
+        "created_at": utc_now(),
+        "product_goal": "Poke clone plus GPT/Claude subscriptions/OAuth plus Grok API plus local OpenClaw/Hermes server",
+        "step_goal": intent,
+        "council_loop": [
+            {"stage": "grok_source_research_pack", "operator": "grok", "command": "/delegate prepare <task_id>", "sources": ["x", "github", "reddit", "web"]},
+            {"stage": "claude_dynamic_workflow_code_plan", "operator": "claude-flow", "command": "/delegate prepare <task_id>", "inputs": ["grok-research.md", "project code", "Poke target", "OpenClaw/Hermes context"]},
+            {"stage": "codex_worker_implementation", "operator": "codex-worker", "model": codex_worker_model(), "sandbox": codex_worker_sandbox()},
+            {"stage": "host_audit_deploy", "operator": "codex-host"},
+        ],
+        "worker_enabled": codex_worker_enabled(),
+        "model": codex_worker_model(),
+        "fallback_model": codex_worker_fallback_model(),
+        "sandbox": codex_worker_sandbox(),
+        "manual_command": codex_worker_manual_command(task_id),
+        "paths": {name: str(path) for name, path in paths.items()},
+        "boundaries": ["no_secrets", "no_daemons", "no_external_write", "no_push", "no_deploy", "host_review_required"],
+    }
+    paths["metadata"].write_text(json.dumps(sanitize_for_audit(metadata), ensure_ascii=False, indent=2), encoding="utf-8")
+    return {name: str(path) for name, path in paths.items()}
+
+
+def codex_worker_pack_response(intent: str, chat_id: str = "") -> str:
+    clean_intent = intent.strip()
+    if not clean_intent:
+        return "[Council] Użyj: /delegate <zakres wdrożenia> albo napisz `deleguj do codexa: <zakres>`."
+    task = create_task(
+        clean_intent,
+        source="codex_worker_delegate",
+        status="planned",
+        command="/delegate",
+        operators=["grok", "claude-flow", "codex-worker", "host"],
+        chat_id_hash=short_hash(chat_id) if chat_id else "",
+    )
+    task_id = task["task_id"]
+    paths = write_codex_worker_pack(task)
+    route = {"command": "/delegate", "operators": task["operators"], "prompt": clean_intent}
+    result = {
+        "decision": "Utworzono handoff pack: Grok ma zebrać materiały dla Claude, Claude ma zrobić plan na kodzie, dopiero potem Codex worker wdraża.",
+        "facts": [
+            f"task_id: {task_id}",
+            "cel produktu: Poke clone + GPT/Claude subskrypcje/OAuth + Grok API + lokalny OpenClaw/Hermes server",
+            f"model: {codex_worker_model()} fallback: {codex_worker_fallback_model()}",
+            "auto-run workera jest domyślnie wyłączony przez AI_COUNCIL_CODEX_WORKER_ENABLED=false",
+        ],
+        "dispute": "Worker oszczędza tokeny hosta, ale nie zastępuje Groka, Claude ani końcowego audytu.",
+        "next_actions": [f"/delegate prepare {task_id}", f"/delegate run {task_id}", f"/delegate review {task_id}"],
+        "ask_user": "Dla dużego wdrożenia użyj prepare: Grok -> Claude -> worker -> host audit.",
+        "raw_output": (
+            f"Codex Worker Delegation {CODEX_WORKER_VERSION}\n"
+            f"task_id: {task_id}\n"
+            f"worker_prompt: {paths['worker_prompt']}\n"
+            f"grok_prompt: {paths['grok_prompt']}\n"
+            f"claude_prompt: {paths['claude_prompt']}\n"
+            f"host_checklist: {paths['host_checklist']}\n"
+            f"manual_command:\n{codex_worker_manual_command(task_id)}"
+        ),
+        "report": (
+            "# Codex Worker Delegation\n\n"
+            f"task_id: {task_id}\n\n"
+            "## Product Goal\n"
+            "Poke clone + GPT/Claude subscriptions/OAuth + Grok API + local OpenClaw/Hermes server.\n\n"
+            "## Process\n"
+            "Grok source-backed research pack -> Claude Opus 4.8 workflow/code plan -> Codex worker implementation -> host audit/tests/deploy.\n\n"
+            "## Manual Worker Command\n"
+            f"```bash\n{codex_worker_manual_command(task_id)}\n```\n\n"
+            "## Safety\n"
+            "No secrets, no daemons, no external write, no push, no deploy. Host review is required.\n"
+        ),
+    }
+    artifact = save_task_artifacts(task_id, route, result)
+    update_task_status(task_id, "planned", "codex worker handoff pack ready", report_path=artifact.get("report_path"), summary_path=artifact.get("summary_path"))
+    return (
+        f"[Council] Codex Worker Delegation {CODEX_WORKER_VERSION}\n"
+        f"task_id: {task_id}\n"
+        "CEL: Poke clone + GPT/Claude przez suby/OAuth + Grok API + lokalny OpenClaw/Hermes server.\n"
+        "FLOW: Grok source pack -> Claude Opus 4.8 plan na researchu i kodzie -> Codex 5.3 Spark worker -> mój audyt/testy/deploy.\n"
+        f"MODEL: {codex_worker_model()} fallback {codex_worker_fallback_model()}; sandbox {codex_worker_sandbox()}.\n"
+        f"WORKER PROMPT: {paths['worker_prompt']}\n"
+        f"GROK PROMPT: {paths['grok_prompt']}\n"
+        f"CLAUDE PROMPT: {paths['claude_prompt']}\n"
+        "AUTO-RUN: wyłączony, dopóki AI_COUNCIL_CODEX_WORKER_ENABLED != true.\n"
+        f"PREPARE: /delegate prepare {task_id}\n"
+        f"RUN: /delegate run {task_id}\n"
+        f"REVIEW: /delegate review {task_id}\n"
+        f"Details: /details {task_id}"
+    )
+
+
+def codex_worker_prepare_response(prompt: str) -> str:
+    parts = prompt.strip().split()
+    task_id = parts[0] if parts else ""
+    force = any(part.lower() in {"--force", "force"} for part in parts[1:])
+    if not task_id:
+        return "[Council] Użyj: /delegate prepare <task_id>."
+    task = get_latest_task(task_id)
+    if not task or task.get("command") != "/delegate":
+        return f"[Council] Nie znalazłem delegation task `{task_id}`."
+    intent = str(task.get("prompt") or "").strip()
+    paths = codex_worker_paths(task_id)
+    if not paths["worker_prompt"].exists():
+        write_codex_worker_pack(task)
+    if (
+        not force
+        and str(task.get("status") or "") == "prepared_for_worker"
+        and paths["grok_research"].exists()
+        and paths["claude_plan"].exists()
+    ):
+        return (
+            f"[Council] Delegate prepare już jest gotowe dla `{task_id}`.\n"
+            "Nie odpalam ponownie Groka i Claude, żeby nie przepalać limitów.\n"
+            f"grok_research: {paths['grok_research']}\n"
+            f"claude_plan: {paths['claude_plan']}\n"
+            f"RUN: /delegate run {task_id}\n"
+            f"FORCE: /delegate prepare {task_id} --force"
+        )
+
+    grok_prompt = codex_worker_grok_prompt(intent, task_id)
+    paths["grok_prompt"].write_text(grok_prompt, encoding="utf-8")
+    update_task_status(task_id, "preparing_research", "Grok source research pack started")
+    grok_output = grok_x_research_response(
+        grok_prompt,
+        max_chars=int_cfg("AI_COUNCIL_CODEX_WORKER_RESEARCH_MAX_CHARS", 10000),
+        task_id=task_id,
+    )
+    paths["grok_research"].write_text(grok_output, encoding="utf-8")
+    if operator_failed(grok_output):
+        update_task_status(task_id, "blocked", "Grok research pack blocked; Claude/worker not started", grok_research=str(paths["grok_research"]))
+        append_progress_event(task_id, {"command": "/delegate prepare", "operators": ["grok"], "prompt": intent}, "FAILED", "Grok research blocked", percent=100)
+        return (
+            f"[Council] Delegate prepare zablokowane {CODEX_WORKER_VERSION}\n"
+            f"task_id: {task_id}\n"
+            "ETAP: Grok source/research pack\n"
+            f"POWÓD: {compact_line(strip_operator_label(grok_output) or grok_output, 260)}\n"
+            f"grok_research: {paths['grok_research']}\n"
+            "NEXT: podnieś limit/odblokuj model i uruchom ponownie `/delegate prepare <task_id>`."
+        )
+
+    claude_prompt = (
+        codex_worker_claude_prompt(intent, task_id)
+        + "\n\n## Grok Source Material Pack\n"
+        + grok_output[: int_cfg("AI_COUNCIL_CODEX_WORKER_CLAUDE_INPUT_MAX_CHARS", 16000)]
+        + "\n\n## Local Code Context For Claude\n"
+        + f"- Project root: {PROJECT_DIR}\n"
+        + "- Primary runtime: ai_council.py\n"
+        + "- Tests: tests/test_ai_council.py\n"
+        + "- Target docs: docs/POKE_CLONE_TARGET.md and docs/research when present\n"
+        + "- OpenClaw/Hermes context: local Desktop server access, memory, execution, operator communication, approval gates\n"
+    )
+    paths["claude_prompt"].write_text(claude_prompt, encoding="utf-8")
+    update_task_status(task_id, "preparing_plan", "Claude workflow/code plan started after Grok material pack")
+    claude_output = claude_flow_response(claude_prompt, task_id=task_id)
+    paths["claude_plan"].write_text(claude_output, encoding="utf-8")
+    if operator_failed(claude_output):
+        update_task_status(task_id, "blocked", "Claude plan blocked after Grok research pack", grok_research=str(paths["grok_research"]), claude_plan=str(paths["claude_plan"]))
+        append_progress_event(task_id, {"command": "/delegate prepare", "operators": ["claude-flow"], "prompt": intent}, "FAILED", "Claude plan blocked", percent=100)
+        return (
+            f"[Council] Delegate prepare zablokowane {CODEX_WORKER_VERSION}\n"
+            f"task_id: {task_id}\n"
+            "ETAP: Claude workflow/code plan\n"
+            f"POWÓD: {compact_line(strip_operator_label(claude_output) or claude_output, 260)}\n"
+            f"grok_research: {paths['grok_research']}\n"
+            f"claude_plan: {paths['claude_plan']}\n"
+            "NEXT: podnieś limit/odblokuj Claude Flow i uruchom ponownie `/delegate prepare <task_id>`."
+        )
+    update_task_status(
+        task_id,
+        "prepared_for_worker",
+        "Grok research pack and Claude plan ready; Codex worker can be run after host check",
+        grok_research=str(paths["grok_research"]),
+        claude_plan=str(paths["claude_plan"]),
+    )
+    append_progress_event(task_id, {"command": "/delegate prepare", "operators": ["grok", "claude-flow"], "prompt": intent}, "COMPLETED", "research pack and plan ready", percent=100)
+    return (
+        f"[Council] Delegate prepare gotowe {CODEX_WORKER_VERSION}\n"
+        f"task_id: {task_id}\n"
+        "GROK: source/research pack zapisany dla Claude.\n"
+        "CLAUDE: plan workflow/code zapisany dla workera i host audit.\n"
+        f"grok_research: {paths['grok_research']}\n"
+        f"claude_plan: {paths['claude_plan']}\n"
+        f"NEXT: /delegate run {task_id}\n"
+        f"Review: /delegate review {task_id}"
+    )
+
+
+def run_codex_worker_model(task_id: str, model: str, log_file) -> int:
+    paths = codex_worker_paths(task_id)
+    command = codex_worker_exec_command(task_id, model)
+    log_file.write(f"\n\n[ai-council] starting codex worker model={model} sandbox={codex_worker_sandbox()} at {utc_now()}\n")
+    log_file.flush()
+    with paths["worker_prompt"].open("r", encoding="utf-8") as stdin_file:
+        proc = subprocess.run(
+            command,
+            stdin=stdin_file,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            cwd=str(PROJECT_DIR),
+            env=operator_env(),
+            timeout=int_cfg("AI_COUNCIL_CODEX_WORKER_TIMEOUT", 1800),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    log_file.write(f"\n[ai-council] codex worker model={model} exit={proc.returncode} at {utc_now()}\n")
+    log_file.flush()
+    return int(proc.returncode)
+
+
+def run_codex_worker_process(task_id: str) -> int:
+    ensure_council_dirs()
+    task = get_latest_task(task_id)
+    if not task or task.get("command") != "/delegate":
+        print(f"codex_worker_error=missing delegation task {task_id}")
+        return 2
+    paths = codex_worker_paths(task_id)
+    if not paths["worker_prompt"].exists():
+        write_codex_worker_pack(task)
+    primary = codex_worker_model()
+    fallback = codex_worker_fallback_model()
+    started = time.time()
+    update_task_status(task_id, "worker_running", f"codex worker wrapper running model={primary}", worker_pid=os.getpid(), worker_log=str(paths["worker_log"]))
+    append_background_job_event(
+        {
+            "job_id": f"codex-worker-{task_id}",
+            "task_id": task_id,
+            "updated_at": utc_now(),
+            "status": "running",
+            "pid": os.getpid(),
+            "command": "run-codex-worker",
+            "operators": ["codex-worker"],
+            "model": primary,
+            "fallback_model": fallback,
+            "log_path": str(paths["worker_log"]),
+        }
+    )
+    try:
+        with paths["worker_log"].open("a", encoding="utf-8", errors="replace") as log_file:
+            returncode = run_codex_worker_model(task_id, primary, log_file)
+            used_model = primary
+            if returncode != 0 and fallback and fallback != primary:
+                log_file.write(f"\n[ai-council] primary model failed; trying fallback model={fallback}\n")
+                log_file.flush()
+                returncode = run_codex_worker_model(task_id, fallback, log_file)
+                used_model = fallback
+    except subprocess.TimeoutExpired as exc:
+        duration_ms = int((time.time() - started) * 1000)
+        update_task_status(task_id, "failed", f"codex worker timeout after {exc.timeout}s", duration_ms=duration_ms, worker_log=str(paths["worker_log"]))
+        append_background_job_event({"job_id": f"codex-worker-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "failed", "pid": os.getpid(), "duration_ms": duration_ms, "error": "timeout"})
+        return 124
+    except Exception as exc:
+        duration_ms = int((time.time() - started) * 1000)
+        error = redact_secrets(str(exc))[:500]
+        update_task_status(task_id, "failed", error, duration_ms=duration_ms, worker_log=str(paths["worker_log"]))
+        append_background_job_event({"job_id": f"codex-worker-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "failed", "pid": os.getpid(), "duration_ms": duration_ms, "error": error})
+        return 1
+    duration_ms = int((time.time() - started) * 1000)
+    if returncode == 0 and paths["worker_final"].exists():
+        update_task_status(
+            task_id,
+            "worker_done_pending_host_audit",
+            f"codex worker completed with model={used_model}; host audit required",
+            duration_ms=duration_ms,
+            worker_log=str(paths["worker_log"]),
+            worker_final=str(paths["worker_final"]),
+            worker_exit_code=returncode,
+            worker_model=used_model,
+        )
+        append_background_job_event({"job_id": f"codex-worker-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "completed", "pid": os.getpid(), "duration_ms": duration_ms, "worker_model": used_model, "worker_exit_code": returncode})
+        append_progress_event(task_id, {"command": "/delegate run", "operators": ["codex-worker"], "prompt": task.get("prompt", "")}, "COMPLETED", f"worker model={used_model}", percent=100)
+        return 0
+    update_task_status(
+        task_id,
+        "failed",
+        f"codex worker failed exit={returncode}; host review required",
+        duration_ms=duration_ms,
+        worker_log=str(paths["worker_log"]),
+        worker_final=str(paths["worker_final"]) if paths["worker_final"].exists() else "",
+        worker_exit_code=returncode,
+        worker_model=used_model,
+    )
+    append_background_job_event({"job_id": f"codex-worker-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "failed", "pid": os.getpid(), "duration_ms": duration_ms, "worker_model": used_model, "worker_exit_code": returncode})
+    append_progress_event(task_id, {"command": "/delegate run", "operators": ["codex-worker"], "prompt": task.get("prompt", "")}, "FAILED", f"worker exit={returncode}", percent=100)
+    return returncode or 1
+
+
+def codex_worker_run_response(prompt: str) -> str:
+    task_id = prompt.strip().split()[0] if prompt.strip() else ""
+    if not task_id:
+        return "[Council] Użyj: /delegate run <task_id>."
+    task = get_latest_task(task_id)
+    if not task or task.get("command") != "/delegate":
+        return f"[Council] Nie znalazłem delegation task `{task_id}`."
+    paths = codex_worker_paths(task_id)
+    if not paths["worker_prompt"].exists():
+        write_codex_worker_pack(task)
+    current_status = str(task.get("status") or "")
+    if current_status in {"running_background", "worker_running"}:
+        return (
+            f"[Council] Worker już działa dla `{task_id}`.\n"
+            f"status: {current_status}\n"
+            f"pid: {task.get('worker_pid') or 'unknown'}\n"
+            f"Review: /delegate review {task_id}"
+        )
+    if current_status == "worker_done_pending_host_audit" or paths["worker_final"].exists():
+        return (
+            f"[Council] Worker już zakończył pracę dla `{task_id}`.\n"
+            "Nie odpalam drugiego procesu na tych samych artefaktach.\n"
+            f"Review: /delegate review {task_id}"
+        )
+    manual = codex_worker_manual_command(task_id)
+    if not codex_worker_enabled():
+        return (
+            f"[Council] Worker nie został odpalony dla `{task_id}`.\n"
+            "Powód: auto-run jest domyślnie wyłączony, żeby worker nie wykonywał kodu bez bramki hosta.\n"
+            "Cel nadal: Poke clone + GPT/Claude suby/OAuth + Grok API + lokalny OpenClaw/Hermes server.\n"
+            "Najpierw dla nietrywialnych zmian: Grok research/red-team i Claude Opus 4.8 plan.\n"
+            f"Manual command:\n{manual}\n"
+            f"Po zakończeniu: /delegate review {task_id}"
+        )
+    allowed, reason, reservation = reserve_operator_call("codex-worker", task_id=task_id, detail="codex worker start")
+    if not allowed:
+        update_task_status(task_id, "blocked", f"codex worker start blocked: {reason}")
+        return (
+            f"[Council] Worker zablokowany dla `{task_id}`.\n"
+            f"Powód: {compact_line(reason, 260)}\n"
+            "To respektuje /control, kill-switch, pauzę modeli i limity.\n"
+            f"Review: /delegate review {task_id}"
+        )
+    command = [sys.executable, "-X", "utf8", "-u", str(Path(__file__).resolve()), "run-codex-worker", "--task-id", task_id]
+    popen_kwargs = {"cwd": str(PROJECT_DIR), "env": operator_env()}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        with paths["worker_log"].open("a", encoding="utf-8", errors="replace") as log_file:
+            proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs)
+    except Exception as exc:
+        finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail=redact_secrets(str(exc))[:220])
+        update_task_status(task_id, "failed", f"codex worker start failed: {redact_secrets(str(exc))[:220]}")
+        return f"[Council] Nie udało się odpalić Codex workera `{task_id}`: {compact_line(redact_secrets(str(exc)), 260)}"
+    finalize_operator_call(reservation, status="started", duration_ms=0, detail=f"pid={proc.pid}")
+    update_task_status(task_id, "running_background", "codex worker started; host review required", worker_pid=proc.pid, worker_log=str(paths["worker_log"]), worker_final=str(paths["worker_final"]))
+    append_background_job_event(
+        {
+            "job_id": f"codex-worker-{task_id}",
+            "task_id": task_id,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+            "status": "running",
+            "command": "/delegate run",
+            "operators": ["codex-worker"],
+            "pid": proc.pid,
+            "log_path": str(paths["worker_log"]),
+            "worker_final": str(paths["worker_final"]),
+        }
+    )
+    append_progress_event(task_id, {"command": "/delegate", "operators": ["codex-worker"], "prompt": task.get("prompt", "")}, "RUNNING", f"codex worker pid={proc.pid}")
+    return (
+        f"[Council] Codex worker wystartował dla `{task_id}`.\n"
+        f"pid: {proc.pid}\n"
+        f"model: {codex_worker_model()}\n"
+        f"log: {paths['worker_log']}\n"
+        f"final: {paths['worker_final']}\n"
+        f"Cancel: /cancel {task_id}\n"
+        f"Review: /delegate review {task_id}"
+    )
+
+
+def codex_worker_secret_guard() -> dict:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(PROJECT_DIR), "status", "--short", "--untracked-files=all"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return {"status": "unknown", "reason": compact_line(str(exc), 220), "suspicious": []}
+    output = (proc.stdout or "") + (proc.stderr or "")
+    suspicious: list[str] = []
+    secret_names = {"authorized_keys", "id_rsa", "id_ed25519", "credentials.json", "token.json", "secrets.json"}
+    secret_suffixes = (".pem", ".key", ".p12", ".pfx", ".credentials")
+    secret_token_names = {"token", "secret", "credential", "credentials"}
+    for line in output.splitlines():
+        path = line[3:].strip() if len(line) > 3 else line.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        lowered = path.lower()
+        name = Path(lowered).name
+        env_secret = name == ".env" or (name.startswith(".env.") and name != ".env.example")
+        stem_tokens = {token for token in re.split(r"[^a-z0-9]+", Path(name).stem) if token}
+        token_secret = bool(stem_tokens & secret_token_names) and Path(name).suffix.lower() in {".json", ".txt", ".yaml", ".yml"}
+        if env_secret or name in secret_names or name.endswith(secret_suffixes) or token_secret:
+            suspicious.append(path)
+    return {
+        "status": "blocked" if suspicious else ("ok" if proc.returncode == 0 else "unknown"),
+        "reason": "" if proc.returncode == 0 else compact_line(output, 220),
+        "suspicious": suspicious[:12],
+    }
+
+
+def codex_worker_review_response(prompt: str) -> str:
+    task_id = prompt.strip().split()[0] if prompt.strip() else ""
+    if not task_id:
+        return "[Council] Użyj: /delegate review <task_id>."
+    task = get_latest_task(task_id)
+    if not task or task.get("command") != "/delegate":
+        return f"[Council] Nie znalazłem delegation task `{task_id}`."
+    paths = codex_worker_paths(task_id)
+    prompt_exists = paths["worker_prompt"].exists()
+    final_exists = paths["worker_final"].exists()
+    secret_guard = codex_worker_secret_guard()
+    final_preview = ""
+    if final_exists:
+        final_preview = compact_line(paths["worker_final"].read_text(encoding="utf-8", errors="replace"), 360)
+        if str(task.get("status") or "") == "running_background":
+            update_task_status(task_id, "worker_done_pending_host_audit", "worker-final.md exists; host audit required", worker_final=str(paths["worker_final"]))
+    lines = [
+        f"[Council] Codex Worker Review {CODEX_WORKER_VERSION}",
+        f"task_id: {task_id}",
+        f"product_goal: Poke clone + GPT/Claude suby/OAuth + Grok API + lokalny OpenClaw/Hermes server",
+        f"worker_prompt: {'OK' if prompt_exists else 'missing'}",
+        f"worker_final: {'OK' if final_exists else 'missing'}",
+        f"secret_guard: {secret_guard['status']}",
+        f"log: {paths['worker_log']}",
+        "",
+        "WYMAGANY AUDYT HOSTA:",
+        "1. Sprawdzić diff i zakres zmian.",
+        "2. Potwierdzić Grok/Claude albo udokumentować mały lokalny zakres.",
+        "3. Uruchomić py_compile, targeted tests i full tests.",
+        "4. Dla nietrywialnego diffu zlecić Claude Code review.",
+        "5. Dopiero potem deploy na Windows i smoke w Telegramie.",
+    ]
+    if final_preview:
+        lines.extend(["", f"worker_final_preview: {final_preview}"])
+    if secret_guard["suspicious"]:
+        lines.extend(["", "SECRET GUARD:", *[f"- {item}" for item in secret_guard["suspicious"]]])
+        lines.append("NEXT: nie deployuj; usuń/odwróć te zmiany i sprawdź diff.")
+    elif secret_guard.get("reason"):
+        lines.extend(["", f"secret_guard_reason: {secret_guard['reason']}"])
+    lines.extend(["", f"Details: /details {task_id}"])
+    return "\n".join(lines)
+
+
+def codex_worker_delegate_response(prompt: str, chat_id: str = "") -> str:
+    text = prompt.strip()
+    lower = normalize_intent_text(text)
+    if lower.startswith("run "):
+        return codex_worker_run_response(text[4:].strip())
+    if lower.startswith("prepare "):
+        return codex_worker_prepare_response(text[8:].strip())
+    if lower.startswith("research "):
+        return codex_worker_prepare_response(text[9:].strip())
+    if lower.startswith("review "):
+        return codex_worker_review_response(text[7:].strip())
+    if lower.startswith("show "):
+        return codex_worker_review_response(text[5:].strip())
+    return codex_worker_pack_response(text, chat_id=chat_id)
+
+
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
         "[Council] Poke-core aktywny, parity nadal w budowie.\n"
+        "Cel: 100% Poke-like prywatny agent + GPT/Codex i Claude przez Twoje suby/OAuth + Grok API research + Desktop jako lokalny OpenClaw/Hermes server.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; feedback o Poke/parity trafia do krótkiego Poke Gap, a większe bezpieczne intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i od L4.35 sam startuje tryb R0 w tle. Zewnętrzne skutki uboczne nadal tworzą approval/draft zamiast wykonywać się bez zgody.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, zbudować /provider plan/show/verify/request/execute, wykonać GitHub issue, Gmail draft, Calendar event i Drive document tylko za osobnym approvalem, confirm tokenem, provider-specific env gate i L4.41 read-before-write, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
+        "Mogę teraz: zrobić research przez Groka/X, przygotować /delegate pack gdzie Grok zbiera source/research dla Claude, Claude Opus 4.8 patrzy na research+kod+target Poke/OpenClaw/Hermes i robi plan, a Codex 5.3 Spark worker wdraża dopiero przed moim audytem; uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, zbudować /provider plan/show/verify/request/execute, wykonać GitHub issue, Gmail draft, Calendar event i Drive document tylko za osobnym approvalem, confirm tokenem, provider-specific env gate i L4.41 read-before-write, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        f"{POKE_GAP_VERSION}: Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack daje krótką diagnozę parity oraz gotowe przepływy Ask/URL/Voice/Screenshot/Status bez sekretów i bez autostartu; setup nadal pokazuje token, endpoint, bind scope i blockery. {POKE_FRONT_VERSION}: One Contact Memory Front używa ostatniego wątku dla zwykłych follow-upów i `co dalej`. L4.43: Autonomous Loop Cadence wymusza dwa cykle dziennie dla error-audit i feature-evolution oraz migruje stare recipe JSON po deployu. L4.42: Default Front Host skraca odpowiedzi o Poke/parity i zwykłe pytania prowadzi jak operator, nie jak status techniczny. L4.41: Provider Read-Before-Write sprawdza GitHub/Gmail/Calendar/Drive przed realnym write i blokuje duplikaty jako dry-run bez POST/upload. L4.40: Drive Document Executor tworzy Google Docs przez Drive files.create tylko po approval, confirm tokenie, Google OAuth i AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=true. L4.39: Poke Front Host Contract skraca feedback o celu/frustracji do decyzji, faktów i jednego następnego ruchu. L4.38: Provider Write Dedupe blokuje duplikaty provider write po connector+operation+canonical body przed request i execute. L4.37: Poke Action Cards dodaje przyciski Agent/Improve/Poke research/Health pod Poke Gap. L4.36: Poke Host Gap sprawia, że krytyka `nie działa jak Poke` wraca jako krótka diagnoza i P0 backlog, nie długa lista funkcji. L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień.\n"
+        "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `deleguj do codexa dopracuj Poke front`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        f"{CODEX_WORKER_VERSION}: Delegate Loop dodaje Grok source pack -> Claude code/workflow plan -> Codex 5.3 Spark worker -> host audit. {POKE_GAP_VERSION}: Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack daje krótką diagnozę parity oraz gotowe przepływy Ask/URL/Voice/Screenshot/Status bez sekretów i bez autostartu; setup nadal pokazuje token, endpoint, bind scope i blockery. {POKE_FRONT_VERSION}: One Contact Memory Front używa ostatniego wątku dla zwykłych follow-upów i `co dalej`. L4.43: Autonomous Loop Cadence wymusza dwa cykle dziennie dla error-audit i feature-evolution oraz migruje stare recipe JSON po deployu. L4.42: Default Front Host skraca odpowiedzi o Poke/parity i zwykłe pytania prowadzi jak operator, nie jak status techniczny. L4.41: Provider Read-Before-Write sprawdza GitHub/Gmail/Calendar/Drive przed realnym write i blokuje duplikaty jako dry-run bez POST/upload. L4.40: Drive Document Executor tworzy Google Docs przez Drive files.create tylko po approval, confirm tokenie, Google OAuth i AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=true. L4.39: Poke Front Host Contract skraca feedback o celu/frustracji do decyzji, faktów i jednego następnego ruchu. L4.38: Provider Write Dedupe blokuje duplikaty provider write po connector+operation+canonical body przed request i execute. L4.37: Poke Action Cards dodaje przyciski Agent/Improve/Poke research/Health pod Poke Gap. L4.36: Poke Host Gap sprawia, że krytyka `nie działa jak Poke` wraca jako krótka diagnoza i P0 backlog, nie długa lista funkcji. L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień.\n"
         "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, provider-write adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
@@ -5645,12 +6299,14 @@ def goal_response() -> str:
     improvements_open = open_improvements(limit=50)
     nudges_open = [row for row in latest_nudges(limit=50) if row.get("status") in {"open", "sent"}]
     return (
-        "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
+        "[Council] Goal: Bartek Agent OS = 100% Poke-like + OpenClaw/Hermes execution.\n"
+        "North Star: skopiować i ulepszyć Poke jako prywatny kontakt Telegram/iPhone, podpiąć GPT/Codex i Claude przez Twoje subskrypcje/OAuth, Groka przez API key, a Desktop traktować jako lokalny serwer z pamięcią, sandboxem i możliwościami OpenClaw/Hermes.\n"
+        f"Pętla wdrożeń {CODEX_WORKER_VERSION}: Grok zbiera research pack z X/GitHub/Reddit/web dla Claude -> Claude Opus 4.8 analizuje research, kod, Poke target i OpenClaw/Hermes -> Codex 5.3 Spark worker koduje wycinek -> host Codex audytuje, testuje i deployuje.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
         "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, L4.30 provider adapter manifests, L4.31 provider write-request gate/dry-run, L4.32 GitHub issue executor v0 za twardymi gate'ami, L4.33 Gmail draft executor v0 za twardymi gate'ami, L4.34 Calendar event executor v0 za twardymi gate'ami, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
         f"Gotowe także: {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + Guided Setup, L4.45 iPhone Shortcuts Service Pack, {POKE_FRONT_VERSION} One Contact Memory Front, L4.43 Autonomous Loop Cadence, L4.42 Default Front Host, L4.41 Provider Read-Before-Write dla GitHub/Gmail/Calendar/Drive, L4.40 Drive Document Executor, L4.39 Poke Front Host Contract, L4.38 Provider Write Dedupe, L4.37 Poke Action Cards dla szybkich działań pod Poke Gap, L4.36 Poke Host Gap dla frustracji/parity feedback oraz L4.35 Poke Safe Autostart, czyli bezpieczne R0 research/recipe/flow/council startują same zamiast prosić Cię o `start task-...`; reminder/kalendarz/mail dalej tworzą draft/approval.\n"
-        "Brakuje do Poke-level: prywatny iMessage bridge, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming, głębsze autonomiczne prowadzenie tematów przez integracje i zatwierdzony start iPhone Shortcuts service.\n"
+        "Brakuje do Poke-level: pełny styl odpowiedzi jak Poke, stały Grok->Claude research/plan loop dla każdej iteracji, prywatny iMessage bridge, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming, głębsze autonomiczne prowadzenie tematów przez integracje i zatwierdzony start iPhone Shortcuts service.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
         f"Najbliższy cel wdrożeniowy po {SHORTCUTS_VERSION}: approval/start iPhone Shortcuts service, potem prywatny iMessage/Messages bridge, żeby system był bliżej Poke jako natywny kontakt."
     )
@@ -5668,7 +6324,7 @@ def system_status_response() -> str:
         f"[Council] Online na Desktopie 24/7. {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts recipes, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, /poke-gap for Poke parity feedback, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; bezpieczne R0 research/recipe/flow/council startują od razu w tle; kalendarz/mail/GitHub/Drive external write -> draft/approval; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        f"Komendy {AGENT_INBOX_VERSION}: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        f"Komendy {AGENT_INBOX_VERSION}: /agent, /agent run [id], /delegate, /delegate prepare|run|review <task_id>, /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5696,7 +6352,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5728,7 +6384,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        f"version: {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + Guided Setup + {AGENT_INBOX_VERSION} Mobile Activation Advisor + L4.45 iPhone Shortcuts Service Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        f"version: {CODEX_WORKER_VERSION} Delegate Loop + {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + Guided Setup + {AGENT_INBOX_VERSION} Mobile Activation Advisor + L4.45 iPhone Shortcuts Service Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -5739,6 +6395,7 @@ def selftest_response() -> str:
         f"workspaces_dir: {'OK' if WORKSPACES_DIR.exists() else 'missing'}",
         f"docs: {doc_status}",
         f"shortcuts: {shortcut_state}",
+        f"delegate_loop: {CODEX_WORKER_VERSION} auto_run={'armed' if codex_worker_enabled() else 'gated'} model={codex_worker_model()}",
         "live_telegram: jeśli widzisz tę wiadomość w Telegramie po wpisaniu /selftest, inbound i outbound działają.",
     ]
     if stuck:
@@ -10804,6 +11461,7 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/task",
     "/agent",
     "/shortcuts",
+    "/delegate",
     "/drafts",
     "/status",
     "/progress",
@@ -10903,7 +11561,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /agent, /shortcuts, /drafts, /status, /progress, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /poke-gap, /nudges, /sources, /source, /connectors, /connector, /project-memory.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /agent, /shortcuts, /delegate, /drafts, /status, /progress, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /poke-gap, /nudges, /sources, /source, /connectors, /connector, /project-memory.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -10999,6 +11657,27 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż front", "pokaz front", "sprawdź front", "sprawdz front", "czemu bot nie odpowiada", "dlaczego bot nie odpowiada")
     ):
         return {"command": "/front", "operators": ["host"], "prompt": stripped, "mode": "front", "intent": "natural"}
+
+    delegate_prefixes = [
+        "deleguj do codexa",
+        "deleguj do codex",
+        "deleguj codex",
+        "deleguj worker",
+        "odpal worker",
+        "uruchom worker",
+        "codex worker",
+        "codex 5.3",
+        "spark agent",
+        "codex spark",
+    ]
+    if any(lower.startswith(prefix) for prefix in delegate_prefixes):
+        return {
+            "command": "/delegate",
+            "operators": ["grok", "claude-flow", "codex-worker", "host"],
+            "prompt": strip_intent_prefix(stripped, delegate_prefixes),
+            "mode": "delegate",
+            "intent": "natural",
+        }
 
     if lower in {"selftest", "self test", "test systemu", "sprawdź wszystko", "sprawdz wszystko"} or lower.startswith(
         ("pokaż selftest", "pokaz selftest", "uruchom selftest")
@@ -11594,6 +12273,13 @@ def route_text(text: str) -> dict:
         return {"command": "/agent", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "agent"}
     if lower.startswith("/inbox"):
         return {"command": "/agent", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "agent"}
+    if lower.startswith("/delegate"):
+        return {
+            "command": "/delegate",
+            "operators": ["grok", "claude-flow", "codex-worker", "host"],
+            "prompt": stripped[9:].strip(),
+            "mode": "delegate",
+        }
     if lower == "/shortcuts" or lower.startswith("/shortcuts ") or lower == "/shortcut" or lower.startswith("/shortcut "):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/shortcuts", "operators": ["host"], "prompt": prompt, "mode": "shortcuts"}
@@ -12381,6 +13067,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return agent_response(prompt, chat_id=chat_id)
     if command == "/shortcuts":
         return shortcuts_response(prompt)
+    if command == "/delegate":
+        return codex_worker_delegate_response(prompt, chat_id=chat_id)
     if command == "/drafts":
         return integration_drafts_response(prompt)
     if command == "/plan-action":
@@ -13006,6 +13694,8 @@ def main() -> int:
     shortcuts.add_argument("--port", type=int, default=0, help="Shortcuts bind port, default AI_COUNCIL_SHORTCUT_PORT or 8788")
     worker = sub.add_parser("run-background-job")
     worker.add_argument("--task-id", required=True)
+    codex_worker = sub.add_parser("run-codex-worker")
+    codex_worker.add_argument("--task-id", required=True)
     route = sub.add_parser("dry-route")
     route.add_argument("text", nargs="+")
     respond = sub.add_parser("respond")
@@ -13037,6 +13727,8 @@ def main() -> int:
         return serve_shortcuts(host=args.host, port=args.port)
     if args.cmd == "run-background-job":
         return run_background_job(args.task_id)
+    if args.cmd == "run-codex-worker":
+        return run_codex_worker_process(args.task_id)
     if args.cmd == "dry-route":
         dry_route(" ".join(args.text))
         return 0

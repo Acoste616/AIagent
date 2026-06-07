@@ -5863,6 +5863,286 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Najpierw naprawić rozmowę jak Poke", result["summary"])
         self.assertIn("Synthesis source: test_host", result["report"])
 
+    def test_delegate_natural_intent_routes_to_codex_worker_loop(self):
+        route = ai_council.route_text("deleguj do codexa dopracuj Poke front")
+
+        self.assertEqual(route["command"], "/delegate")
+        self.assertEqual(route["operators"], ["grok", "claude-flow", "codex-worker", "host"])
+        self.assertEqual(route["mode"], "delegate")
+        self.assertIn("dopracuj Poke front", route["prompt"])
+
+    def test_codex_worker_delegate_pack_creates_research_plan_and_worker_artifacts(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "codex_worker_enabled", return_value=False
+            ):
+                response = ai_council.codex_worker_delegate_response("dopracuj Poke front", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", response).group(0)
+                paths = ai_council.codex_worker_paths(task_id)
+                metadata = json.loads(paths["metadata"].read_text(encoding="utf-8"))
+                worker_prompt = paths["worker_prompt"].read_text(encoding="utf-8")
+                grok_prompt = paths["grok_prompt"].read_text(encoding="utf-8")
+                claude_prompt = paths["claude_prompt"].read_text(encoding="utf-8")
+                task = ai_council.get_latest_task(task_id)
+
+        self.assertIn("Poke clone", response)
+        self.assertIn("Grok source pack -> Claude", response)
+        self.assertEqual(task["status"], "planned")
+        self.assertEqual(metadata["product_goal"], "Poke clone plus GPT/Claude subscriptions/OAuth plus Grok API plus local OpenClaw/Hermes server")
+        self.assertIn("github", metadata["council_loop"][0]["sources"])
+        self.assertIn("Reddit", grok_prompt)
+        self.assertIn("Masz użyć materiałów Groka", claude_prompt)
+        self.assertIn("do not replace Grok, Claude", worker_prompt)
+
+    def test_codex_worker_prepare_runs_grok_then_claude_and_persists_outputs(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "codex_worker_enabled", return_value=False
+            ), patch.object(
+                ai_council, "grok_x_research_response", return_value="[Grok X Research]\nŹródła: X, GitHub, Reddit, web"
+            ) as grok, patch.object(
+                ai_council, "claude_flow_response", return_value="[Claude Flow]\nPlan: sprawdź kod i dopracuj styl Poke"
+            ) as claude:
+                pack_response = ai_council.codex_worker_delegate_response("dopracuj Poke front", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                prepare_response = ai_council.codex_worker_delegate_response(f"prepare {task_id}", chat_id="553")
+                paths = ai_council.codex_worker_paths(task_id)
+                task = ai_council.get_latest_task(task_id)
+                grok_research = paths["grok_research"].read_text(encoding="utf-8")
+                claude_plan = paths["claude_plan"].read_text(encoding="utf-8")
+
+        grok.assert_called_once()
+        claude.assert_called_once()
+        self.assertEqual(task["status"], "prepared_for_worker")
+        self.assertIn("Delegate prepare gotowe", prepare_response)
+        self.assertIn("Źródła: X, GitHub, Reddit, web", grok_research)
+        self.assertIn("Plan: sprawdź kod", claude_plan)
+
+    def test_codex_worker_prepare_is_idempotent_after_success(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "codex_worker_enabled", return_value=False
+            ), patch.object(
+                ai_council, "grok_x_research_response", return_value="[Grok X Research]\nŹródła"
+            ) as grok, patch.object(
+                ai_council, "claude_flow_response", return_value="[Claude Flow]\nPlan"
+            ) as claude:
+                pack_response = ai_council.codex_worker_delegate_response("dopracuj Poke front", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                first = ai_council.codex_worker_delegate_response(f"prepare {task_id}", chat_id="553")
+                second = ai_council.codex_worker_delegate_response(f"prepare {task_id}", chat_id="553")
+
+        self.assertIn("Delegate prepare gotowe", first)
+        self.assertIn("już jest gotowe", second)
+        grok.assert_called_once()
+        claude.assert_called_once()
+
+    def test_codex_worker_prepare_blocks_when_grok_is_limited(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "codex_worker_enabled", return_value=False
+            ), patch.object(
+                ai_council, "grok_x_research_response", return_value="[Grok X Research] blocked: grok daily call limit reached"
+            ), patch.object(
+                ai_council, "claude_flow_response"
+            ) as claude:
+                pack_response = ai_council.codex_worker_delegate_response("dopracuj Poke front", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                prepare_response = ai_council.codex_worker_delegate_response(f"prepare {task_id}", chat_id="553")
+                task = ai_council.get_latest_task(task_id)
+
+        claude.assert_not_called()
+        self.assertEqual(task["status"], "blocked")
+        self.assertIn("Delegate prepare zablokowane", prepare_response)
+        self.assertIn("Grok source/research pack", prepare_response)
+
+    def test_codex_worker_run_is_blocked_by_default_and_review_reports_missing_final(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "codex_worker_enabled", return_value=False), patch.object(
+                ai_council, "codex_worker_secret_guard", return_value={"status": "ok", "reason": "", "suspicious": []}
+            ), patch(
+                "ai_council.subprocess.Popen"
+            ) as popen:
+                pack_response = ai_council.codex_worker_delegate_response("wdroż mały patch", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                run_response = ai_council.codex_worker_delegate_response(f"run {task_id}", chat_id="553")
+                review_response = ai_council.codex_worker_delegate_response(f"review {task_id}", chat_id="553")
+
+        popen.assert_not_called()
+        self.assertIn("Worker nie został odpalony", run_response)
+        self.assertIn("Manual command:", run_response)
+        self.assertIn("worker_final: missing", review_response)
+        self.assertIn("WYMAGANY AUDYT HOSTA", review_response)
+
+    def test_codex_worker_run_respects_control_and_call_guards(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "codex_worker_enabled", return_value=True), patch.object(
+                ai_council, "reserve_operator_call", return_value=(False, "model calls paused", None)
+            ), patch("ai_council.subprocess.Popen") as popen:
+                pack_response = ai_council.codex_worker_delegate_response("wdroż mały patch", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                run_response = ai_council.codex_worker_delegate_response(f"run {task_id}", chat_id="553")
+                task = ai_council.get_latest_task(task_id)
+
+        popen.assert_not_called()
+        self.assertEqual(task["status"], "blocked")
+        self.assertIn("Worker zablokowany", run_response)
+        self.assertIn("model calls paused", run_response)
+
+    def test_codex_worker_run_refuses_duplicate_running_task(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "codex_worker_enabled", return_value=True), patch(
+                "ai_council.subprocess.Popen"
+            ) as popen:
+                pack_response = ai_council.codex_worker_delegate_response("wdroż mały patch", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                ai_council.update_task_status(task_id, "running_background", "worker already running", worker_pid=1234)
+                run_response = ai_council.codex_worker_delegate_response(f"run {task_id}", chat_id="553")
+
+        popen.assert_not_called()
+        self.assertIn("Worker już działa", run_response)
+        self.assertIn("1234", run_response)
+
+    def test_run_codex_worker_process_uses_fallback_model_after_primary_failure(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "codex_worker_model", return_value="codex-5.3-spark"), patch.object(
+                ai_council, "codex_worker_fallback_model", return_value="codex-5.3"
+            ), patch.object(ai_council, "command_path", return_value="codex"):
+                pack_response = ai_council.codex_worker_delegate_response("wdroż mały patch", chat_id="553")
+                task_id = re.search(r"task-\d{8}-\d{6}-[a-f0-9]{6}", pack_response).group(0)
+                paths = ai_council.codex_worker_paths(task_id)
+
+                def fake_run(command, **kwargs):
+                    model = command[command.index("--model") + 1]
+                    if model == "codex-5.3":
+                        paths["worker_final"].write_text("fallback worker done", encoding="utf-8")
+                        return subprocess.CompletedProcess(command, 0)
+                    return subprocess.CompletedProcess(command, 2)
+
+                with patch("ai_council.subprocess.run", side_effect=fake_run) as run:
+                    code = ai_council.run_codex_worker_process(task_id)
+                    task = ai_council.get_latest_task(task_id)
+                    log_text = paths["worker_log"].read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(task["status"], "worker_done_pending_host_audit")
+        self.assertEqual(task["worker_model"], "codex-5.3")
+        self.assertIn("primary model failed; trying fallback", log_text)
+
+    def test_codex_worker_secret_guard_flags_real_secrets_not_env_example(self):
+        completed = subprocess.CompletedProcess(
+            args=["git"],
+            returncode=0,
+            stdout=" M .env.example\n M docs/oauth_token_setup.md\n M tests/test_secret_redaction.py\n?? .env\n?? keys/id_ed25519\n",
+            stderr="",
+        )
+
+        with patch("ai_council.subprocess.run", return_value=completed):
+            guard = ai_council.codex_worker_secret_guard()
+
+        self.assertEqual(guard["status"], "blocked")
+        self.assertIn(".env", guard["suspicious"])
+        self.assertIn("keys/id_ed25519", guard["suspicious"])
+        self.assertNotIn(".env.example", guard["suspicious"])
+        self.assertNotIn("docs/oauth_token_setup.md", guard["suspicious"])
+        self.assertNotIn("tests/test_secret_redaction.py", guard["suspicious"])
+
+    def test_codex_worker_recipe_is_read_only_planner_allowed(self):
+        recipes = ai_council.default_recipes()
+        recipe = recipes["codex_worker_delegation"]
+
+        self.assertEqual(recipe["risk"], "R0")
+        self.assertTrue(recipe["planner_selectable"])
+        self.assertEqual(recipe["steps"][0]["command"], "/delegate")
+        self.assertFalse(ai_council.recipe_step_violations(recipe))
+
+    def test_goal_and_health_expose_delegate_loop_and_true_poke_target(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "codex_worker_enabled", return_value=False), patch.object(
+                ai_council, "operator_binary_status", return_value={}
+            ):
+                goal = ai_council.goal_response()
+                health = ai_council.health_response()
+
+        self.assertIn("100% Poke-like", goal)
+        self.assertIn("Grok zbiera research pack", goal)
+        self.assertIn("Desktop", goal)
+        self.assertIn("delegate_loop=L4.49:gated", health)
+
 
 if __name__ == "__main__":
     unittest.main()
