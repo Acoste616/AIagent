@@ -401,6 +401,34 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("Komendy:", response)
         self.assertNotIn("task-", response)
 
+    def test_poke_gap_feedback_routes_to_short_operator_gap(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                route = ai_council.route_message("Ani nie odpowiada on jak poke nie ma takich możliwości, gdzie ten cel?")
+                response = ai_council.build_response(route)
+                rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
+
+        self.assertEqual(route["command"], "/poke-gap")
+        self.assertIn("Poke Gap L4.36", response)
+        self.assertIn("DECYZJA: masz rację", response)
+        self.assertIn("TWOJA WIADOMOŚĆ:", response)
+        self.assertIn("improvement=imp-", response)
+        self.assertNotIn("Gotowe:", response)
+        self.assertLess(len(response), 1800)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "poke_gap")
+
     def test_short_greeting_has_operator_style_response(self):
         with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
             response = ai_council.build_response(ai_council.route_text("hej"))
@@ -609,8 +637,9 @@ class RoutingTests(unittest.TestCase):
             "zrób research o Poke": "@research",
             "co możesz?": "/capabilities",
             "jak dziś działasz?": "/capabilities",
-            "gdzie ten cel i czemu nie odpowiada jak Poke": "/goal",
-            "Ani nie odpowiada on jak poke nie ma takich możliwości, o co chodzi gdzie ten cel ?": "/goal",
+            "gdzie ten cel i czemu nie odpowiada jak Poke": "/poke-gap",
+            "Ani nie odpowiada on jak poke nie ma takich możliwości, o co chodzi gdzie ten cel ?": "/poke-gap",
+            "poke parity": "/poke-gap",
         }
 
         for text, command in cases.items():
@@ -3507,6 +3536,8 @@ class L2LedgerTests(unittest.TestCase):
                 ai_council, "ERRORS_DIR", root / "errors"
             ), patch.object(
                 ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
             ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
                 ai_council, "LOG_DIR", root / "logs"
