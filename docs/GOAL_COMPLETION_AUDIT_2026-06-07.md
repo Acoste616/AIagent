@@ -1,7 +1,7 @@
 # Goal Status Audit
 
 Date: 2026-06-07
-Updated: 2026-06-07 19:59 Europe/Warsaw
+Updated: 2026-06-07 20:15 Europe/Warsaw
 
 Goal:
 
@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.44 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, and `D:\ai-council\docs\implementation\L4_44_ONE_CONTACT_MEMORY_FRONT.md`; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 19:57 | Proven |
+| Windows deployment | L4.45 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, `D:\ai-council\docs\implementation\L4_45_IPHONE_SHORTCUTS_SERVICE_PACK.md`, and `D:\ai-council\windows-deploy\*shortcuts.ps1`; Telegram listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 20:15 | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,21 +30,22 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.44: Mac py_compile, target front/memory tests `15/15 OK`, full `230/230 OK`; Windows Desktop py_compile, full `230 passed, 111 subtests passed` | Proven |
+| Test verification | L4.45: Mac py_compile, Shortcuts target tests `14/14 OK`, full `234/234 OK`; Windows Desktop py_compile, Shortcuts target tests `14 passed, 220 deselected`, full `234 passed, 111 subtests passed` | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | L4.44 functional commit pushed: `4c81b58 Add one-contact memory front`; L4.43 functional commit `53c208f` and audit commit `f84fa58` remain present | Proven |
-| Claude review | Claude Code reviewed L4.44; final verdict: ship it. It confirmed no new daemon, no new writes, and chat-scoped conversation memory. | Proven |
+| GitHub push to `Acoste616/AIagent` | L4.45 functional commit ready/pushed in this deployment set: `1e33995 Add iPhone Shortcuts service pack`; L4.44 functional commit `4c81b58` remains present | Proven |
+| Claude review | Claude Code reviewed L4.45 twice; final verdict: ship it. Its PID-file/process-safety findings were applied before deployment; no new daemon starts automatically and no token is printed. | Proven |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
-- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 19:57:11`.
-- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.44 `memory_front=on`, L4.43 `loop_cadence=on`, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
-- Selftest: version now includes `L4.44 One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 20:15:13`.
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.45 `shortcuts_service_pack`, L4.44 `memory_front=on`, L4.43 `loop_cadence=on`, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version now starts with `L4.45 iPhone Shortcuts Service Pack + L4.44 One Contact Memory Front`; docs OK, operators OK, Telegram configured, Shortcuts state `token_missing_not_started`.
 - Loops smoke: `/loops` returns `Autonomous loops L4.43`; `error_audit_twice_daily` next windows `2026-06-07 21:00 +0200`, `2026-06-08 09:00 +0200`; `feature_evolution_loop` next windows `2026-06-07 22:15 +0200`, `2026-06-08 10:15 +0200`.
-- Front smoke: the exact complaint `Ani nie odpowiada on jak poke...` routes to `/poke-gap` and returns `Poke Gap L4.44` without a long status dump.
+- Shortcuts smoke: `/shortcuts` returns `iPhone Shortcuts L4.45`, Windows paths for `start/status/stop-ai-council-shortcuts.ps1`, `service: not_started_by_default`, and `token: missing`; `status-ai-council-shortcuts.ps1` reports `State: Stopped`.
+- Front smoke: the exact complaint `Ani nie odpowiada on jak poke...` routes to `/poke-gap` and returns a short `Poke Gap L4.44` response that says the goal remains active and L4.45 is the current iPhone service-pack layer.
 - Memory-front smoke: with front LLM disabled for the process, `a teraz krócej` after prior local turn `zrób research o Poke` returns `OSTATNI WĄTEK: Ty: zrób research o Poke` and does not start a blank status response.
 
 ## Completion Decision
@@ -55,8 +56,8 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
-2. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+1. Configure `AI_COUNCIL_SHORTCUT_TOKEN` on Windows only after approval, then start `start-ai-council-shortcuts.ps1` manually and connect iOS Shortcuts.
+2. Private iMessage/Apple Messages bridge only after the Telegram and iPhone Shortcuts core is stable.
 3. Deeper source-backed integrations and proactive topic ownership.
 4. Broader execution verifier coverage beyond workspace write/append/patch and optional token-level streaming if it proves useful.
 5. Cleanup of long runtime version strings into one source of truth.
@@ -94,6 +95,7 @@ Completed layers in the current implementation state:
 - L4.42 Default Front Host: Poke/parity frustration now returns `Poke Gap L4.42`, does not redirect to long `/goal` dumps, reports L4.41 as done, names front UX/proactive ownership as the current gap, and routes more short ordinary questions to the front LLM while keeping status/system phrases local.
 - L4.43 Autonomous Loop Cadence: `error_audit_twice_daily` and `feature_evolution_loop` are versioned system-managed recipes with `cadence=twice_daily`; `feature_evolution_loop` now runs at `10:15` and `22:15`; stale deployed recipe JSON files migrate to L4.43 while preserving `enabled`; `/loops` shows cadence, next windows, and last run.
 - L4.44 One Contact Memory Front: deterministic local `/chat` fallback uses the latest conversation turn for the same Telegram chat, so follow-ups such as `a teraz krócej` and `co dalej` no longer sound like a fresh empty conversation when Grok front chat is gated; the Grok front prompt also treats Telegram as one continuous contact.
+- L4.45 iPhone Shortcuts Service Pack: `/shortcuts` reports token state, endpoint, bind scope, payloads, recent tasks, and Windows start/status/stop scripts; Shortcuts HTTP `/health` returns the service version; deploy scripts use token gating and PID-file process verification; no Shortcuts daemon starts automatically.
 
 ## External Follow-up
 
