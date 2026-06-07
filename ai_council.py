@@ -2183,10 +2183,11 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Capabilities L3.5 active + L4.0 Shortcuts-ready.\n"
-        "Teraz: Telegram, voice/audio/video transcription przez xAI STT REST, media-to-intent auto routing, final delivery cards z Status/Details/Facts/Next, opcjonalny token-gated iPhone Shortcuts ingress przez serve-shortcuts, photo/document/video capture, local text extraction, Grok vision/OCR dla obrazów, inline approval buttons, natural intent routing, recipes scheduler, recipe enable/disable, Risk Officer R0-R4, /execute, /verify, /rollback dla lokalnych workspace actions, Codex read-only, Claude quick no-tools, Claude Flow Opus 4.8, Grok research, Grok X research przez xAI x_search, audit, workspaces, task queue, background jobs także dla zwykłych wiadomości, real cancel PID, artifact index, /details, /facts, /next, /health, /selftest, actions, memory auto-recall, structured council v0, approved workspace write/append/patch, task status/cost/idempotency/stuck detection.\n"
+        "[Council] Poke-like core online.\n"
+        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Komendy i naturalne frazy: status, selftest, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, approve/deny, /risk, /execute, /verify, /rollback, /write, /append, /patch, /flow, /council, /recipes, /recipe show|enable|disable <name>, /recipe run <name> <input>, @xresearch, /xresearch, /poke-research.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2201,7 +2202,7 @@ def system_status_response() -> str:
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
         "[Council] Online na Desktopie 24/7. L3.5 active + L4.0 Shortcuts-ready: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> Codex read-only w tle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         "Komendy L3.0: /health, /selftest, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
@@ -2229,7 +2230,7 @@ def health_response() -> str:
         lines.append(f"{name}: {marker}{extra}")
     if stuck:
         lines.append("stuck: " + ", ".join(task.get("task_id", "") for task in stuck))
-    lines.append("quick_check: jeśli zwykła wiadomość wraca jako task_id, polling nie jest blokowany.")
+    lines.append("quick_check: zwykła wiadomość powinna wracać jako szybki /chat bez task_id.")
     return "\n".join(lines)
 
 
@@ -3961,9 +3962,14 @@ def strip_intent_prefix(text: str, prefixes: list[str]) -> str:
     return text.strip()
 
 
+def normalize_intent_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower()).strip(" \t\r\n?!.,")
+
+
 def natural_intent_route(stripped: str, lower: str) -> dict | None:
     if not stripped or stripped.startswith(("@", "/")):
         return None
+    lower = normalize_intent_text(lower)
 
     status_phrases = {
         "status",
@@ -3987,7 +3993,7 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/selftest", "operators": ["host"], "prompt": "", "mode": "selftest", "intent": "natural"}
 
-    if lower in {"co umiesz", "co potrafisz", "capabilities", "możliwości", "mozliwosci"} or lower.startswith(
+    if lower in {"co umiesz", "co potrafisz", "co możesz", "co mozesz", "capabilities", "możliwości", "mozliwosci"} or lower.startswith(
         ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities")
     ):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities", "intent": "natural"}
@@ -4143,7 +4149,16 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
-    council_prefixes = ["uruchom council", "zrób council", "zrob council", "ai council", "council job"]
+    council_prefixes = [
+        "uruchom council",
+        "zrób council",
+        "zrob council",
+        "ai council",
+        "council job",
+        "skonsultuj z council",
+        "skonsultuj z claude i grokiem",
+        "skonsultuj z claude i grok",
+    ]
     if any(lower.startswith(prefix) for prefix in council_prefixes):
         return {
             "command": "/council",
@@ -4153,8 +4168,36 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
-    flow_prefixes = ["uruchom flow", "claude flow", "pełny claude", "pelny claude", "dynamic workflow", "pełny council", "pelny council"]
+    flow_prefixes = [
+        "uruchom flow",
+        "claude flow",
+        "pełny claude",
+        "pelny claude",
+        "dynamic workflow",
+        "pełny council",
+        "pelny council",
+        "zrób plan",
+        "zrob plan",
+        "przygotuj plan",
+        "rozpisz plan",
+        "zaplanuj",
+        "wdrażaj",
+        "wdrazaj",
+        "wdrażajcie",
+        "wdrazajcie",
+        "wdroż",
+        "wdroz",
+        "implementuj",
+    ]
     if any(lower.startswith(prefix) for prefix in flow_prefixes):
+        if any(marker in lower for marker in ("council", "claude i grok", "claude i grokiem")):
+            return {
+                "command": "/council",
+                "operators": ["codex", "claude", "grok"],
+                "prompt": strip_intent_prefix(stripped, flow_prefixes),
+                "mode": "council",
+                "intent": "natural",
+            }
         return {
             "command": "/flow",
             "operators": ["claude-flow"],
@@ -4180,6 +4223,25 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "operators": ["grok"],
             "prompt": strip_intent_prefix(stripped, poke_prefixes),
             "mode": "poke_research",
+            "intent": "natural",
+        }
+
+    research_prefixes = [
+        "zrób research",
+        "zrob research",
+        "przygotuj research",
+        "zbadaj",
+        "sprawdź w internecie",
+        "sprawdz w internecie",
+        "poszukaj",
+        "research",
+    ]
+    if any(lower.startswith(prefix) for prefix in research_prefixes):
+        return {
+            "command": "@research",
+            "operators": ["grok"],
+            "prompt": strip_intent_prefix(stripped, research_prefixes),
+            "mode": "research",
             "intent": "natural",
         }
 
@@ -4253,6 +4315,8 @@ def route_text(text: str) -> dict:
         return {"command": "/artifacts", "operators": ["host"], "prompt": "", "mode": "artifacts"}
     if lower.startswith("/capabilities"):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities"}
+    if lower.startswith("/chat"):
+        return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/cost"):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
     if lower.startswith("/recipes"):
@@ -4310,7 +4374,7 @@ def route_text(text: str) -> dict:
     natural_route = natural_intent_route(stripped, lower)
     if natural_route:
         return natural_route
-    return {"command": "codex_default", "operators": ["codex"], "prompt": stripped}
+    return {"command": "/chat", "operators": ["host"], "prompt": stripped, "mode": "chat", "intent": "natural"}
 
 
 def operator_key(name: str) -> str:
@@ -4615,14 +4679,97 @@ def build_research_prompt(prompt: str) -> str:
     )
 
 
+def poke_chat_fallback(prompt: str) -> str:
+    text = prompt.strip()
+    lower = normalize_intent_text(text)
+    if not text:
+        return (
+            "[Council] Jestem online.\n"
+            "Pisz normalnie: krótkie rzeczy odpowiadam od razu, a większe zamieniam w research, plan, Council albo task.\n"
+            "Najprostszy test: `co możesz`, `zrób research o Poke`, `zrób plan ...`, `status`."
+        )
+    if lower in {"działasz", "dzialasz", "jesteś", "jestes", "żyjesz", "zyjesz", "online"}:
+        return (
+            "[Council] Działam.\n"
+            "Zwykła rozmowa wraca od razu, a cięższe rzeczy idą w tło jako task z Details/Facts/Next."
+        )
+    if any(marker in lower for marker in ("nie odpowiada", "nie dziala", "nie działa", "gowno", "gówno", "poke")):
+        return (
+            "[Council] Masz rację: cel Poke-like oznacza szybki osobisty operator, nie wolny task dla każdej wiadomości.\n"
+            "Obecna poprawka: zwykłe wiadomości wracają jako /chat, a research/plan/Council eskalują tylko wtedy, gdy wykryję taką intencję."
+        )
+    return (
+        "[Council] Mam to.\n"
+        "Rozpoznaję to jako rozmowę, nie zadanie w tle.\n"
+        "Jeżeli mam działać dalej, napisz naturalnie: `zrób research ...`, `zrób plan ...`, `skonsultuj z council ...` albo `zapisz task ...`."
+    )
+
+
+def poke_chat_llm_response(prompt: str) -> str | None:
+    if not bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) or not cfg("XAI_API_KEY"):
+        return None
+    started = time.time()
+    allowed, reason = operator_call_allowed("grok")
+    if not allowed:
+        record_operator_usage("grok", status="blocked", duration_ms=0, detail=f"poke_chat: {reason}")
+        return None
+    text = prompt.strip()
+    memory_context = memory_context_for_prompt(text)
+    memory_block = f"\n\nKontekst z pamięci AI Council:\n{memory_context}" if memory_context else ""
+    payload = {
+        "model": cfg("AI_COUNCIL_POKE_CHAT_MODEL", cfg("AI_COUNCIL_GROK_MODEL", "grok-4.3")),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Jesteś frontowym operatorem Bartek Agent OS w Telegramie, styl Poke-like. "
+                    "Odpowiadasz po polsku, szybko, konkretnie i osobowo: bez ściany komend, bez logów, bez technicznego żargonu. "
+                    "Jeśli pytanie jest zwykłe, odpowiedz normalnie. Jeśli wygląda na większe zadanie, nazwij najlepszy tryb: research, plan, Council, task albo approval. "
+                    "Nie twierdź, że wykonałeś pliki, API, publikację albo kontakt, jeśli tego realnie nie wykonał system. "
+                    "Maks 4 krótkie zdania albo 5 punktów. Na końcu podaj jeden najlepszy następny krok, gdy ma sens."
+                ),
+            },
+            {"role": "user", "content": f"{text}{memory_block}"},
+        ],
+        "stream": False,
+    }
+    data = request_json(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {cfg('XAI_API_KEY')}"},
+        method="POST",
+        payload=payload,
+        timeout=int_cfg("AI_COUNCIL_POKE_CHAT_TIMEOUT", 35),
+    )
+    duration_ms = int((time.time() - started) * 1000)
+    if data.get("ok") is False:
+        detail = redact_secrets(str(data.get("body_preview", "")))[:500]
+        record_operator_usage("grok", status="failed", duration_ms=duration_ms, detail=f"poke_chat: {detail[:220]}")
+        return None
+    try:
+        answer = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError):
+        answer = ""
+    if not answer:
+        record_operator_usage("grok", status="failed", duration_ms=duration_ms, detail="poke_chat: empty response")
+        return None
+    record_operator_usage("grok", status="completed", duration_ms=duration_ms, detail="poke_chat")
+    return "[Council]\n" + answer[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)]
+
+
+def poke_chat_response(prompt: str) -> str:
+    lower = normalize_intent_text(prompt)
+    if lower in {"co umiesz", "co potrafisz", "co możesz", "co mozesz", "możliwości", "mozliwosci"}:
+        return capabilities_response()
+    llm_response = poke_chat_llm_response(prompt)
+    if llm_response:
+        return llm_response
+    return poke_chat_fallback(prompt)
+
+
 def host_response(prompt: str) -> str:
     if not prompt:
-        return "[Council] AI Council online. Rozumiem też naturalne intencje: status, selftest, health, status <id>, details/fakty/next <id>, koszty, cancel/anuluj <id>, kolejka, pamięć, actions, council, flow, zapisz/dopisz/zmień plik. Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all."
-    return (
-        "[Council]\n"
-        "Odebrałem. Routing działa.\n"
-        "Komendy: @codex, @claude, @claude-flow, @grok, @research, @xresearch, /poke-research, @all, /task, /queue, /artifacts, /actions, /approve, /deny, /memory, /write, /append, /patch, /flow, /council, /details <id>, /facts <id>, /next <id>, /capabilities, /health, /selftest, /status <id>, /cancel <id>, /cost."
-    )
+        return poke_chat_fallback("")
+    return poke_chat_response(prompt)
 
 
 def build_response(route: dict, chat_id: str = "") -> str:
@@ -4650,6 +4797,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return "[Council] Workspace: D:\\ai-council. L2.5: workspaces, artifacts, reports, state\\tasks.jsonl, state\\actions.jsonl, state\\background_jobs.jsonl, state\\artifact_index.jsonl, state\\costs.jsonl, state\\memory.sqlite. Codex: read-only. Claude quick: bez tools. Claude Flow: Opus 4.8 plan workflow. Grok: API research."
     if command == "/capabilities":
         return capabilities_response()
+    if command == "/chat":
+        return poke_chat_response(prompt)
     if command == "/cost":
         return cost_response()
     if command == "/recipes":

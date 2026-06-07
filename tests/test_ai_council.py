@@ -284,12 +284,22 @@ class OperatorOutputTests(unittest.TestCase):
 
 
 class RoutingTests(unittest.TestCase):
-    def test_plain_message_routes_to_codex(self):
+    def test_plain_message_routes_to_fast_chat(self):
         route = ai_council.route_text("bez prefiksu")
 
-        self.assertEqual(route["command"], "codex_default")
-        self.assertEqual(route["operators"], ["codex"])
+        self.assertEqual(route["command"], "/chat")
+        self.assertEqual(route["operators"], ["host"])
         self.assertEqual(route["prompt"], "bez prefiksu")
+        self.assertFalse(ai_council.route_needs_task(route))
+        self.assertFalse(ai_council.route_should_background(route))
+
+    def test_chat_response_has_poke_style_fallback(self):
+        with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
+            response = ai_council.build_response(ai_council.route_text("działasz?"))
+
+        self.assertIn("Działam", response)
+        self.assertNotIn("Komendy:", response)
+        self.assertNotIn("task-", response)
 
     def test_research_wraps_prompt_as_polish_research_brief(self):
         captured = {}
@@ -341,6 +351,7 @@ class RoutingTests(unittest.TestCase):
             "/write shared/test.txt = ok": ("/write", ["host"]),
             "/append shared/test.txt = ok": ("/append", ["host"]),
             "/patch shared/test.txt :: ok => better": ("/patch", ["host"]),
+            "/chat test": ("/chat", ["host"]),
             "/flow zrób pełny plan": ("/flow", ["claude-flow"]),
             "@claude-flow zrób pełny plan": ("@claude-flow", ["claude-flow"]),
             "/council zrób plan": ("/council", ["codex", "claude", "grok"]),
@@ -371,13 +382,16 @@ class RoutingTests(unittest.TestCase):
             "zatwierdź act-1": "/approve",
             "uruchom flow sprawdź system": "/flow",
             "uruchom council sprawdź plan": "/council",
+            "zrób plan rozwoju systemu": "/flow",
+            "zrób research o Poke": "@research",
+            "co możesz?": "/capabilities",
         }
 
         for text, command in cases.items():
             with self.subTest(text=text):
                 self.assertEqual(ai_council.route_text(text)["command"], command)
 
-        self.assertEqual(ai_council.route_text("normalne pytanie do codexa")["command"], "codex_default")
+        self.assertEqual(ai_council.route_text("normalne pytanie do codexa")["command"], "/chat")
 
     def test_multiline_command_block_routes_line_by_line(self):
         route = ai_council.route_text("status\n@claude-flow test\n/flow plan")
@@ -598,12 +612,12 @@ class L2LedgerTests(unittest.TestCase):
 
 class L25BackgroundTests(unittest.TestCase):
     def test_route_should_background_only_explicit_long_routes(self):
-        background = ["krótkie pytanie", "/flow test", "@claude-flow test", "@codex test", "@grok test", "@research test", "@all test", "/council test"]
+        background = ["/flow test", "@claude-flow test", "@codex test", "@grok test", "@research test", "@all test", "/council test"]
         for text in background:
             with self.subTest(text=text):
                 self.assertTrue(ai_council.route_should_background(ai_council.route_text(text)))
 
-        foreground = ["@claude test", "/status task-1", "/health", "/write shared/a.txt = ok"]
+        foreground = ["krótkie pytanie", "@claude test", "/status task-1", "/health", "/write shared/a.txt = ok"]
         for text in foreground:
             with self.subTest(text=text):
                 self.assertFalse(ai_council.route_should_background(ai_council.route_text(text)))
