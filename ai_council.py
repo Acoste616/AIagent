@@ -251,6 +251,7 @@ GROK_RESEARCH_VERSION = "L4.54"
 LOOP_SYNTHESIS_VERSION = "L4.55"
 CLAUDE_FLOW_WATCHDOG_VERSION = "L4.56"
 IMPROVEMENT_REPAIR_VERSION = "L4.57"
+GROK_BUDGET_HYGIENE_VERSION = "L4.58"
 GENERIC_IMPROVEMENT_TITLES = {
     "research gotowy",
     "plan workflow gotowy",
@@ -1007,6 +1008,41 @@ def repair_open_improvements(limit: int = 50, dry_run: bool = False) -> list[dic
     return repaired
 
 
+def stale_grok_blocked_improvement(item: dict) -> bool:
+    text = normalize_intent_text(f"{item.get('title', '')} {item.get('summary', '')}")
+    return "grok" in text and "blocked" in text and (
+        "daily call limit" in text or "estimated budget" in text or "budget reached" in text
+    )
+
+
+def dismiss_stale_grok_blocked_improvements(limit: int = 50, dry_run: bool = False) -> list[dict]:
+    allowed, reason = operator_call_allowed("grok")
+    if not allowed:
+        return []
+    dismissed: list[dict] = []
+    for item in open_improvements(limit=limit):
+        if not stale_grok_blocked_improvement(item):
+            continue
+        payload = {
+            "improvement_id": item.get("improvement_id"),
+            "old_title": item.get("title", ""),
+            "reason": reason or "grok guard currently allows calls",
+        }
+        if dry_run:
+            dismissed.append(payload)
+            continue
+        updated = update_improvement_fields(
+            str(item.get("improvement_id") or ""),
+            status="dismissed",
+            dismissed_reason=f"{GROK_BUDGET_HYGIENE_VERSION}: stale Grok blocked item; guard currently allows calls",
+            dismissed_at=utc_now(),
+            budget_hygiene_version=GROK_BUDGET_HYGIENE_VERSION,
+        )
+        if updated:
+            dismissed.append(payload)
+    return dismissed
+
+
 def latest_improvements(limit: int = 20) -> list[dict]:
     return latest_by_id(IMPROVEMENTS_FILE, "improvement_id", limit=limit)
 
@@ -1218,12 +1254,22 @@ def improvements_response(prompt: str = "") -> str:
     if action in {"repair", "fix", "migrate"}:
         dry_run = len(parts) >= 2 and parts[1].lower() in {"preview", "dry-run", "dryrun"}
         repaired = repair_open_improvements(limit=50, dry_run=dry_run)
+        stale_dismissed = dismiss_stale_grok_blocked_improvements(limit=50, dry_run=dry_run)
         mode = "preview" if dry_run else "applied"
-        lines = [f"[Council] Improvement Repair {IMPROVEMENT_REPAIR_VERSION}", f"mode: {mode}", f"repaired: {len(repaired)}"]
+        lines = [
+            f"[Council] Improvement Repair {IMPROVEMENT_REPAIR_VERSION} + {GROK_BUDGET_HYGIENE_VERSION}",
+            f"mode: {mode}",
+            f"repaired: {len(repaired)}",
+            f"stale_grok_dismissed: {len(stale_dismissed)}",
+        ]
         for item in repaired[:10]:
             lines.append(f"- {item.get('improvement_id')}: {item.get('old_title')} -> {item.get('new_title')}")
+        for item in stale_dismissed[:10]:
+            lines.append(f"- dismissed stale Grok block {item.get('improvement_id')}: {item.get('old_title')}")
         if len(repaired) > 10:
             lines.append(f"... +{len(repaired) - 10} więcej")
+        if len(stale_dismissed) > 10:
+            lines.append(f"... +{len(stale_dismissed) - 10} stale Grok block więcej")
         lines.append("NEXT: /improvements")
         return "\n".join(lines)
     if action in {"done", "dismiss"} and len(parts) >= 2:
@@ -4674,6 +4720,37 @@ def operator_usage_summary() -> dict[str, dict]:
     return summary
 
 
+def operator_limit_status(operator: str) -> dict:
+    operator = operator_key(operator)
+    state = load_control_state()
+    control_call_limit, control_budget = operator_control_limits(operator, state)
+    call_limits = [("control", control_call_limit) if control_call_limit > 0 else None, *operator_env_call_limits(operator)]
+    budget_limits = [("control", control_budget) if control_budget > 0 else None, *operator_env_budget_limits(operator)]
+    rows = nonblocked_usage(usage_today(operator))
+    used_budget = sum(usage_estimated_usd(row) for row in rows)
+    allowed, reason = operator_call_allowed(operator)
+    return {
+        "operator": operator,
+        "calls": len(rows),
+        "estimated_usd": used_budget,
+        "call_limits": [item for item in call_limits if item],
+        "budget_limits": [item for item in budget_limits if item],
+        "allowed": allowed,
+        "reason": reason,
+    }
+
+
+def operator_limit_status_line(operator: str) -> str:
+    status = operator_limit_status(operator)
+    call_limits = ", ".join(f"{name}:{limit}" for name, limit in status["call_limits"]) or "none"
+    budget_limits = ", ".join(f"{name}:${limit:.4f}" for name, limit in status["budget_limits"]) or "none"
+    allowed = "yes" if status["allowed"] else f"no ({status['reason']})"
+    return (
+        f"{status['operator']}_limits: allowed={allowed} | calls={status['calls']} | "
+        f"call_limits={call_limits} | est=${status['estimated_usd']:.4f} | budget_limits={budget_limits}"
+    )
+
+
 def route_source_summary(limit: int = 200) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in read_jsonl(AUDIT_LOG)[-limit:]:
@@ -4842,6 +4919,7 @@ def cost_response() -> str:
                 f"- {operator}: calls={item['calls']} blocked={item['blocked']} "
                 f"time={item['duration_ms']}ms est=${item['estimated_usd']:.4f}"
             )
+    lines.append(operator_limit_status_line("grok"))
     lines.append(
         "Uwaga: Codex/Claude przez subskrypcję nie zwracają realnego per-call billing z CLI; "
         "Grok est to skalibrowany lokalny heurystyczny guard, a billing xAI jest źródłem prawdy. "
@@ -7101,7 +7179,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -8860,15 +8938,14 @@ def detect_proactive_events() -> list[dict]:
                 )
             )
 
-    grok_rows = [row for row in usage_today("grok") if row.get("status") != "blocked"]
-    call_limit = int_cfg("GROK_DAILY_CALL_LIMIT", 0)
-    budget = float_cfg("GROK_DAILY_BUDGET_USD", 0.0)
+    grok_limits = operator_limit_status("grok")
     thresholds = []
-    if call_limit:
-        thresholds.append(("calls", len(grok_rows) / call_limit))
-    if budget:
-        used = sum(float(row.get("estimated_usd") or 0.0) for row in usage_today("grok"))
-        thresholds.append(("budget", used / budget))
+    for _, call_limit in grok_limits["call_limits"]:
+        if call_limit:
+            thresholds.append(("calls", grok_limits["calls"] / call_limit))
+    for _, budget in grok_limits["budget_limits"]:
+        if budget:
+            thresholds.append(("budget", grok_limits["estimated_usd"] / budget))
     warn_ratio = float_cfg("AI_COUNCIL_PROACTIVE_COST_WARN_RATIO", 0.8)
     if thresholds:
         metric, ratio = max(thresholds, key=lambda item: item[1])

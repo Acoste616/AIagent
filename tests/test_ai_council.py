@@ -2549,6 +2549,71 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertEqual(latest["title"], "[Council] Errors")
         self.assertEqual(len(rows), 1)
 
+    def test_improvement_repair_dismisses_stale_grok_blocked_item_when_guard_allows(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {"GROK_DAILY_CALL_LIMIT": "200", "GROK_DAILY_BUDGET_USD": "5"}
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.dict(
+                os.environ, env, clear=False
+            ):
+                improvement = ai_council.create_improvement(
+                    source="feature_evolution_loop",
+                    title="[Grok X Research] blocked: Grok daily call limit reached: 20/20",
+                    summary="[Grok X Research] blocked: Grok daily call limit reached: 20/20",
+                    priority="P2",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+
+        self.assertIn("stale_grok_dismissed: 1", response)
+        self.assertEqual(latest["status"], "dismissed")
+        self.assertEqual(latest["budget_hygiene_version"], ai_council.GROK_BUDGET_HYGIENE_VERSION)
+
+    def test_improvement_repair_keeps_grok_blocked_item_when_guard_still_blocks(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {"GROK_DAILY_CALL_LIMIT": "1", "GROK_DAILY_BUDGET_USD": "5"}
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.dict(
+                os.environ, env, clear=False
+            ):
+                ai_council.record_operator_usage("grok", task_id="task-used", status="completed")
+                improvement = ai_council.create_improvement(
+                    source="feature_evolution_loop",
+                    title="[Grok X Research] blocked: Grok daily call limit reached: 1/1",
+                    summary="[Grok X Research] blocked: Grok daily call limit reached: 1/1",
+                    priority="P2",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+
+        self.assertIn("stale_grok_dismissed: 0", response)
+        self.assertEqual(latest["status"], "open")
+
+    def test_improvement_repair_dismisses_stale_grok_budget_block_when_guard_allows(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {"GROK_DAILY_CALL_LIMIT": "200", "GROK_DAILY_BUDGET_USD": "5"}
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.dict(
+                os.environ, env, clear=False
+            ):
+                improvement = ai_council.create_improvement(
+                    source="feature_evolution_loop",
+                    title="[Grok X Research] blocked: Grok estimated budget reached via GROK_DAILY_BUDGET_USD",
+                    summary="[Grok X Research] blocked: Grok estimated budget reached via GROK_DAILY_BUDGET_USD",
+                    priority="P2",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+
+        self.assertIn("stale_grok_dismissed: 1", response)
+        self.assertEqual(latest["status"], "dismissed")
+
     def test_create_show_and_close_improvement(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -5030,6 +5095,24 @@ class L2LedgerTests(unittest.TestCase):
         self.assertAlmostEqual(summary["grok"]["estimated_usd"], 0.0023)
         self.assertIn("est=$0.0023", cost)
         self.assertIn("billing xAI", cost)
+
+    def test_cost_report_shows_current_grok_limits(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "COSTS_FILE", root / "costs.jsonl"), patch.object(
+                ai_council, "CONTROL_FILE", root / "state" / "control.json"
+            ), patch.dict(
+                os.environ,
+                {"GROK_DAILY_CALL_LIMIT": "200", "GROK_DAILY_BUDGET_USD": "5"},
+                clear=False,
+            ):
+                ai_council.record_operator_usage("grok", task_id="task-1", duration_ms=50)
+                cost = ai_council.cost_response()
+
+        self.assertIn("grok_limits: allowed=yes", cost)
+        self.assertIn("calls=1", cost)
+        self.assertIn("GROK_DAILY_CALL_LIMIT:200", cost)
+        self.assertIn("GROK_DAILY_BUDGET_USD:$5.0000", cost)
 
     def test_operator_reservation_counts_against_daily_limit(self):
         with temp_dir() as tmp:
