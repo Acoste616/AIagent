@@ -1910,7 +1910,7 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.28", response)
+        self.assertIn("Connectors L4.30", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
@@ -2277,6 +2277,79 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("FAILED", verified)
         self.assertIn("integration execution pack missing files", verified)
         self.assertEqual(latest["status"], "verify_failed")
+
+    def test_provider_plan_for_unverified_draft_writes_blocked_manifest(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_integration_draft_action("gmail", "napisz draft maila do klienta", risk="R3")
+                response = ai_council.provider_response(f"plan {action['action_id']}")
+                latest = ai_council.get_latest_action(action["action_id"])
+                manifest = (latest["payload"] or {}).get("provider_manifest") or {}
+                json_exists = Path(manifest["json_path"]).exists()
+                markdown_exists = Path(manifest["markdown_path"]).exists()
+
+        self.assertIn("Manifest L4.30", response)
+        self.assertIn("blocked_not_verified", response)
+        self.assertEqual(manifest["status"], "blocked_not_verified")
+        self.assertFalse(manifest["external_write_performed"])
+        self.assertTrue(json_exists)
+        self.assertTrue(markdown_exists)
+
+    def test_provider_manifest_after_verified_pack_is_verifiable_and_execute_blocked(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "google_oauth_configured", return_value=True
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                plan = ai_council.provider_response(f"plan {action['action_id']}")
+                show = ai_council.provider_response(f"show {action['action_id']}")
+                verify = ai_council.provider_response(f"verify {action['action_id']}")
+                execute = ai_council.provider_response(f"execute {action['action_id']}")
+                latest = ai_council.get_latest_action(action["action_id"])
+                manifest = (latest["payload"] or {}).get("provider_manifest") or {}
+                data = json.loads(Path(manifest["json_path"]).read_text(encoding="utf-8"))
+
+        self.assertIn("blocked_missing_fields", plan)
+        self.assertIn("missing_fields: attendees, start_time, end_time, timezone", show)
+        self.assertIn("OK", verify)
+        self.assertIn("provider manifest verified", verify)
+        self.assertIn("Execute zablokowane w L4.30", execute)
+        self.assertEqual(data["provider_operation"], "calendar.events.insert")
+        self.assertFalse(data["external_write_performed"])
+        self.assertEqual(data["write_gate"], "disabled_l4_30_manifest_only")
+
+    def test_provider_verify_failure_is_recorded_in_action_history(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_integration_draft_action("github", "otwórz issue o L4.30 manifestach", risk="R3")
+                ai_council.provider_response(f"plan {action['action_id']}")
+                latest = ai_council.get_latest_action(action["action_id"])
+                manifest = (latest["payload"] or {}).get("provider_manifest") or {}
+                Path(manifest["json_path"]).unlink()
+                failed = ai_council.provider_response(f"verify {action['action_id']}")
+                latest = ai_council.get_latest_action(action["action_id"])
+
+        self.assertIn("FAILED", failed)
+        self.assertIn("provider manifest missing files", failed)
+        self.assertEqual(latest["provider_manifest_verification_status"], "failed")
 
     def test_agent_inbox_surfaces_integration_draft_approval(self):
         with temp_dir() as tmp:

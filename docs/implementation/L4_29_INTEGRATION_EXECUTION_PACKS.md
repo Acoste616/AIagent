@@ -59,7 +59,7 @@ It does not:
 - spend money,
 - change provider state.
 
-That remains blocked until L4.30 Provider Execution Adapters.
+That remains blocked until a future provider write gate. L4.30 adds provider adapter manifests only.
 
 ## Verification
 
@@ -81,8 +81,9 @@ Poke-like behavior needs the user to feel forward motion after approval. L4.28 p
 
 ## Remaining Gap
 
-L4.29 is not full Poke parity. The next missing layer is L4.30:
+L4.29 is not full Poke parity. The next missing layers are:
 
+- L4.30 provider adapter manifests,
 - Gmail send/draft adapter with explicit review gate,
 - Calendar event adapter with preview and undo/cancel semantics where possible,
 - Drive document/file adapter,
