@@ -2639,9 +2639,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż błędy`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2650,13 +2650,14 @@ def goal_response() -> str:
     ensure_council_dirs()
     recent_errors = error_rows(days=1)
     improvements_open = open_improvements(limit=50)
+    nudges_open = [row for row in latest_nudges(limit=50) if row.get("status") in {"open", "sent"}]
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock.\n"
-        "Brakuje do Poke-level: proaktywne watchers/nudges, źródłowe integracje Gmail/Calendar/Drive/GitHub, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
-        f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}.\n"
-        "Następny sprint: L4.8 Proactive Event Brain: watchers -> nudge -> council -> approval -> wykonanie."
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1.\n"
+        "Brakuje do Poke-level: źródłowe integracje Gmail/Calendar/Drive/GitHub, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
+        "Następny sprint: L4.10 Source Integrations Read-only: Gmail/Calendar/Drive/GitHub -> source-backed summaries -> approval przed write."
     )
 
 
@@ -2669,10 +2670,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.5 active + L4.0 Shortcuts-ready: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L3.5 active + L4.9 Proactive Event Brain: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L3.0: /health, /selftest, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.9: /health, /selftest, /goal, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -2683,6 +2684,7 @@ def health_response() -> str:
     stuck = stuck_tasks(limit=5)
     recent_errors = error_rows(days=1)
     improvements_open = open_improvements(limit=50)
+    nudges_open = [row for row in latest_nudges(limit=50) if row.get("status") in {"open", "sent"}]
     route_counts = route_source_summary()
     route_counts_text = ", ".join(f"{key}:{route_counts[key]}" for key in sorted(route_counts)) or "brak"
     offset = read_offset()
@@ -2695,6 +2697,7 @@ def health_response() -> str:
         f"stuck_tasks: {len(stuck)}",
         f"errors_24h: {len(recent_errors)}",
         f"improvements_open: {len(improvements_open)}",
+        f"nudges_open: {len(nudges_open)}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
         f"route_sources: {route_counts_text}",
     ]
@@ -3393,6 +3396,186 @@ def actions_response(limit: int = 8) -> str:
 
 def nudged_ids() -> set[str]:
     return {str(row.get("action_id")) for row in read_jsonl(NUDGES_FILE) if row.get("action_id")}
+
+
+def nudge_keys() -> set[str]:
+    return {str(row.get("nudge_key")) for row in read_jsonl(NUDGES_FILE) if row.get("nudge_key")}
+
+
+def latest_nudges(limit: int = 10) -> list[dict]:
+    rows = [row for row in read_jsonl(NUDGES_FILE) if row.get("nudge_id") or row.get("action_id")]
+    return rows[-limit:][::-1]
+
+
+def format_nudge(row: dict) -> str:
+    nudge_id = str(row.get("nudge_id") or row.get("action_id") or "")
+    status = str(row.get("status") or "open")
+    kind = str(row.get("kind") or ("pending_action" if row.get("action_id") else "nudge"))
+    title = str(row.get("title") or row.get("summary") or "Nudge")
+    next_action = str(row.get("next_action") or "")
+    line = f"- {nudge_id} | {status} | {kind} | {compact_line(title, 120)}"
+    return line + (f" | next: {compact_line(next_action, 100)}" if next_action else "")
+
+
+def nudges_response(prompt: str = "") -> str:
+    parts = prompt.strip().split(maxsplit=1)
+    if parts and parts[0].lower() in {"ack", "done", "dismiss"} and len(parts) >= 2:
+        target = parts[1].strip()
+        current = None
+        for row in read_jsonl(NUDGES_FILE):
+            if row.get("nudge_id") == target or row.get("action_id") == target:
+                current = row
+        if not current:
+            return f"[Council] Nie znalazłem nudge `{target}`."
+        updated = {**current, "status": "dismissed", "updated_at": utc_now()}
+        append_jsonl(NUDGES_FILE, updated)
+        return f"[Council] Nudge `{target}` dismissed."
+    rows = latest_nudges(limit=12)
+    if not rows:
+        return "[Council] Nudges: brak zapisanych proaktywnych sygnałów."
+    lines = ["[Council] Nudges"]
+    for row in rows:
+        lines.append(format_nudge(row))
+    lines.append("Użyj: /nudges dismiss <id> albo wykonaj next action z listy.")
+    return "\n".join(lines)
+
+
+def proactive_event_key(kind: str, target: str) -> str:
+    return f"{today_utc()}:{kind}:{target}"
+
+
+def proactive_event(
+    kind: str,
+    target: str,
+    title: str,
+    summary: str,
+    next_action: str,
+    *,
+    severity: str = "info",
+    action_id: str = "",
+) -> dict:
+    key = proactive_event_key(kind, target)
+    return {
+        "nudge_id": f"nudge-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(key)[:6]}",
+        "nudge_key": key,
+        "created_at": utc_now(),
+        "kind": kind,
+        "severity": severity,
+        "status": "open",
+        "title": compact_line(title, 180),
+        "summary": compact_line(summary, 500),
+        "next_action": compact_line(next_action, 180),
+        "action_id": action_id,
+    }
+
+
+def detect_proactive_events() -> list[dict]:
+    events: list[dict] = []
+    recent_errors = error_rows(days=1)
+    error_threshold = int_cfg("AI_COUNCIL_PROACTIVE_ERROR_THRESHOLD", 1)
+    if len(recent_errors) >= error_threshold and recent_errors:
+        latest_error = recent_errors[-1]
+        events.append(
+            proactive_event(
+                "errors",
+                str(latest_error.get("error_id") or len(recent_errors)),
+                f"{len(recent_errors)} błędów w ostatnich 24h",
+                f"Ostatni: {latest_error.get('context')} {latest_error.get('message')}",
+                "/errors recent 10",
+                severity="warning",
+            )
+        )
+
+    for task in stuck_tasks(limit=int_cfg("AI_COUNCIL_PROACTIVE_STUCK_LIMIT", 3)):
+        task_id = str(task.get("task_id") or "")
+        if not task_id:
+            continue
+        events.append(
+            proactive_event(
+                "stuck_task",
+                task_id,
+                f"Task wygląda na stuck: {task_id}",
+                f"{task.get('status')} | {compact_line(str(task.get('prompt') or ''), 180)}",
+                f"/status {task_id}",
+                severity="warning",
+            )
+        )
+
+    action_threshold = int_cfg("AI_COUNCIL_ACTION_NUDGE_SECONDS", 1800)
+    if action_threshold > 0:
+        for action in latest_by_id(ACTIONS_FILE, "action_id", limit=20):
+            action_id = str(action.get("action_id") or "")
+            if not action_id or action.get("status") != "pending":
+                continue
+            if seconds_since(str(action.get("created_at", ""))) < action_threshold:
+                continue
+            events.append(
+                proactive_event(
+                    "pending_action",
+                    action_id,
+                    f"Akcja czeka na decyzję: {action_id}",
+                    str(action.get("description") or action.get("type") or ""),
+                    f"/approve {action_id} albo /deny {action_id}",
+                    severity="info",
+                    action_id=action_id,
+                )
+            )
+
+    grok_rows = [row for row in usage_today("grok") if row.get("status") != "blocked"]
+    call_limit = int_cfg("GROK_DAILY_CALL_LIMIT", 0)
+    budget = float_cfg("GROK_DAILY_BUDGET_USD", 0.0)
+    thresholds = []
+    if call_limit:
+        thresholds.append(("calls", len(grok_rows) / call_limit))
+    if budget:
+        used = sum(float(row.get("estimated_usd") or 0.0) for row in usage_today("grok"))
+        thresholds.append(("budget", used / budget))
+    warn_ratio = float_cfg("AI_COUNCIL_PROACTIVE_COST_WARN_RATIO", 0.8)
+    if thresholds:
+        metric, ratio = max(thresholds, key=lambda item: item[1])
+        if ratio >= warn_ratio:
+            bucket = int(ratio * 10) * 10
+            events.append(
+                proactive_event(
+                    "cost_guard",
+                    f"grok:{metric}:{bucket}",
+                    f"Grok usage przekroczył {int(warn_ratio * 100)}%",
+                    f"Najwyższy wskaźnik: {metric}={ratio:.0%}",
+                    "/cost",
+                    severity="warning",
+                )
+            )
+    return events
+
+
+def send_proactive_nudge(chat_id: str, event: dict) -> bool:
+    text = (
+        "[Council] Proactive nudge\n"
+        f"{event.get('title')}\n"
+        f"summary: {event.get('summary')}\n"
+        f"next: {event.get('next_action')}\n"
+        "inbox: /nudges"
+    )
+    return telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
+
+
+def run_proactive_scan(send: bool = False, chat_id: str = "") -> int:
+    if not bool_cfg("AI_COUNCIL_PROACTIVE_EVENT_BRAIN", True):
+        return 0
+    chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    existing = nudge_keys()
+    created = 0
+    for event in detect_proactive_events():
+        key = str(event.get("nudge_key") or "")
+        if not key or key in existing:
+            continue
+        sent = False
+        if send and chat_id:
+            sent = send_proactive_nudge(chat_id, event)
+        append_jsonl(NUDGES_FILE, {**event, "status": "sent" if sent else "open", "sent_at": utc_now() if sent else ""})
+        existing.add(key)
+        created += 1
+    return created
 
 
 def maybe_send_action_nudges(chat_id: str, send: bool) -> int:
@@ -4547,6 +4730,7 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/errors",
     "/improvements",
     "/goal",
+    "/nudges",
 }
 
 
@@ -4588,7 +4772,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements.\n"
+        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -4700,6 +4884,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż błędy", "pokaz bledy", "pokaż errors", "pokaz errors", "sprawdź błędy", "sprawdz bledy")
     ):
         return {"command": "/errors", "operators": ["host"], "prompt": "recent", "mode": "errors", "intent": "natural"}
+
+    if lower in {"nudges", "nudge", "proaktywne", "proaktywne sygnały", "proaktywne sygnaly"} or lower.startswith(
+        ("pokaż nudges", "pokaz nudges", "pokaż nudge", "pokaz nudge", "pokaż proaktywne", "pokaz proaktywne")
+    ):
+        return {"command": "/nudges", "operators": ["host"], "prompt": "", "mode": "nudges", "intent": "natural"}
 
     if lower in {"ulepszenia", "improvements", "backlog", "co wdrażać", "co wdrazac", "co wdrożyć", "co wdrozyc"} or lower.startswith(
         ("pokaż ulepszenia", "pokaz ulepszenia", "pokaż backlog", "pokaz backlog", "następne wdrożenie", "nastepne wdrozenie")
@@ -5058,6 +5247,9 @@ def route_text(text: str) -> dict:
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
     if lower.startswith("/errors"):
         return {"command": "/errors", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "errors"}
+    if lower.startswith("/nudges") or lower.startswith("/nudge"):
+        prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
+        return {"command": "/nudges", "operators": ["host"], "prompt": prompt, "mode": "nudges"}
     if lower.startswith("/improvements"):
         return {"command": "/improvements", "operators": ["host"], "prompt": stripped[13:].strip(), "mode": "improvements"}
     if lower.startswith("/improve"):
@@ -5555,6 +5747,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return cost_response()
     if command == "/errors":
         return errors_response(prompt)
+    if command == "/nudges":
+        return nudges_response(prompt)
     if command == "/improvements":
         return improvements_response(prompt)
     if command == "/improve":
@@ -6015,11 +6209,14 @@ def listen_loop(send: bool = False, seconds: int = 120, limit: int = 10, sleep_s
         scheduled = run_due_recipes(send=send)
         if scheduled:
             print(f"scheduled_recipes_started={scheduled}")
+        nudges = run_proactive_scan(send=send)
+        if nudges:
+            print(f"proactive_nudges_created={nudges}")
         code = listen_once(send=send, limit=limit, verbose=False)
         after = AUDIT_LOG.stat().st_size if AUDIT_LOG.exists() else before
         if code != 0:
             return code
-        if after > before or scheduled:
+        if after > before or scheduled or nudges:
             total += 1
         time.sleep(sleep_seconds)
     print(f"listen_loop_done iterations_with_activity={total}")
@@ -6051,6 +6248,9 @@ def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int
             scheduled = run_due_recipes(send=send)
             if scheduled:
                 print(f"scheduled_recipes_started={scheduled}")
+            nudges = run_proactive_scan(send=send)
+            if nudges:
+                print(f"proactive_nudges_created={nudges}")
             code = listen_once(send=send, limit=limit, verbose=False)
             if code != 0:
                 print(f"serve_poll_error code={code}")

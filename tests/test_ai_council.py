@@ -395,6 +395,7 @@ class RoutingTests(unittest.TestCase):
             "/patch shared/test.txt :: ok => better": ("/patch", ["host"]),
             "/chat test": ("/chat", ["host"]),
             "/errors": ("/errors", ["host"]),
+            "/nudges": ("/nudges", ["host"]),
             "/improvements": ("/improvements", ["host"]),
             "/improve next": ("/improve", ["host"]),
             "/goal": ("/goal", ["host"]),
@@ -414,6 +415,7 @@ class RoutingTests(unittest.TestCase):
             "status": "/status",
             "koszty": "/cost",
             "pokaż błędy": "/errors",
+            "pokaż nudges": "/nudges",
             "pokaż ulepszenia": "/improvements",
             "health": "/health",
             "anuluj task-1": "/cancel",
@@ -666,6 +668,95 @@ class ErrorStoreTests(unittest.TestCase):
         self.assertIn("telegram boom", rows[0]["traceback"])
         self.assertIn(error["error_id"], response)
         self.assertIn("telegram_message", response)
+
+
+class ProactiveEventBrainTests(unittest.TestCase):
+    def test_proactive_scan_creates_deduped_error_nudge(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            errors_file = root / "state" / "errors.jsonl"
+            nudges_file = root / "state" / "nudges.jsonl"
+            ai_council.append_jsonl(
+                errors_file,
+                {
+                    "error_id": "err-1",
+                    "created_at": ai_council.utc_now(),
+                    "day": ai_council.today_utc(),
+                    "context": "telegram_getUpdates",
+                    "severity": "warning",
+                    "message": "http_409",
+                },
+            )
+
+            with patch.object(ai_council, "ERRORS_FILE", errors_file), patch.object(
+                ai_council, "NUDGES_FILE", nudges_file
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"):
+                first = ai_council.run_proactive_scan(send=False)
+                second = ai_council.run_proactive_scan(send=False)
+                rows = ai_council.read_jsonl(nudges_file)
+                response = ai_council.nudges_response()
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "errors")
+        self.assertIn("/errors recent 10", rows[0]["next_action"])
+        self.assertIn("err", rows[0]["nudge_key"])
+        self.assertIn("[Council] Nudges", response)
+
+    def test_proactive_scan_creates_pending_action_nudge(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            actions_file = root / "state" / "actions.jsonl"
+            nudges_file = root / "state" / "nudges.jsonl"
+            ai_council.append_jsonl(
+                actions_file,
+                {
+                    "action_id": "act-1",
+                    "created_at": "2020-01-01T00:00:00+00:00",
+                    "status": "pending",
+                    "type": "manual",
+                    "description": "Zatwierdź testową akcję",
+                },
+            )
+
+            with patch.object(ai_council, "ACTIONS_FILE", actions_file), patch.object(
+                ai_council, "NUDGES_FILE", nudges_file
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"):
+                created = ai_council.run_proactive_scan(send=False)
+                rows = ai_council.read_jsonl(nudges_file)
+
+        self.assertEqual(created, 1)
+        self.assertEqual(rows[0]["kind"], "pending_action")
+        self.assertEqual(rows[0]["action_id"], "act-1")
+        self.assertIn("/approve act-1", rows[0]["next_action"])
+
+    def test_nudges_response_can_dismiss_nudge(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            nudges_file = root / "state" / "nudges.jsonl"
+            ai_council.append_jsonl(
+                nudges_file,
+                {
+                    "nudge_id": "nudge-1",
+                    "nudge_key": "key-1",
+                    "created_at": ai_council.utc_now(),
+                    "kind": "errors",
+                    "status": "open",
+                    "title": "Błąd",
+                    "next_action": "/errors",
+                },
+            )
+            with patch.object(ai_council, "NUDGES_FILE", nudges_file):
+                dismissed = ai_council.nudges_response("dismiss nudge-1")
+                latest = ai_council.latest_nudges(limit=1)[0]
+
+        self.assertIn("dismissed", dismissed)
+        self.assertEqual(latest["status"], "dismissed")
 
 
 class ImprovementBacklogTests(unittest.TestCase):
