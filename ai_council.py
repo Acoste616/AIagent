@@ -1142,6 +1142,25 @@ SOURCE_TEXT_SUFFIXES = {
 }
 
 
+SOURCE_EXPORT_DEFAULTS = {
+    "AI_COUNCIL_GMAIL_EXPORT_DIR": PROJECT_DIR / "sources" / "gmail",
+    "AI_COUNCIL_CALENDAR_EXPORT_DIR": PROJECT_DIR / "sources" / "calendar",
+    "AI_COUNCIL_DRIVE_EXPORT_DIR": PROJECT_DIR / "sources" / "drive",
+}
+
+
+CONNECTOR_AUTH_GUIDES = {
+    "github": [
+        "Na desktopie uruchom: gh auth login -h github.com",
+        "Potem sprawdź: gh auth status",
+        "Opcjonalnie ustaw repo: AI_COUNCIL_GITHUB_REPO=Acoste616/AIagent",
+    ],
+    "memory": ["Gotowe lokalnie. Użyj: /source search memory <query>."],
+    "artifacts": ["Gotowe lokalnie. Użyj: /source search artifacts <query>."],
+    "openclaw": ["Gotowe, jeśli OPENCLAW_EXPORT istnieje. Użyj: /source search openclaw <query>."],
+}
+
+
 def configured_source_dir(key: str, default: Path | None = None) -> Path | None:
     value = cfg(key)
     if value:
@@ -1172,9 +1191,9 @@ def command_status(command: str, args: list[str], timeout: int = 10) -> tuple[bo
 
 def source_statuses() -> list[dict]:
     openclaw_dir = configured_source_dir("OPENCLAW_EXPORT", OPENCLAW_EXPORT)
-    gmail_dir = configured_source_dir("AI_COUNCIL_GMAIL_EXPORT_DIR")
-    calendar_dir = configured_source_dir("AI_COUNCIL_CALENDAR_EXPORT_DIR")
-    drive_dir = configured_source_dir("AI_COUNCIL_DRIVE_EXPORT_DIR")
+    gmail_dir = configured_source_dir("AI_COUNCIL_GMAIL_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_GMAIL_EXPORT_DIR"])
+    calendar_dir = configured_source_dir("AI_COUNCIL_CALENDAR_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_CALENDAR_EXPORT_DIR"])
+    drive_dir = configured_source_dir("AI_COUNCIL_DRIVE_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_DRIVE_EXPORT_DIR"])
     gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
     github_repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
     sources = [
@@ -1367,7 +1386,7 @@ def source_search(name: str, query: str, limit: int = 5) -> tuple[str, list[dict
         "drive": "AI_COUNCIL_DRIVE_EXPORT_DIR",
     }
     if normalized in env_map:
-        root = configured_source_dir(env_map[normalized])
+        root = configured_source_dir(env_map[normalized], SOURCE_EXPORT_DEFAULTS.get(env_map[normalized]))
         if not root or not root.exists():
             return "auth_required", []
         return "available", search_text_source([root], query, limit=limit)
@@ -1399,6 +1418,204 @@ def source_response(prompt: str) -> str:
             lines.append(f"   snippet: {compact_line(item.get('snippet', ''), 220)}")
     lines.append("Tryb: read-only. Write/send/schedule wymagają approval.")
     return "\n".join(lines)
+
+
+def normalize_connector_name(name: str) -> str:
+    normalized = normalize_intent_text(name).replace("_", "-")
+    aliases = {
+        "git": "github",
+        "repo": "github",
+        "mail": "gmail",
+        "email": "gmail",
+        "kalendarz": "calendar",
+        "calendar": "calendar",
+        "docs": "drive",
+        "google-drive": "drive",
+        "google drive": "drive",
+        "openclaw export": "openclaw",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized.startswith("google "):
+        normalized = normalized.replace("google ", "", 1)
+    return aliases.get(normalized, normalized)
+
+
+def connector_auth_steps(name: str) -> list[str]:
+    normalized = normalize_connector_name(name)
+    if normalized == "gmail":
+        return [
+            f"Tryb read-only v0: wyeksportuj/search cache maili do {SOURCE_EXPORT_DEFAULTS['AI_COUNCIL_GMAIL_EXPORT_DIR']} albo ustaw AI_COUNCIL_GMAIL_EXPORT_DIR.",
+            "OAuth bridge będzie kolejnym krokiem: read/search najpierw, send dopiero po approval.",
+        ]
+    if normalized == "calendar":
+        return [
+            f"Tryb read-only v0: zapisz .ics/.json/.md do {SOURCE_EXPORT_DEFAULTS['AI_COUNCIL_CALENDAR_EXPORT_DIR']} albo ustaw AI_COUNCIL_CALENDAR_EXPORT_DIR.",
+            "Tworzenie wydarzeń zostaje R3 i wymaga approval.",
+        ]
+    if normalized == "drive":
+        return [
+            f"Tryb read-only v0: zsynchronizuj/wyeksportuj Docs/Drive do {SOURCE_EXPORT_DEFAULTS['AI_COUNCIL_DRIVE_EXPORT_DIR']} albo ustaw AI_COUNCIL_DRIVE_EXPORT_DIR.",
+            "Edycja Drive/Docs zostaje R3 i wymaga approval.",
+        ]
+    return CONNECTOR_AUTH_GUIDES.get(normalized, [])
+
+
+def connector_statuses() -> list[dict]:
+    statuses = []
+    for item in source_statuses():
+        name = str(item.get("name") or "")
+        status = str(item.get("status") or "unknown")
+        ready = status == "available"
+        if name in {"memory", "artifacts", "openclaw"}:
+            tier = "local"
+        elif name == "github":
+            tier = "cli-oauth"
+        else:
+            tier = "export-or-oauth"
+        statuses.append(
+            {
+                **item,
+                "tier": tier,
+                "ready": ready,
+                "auth_steps": connector_auth_steps(name),
+            }
+        )
+    return statuses
+
+
+def connector_status(name: str) -> dict | None:
+    normalized = normalize_connector_name(name)
+    return next((item for item in connector_statuses() if item.get("name") == normalized), None)
+
+
+def connectors_response() -> str:
+    lines = ["[Council] Connectors L4.11 read-only bridge"]
+    ready = 0
+    needs_auth = 0
+    for item in connector_statuses():
+        if item.get("ready"):
+            ready += 1
+        elif item.get("status") in {"auth_required", "unavailable"}:
+            needs_auth += 1
+        lines.append(
+            f"- {item['name']} | {item['status']} | {item['tier']} | search={'yes' if item.get('search') else 'no'} | {compact_line(str(item.get('detail') or ''), 110)}"
+        )
+    lines.append(f"Ready: {ready}. Needs auth/config: {needs_auth}.")
+    lines.append("Użyj: /connector check <name>, /connector auth <name>, /connector brief <name> <query>.")
+    return "\n".join(lines)
+
+
+def connector_check_response(name: str) -> str:
+    item = connector_status(name)
+    if not item:
+        return "[Council] Nie znam tego connectora. Użyj: /connectors."
+    lines = [
+        f"[Council] Connector `{item['name']}`",
+        f"status: {item.get('status')}",
+        f"tier: {item.get('tier')}",
+        f"mode: {item.get('mode')}",
+        f"search: {'yes' if item.get('search') else 'no'}",
+        f"detail: {compact_line(str(item.get('detail') or ''), 240)}",
+    ]
+    if item.get("auth_steps"):
+        lines.append("Auth/setup:")
+        for step in item["auth_steps"]:
+            lines.append(f"- {step}")
+    lines.append("Granica: read-only teraz; write/send/schedule dopiero po Risk Officer i approval.")
+    return "\n".join(lines)
+
+
+def connector_auth_response(name: str) -> str:
+    item = connector_status(name)
+    if not item:
+        normalized = normalize_connector_name(name)
+        steps = connector_auth_steps(normalized)
+        if not steps:
+            return "[Council] Nie znam tego connectora. Użyj: /connectors."
+        item = {"name": normalized, "status": "unknown", "auth_steps": steps}
+    lines = [f"[Council] Auth/setup `{item['name']}`", f"current_status: {item.get('status', 'unknown')}"]
+    for step in item.get("auth_steps") or ["Brak instrukcji dla tego connectora."]:
+        lines.append(f"- {step}")
+    lines.append("Nie wklejaj tokenów w Telegram. Sekrety zostają w .env albo w natywnym loginie CLI/OAuth.")
+    return "\n".join(lines)
+
+
+def connector_brief_response(name: str, query: str) -> str:
+    normalized = normalize_connector_name(name)
+    if not query.strip():
+        return (
+            f"[Council] Connector brief `{normalized}` wymaga query.\n"
+            f"Użyj: /connector brief {normalized} <czego szukać>\n"
+            f"Status connectora: /connector check {normalized}"
+        )
+    status, results = source_search(normalized, query, limit=int_cfg("AI_COUNCIL_CONNECTOR_BRIEF_LIMIT", 8))
+    ensure_council_dirs()
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    report_path = REPORTS_DIR / f"connector-brief-{safe_filename(normalized, 'connector')}-{stamp}.md"
+    lines = [
+        f"# Connector Brief: {normalized}",
+        "",
+        f"- status: {status}",
+        f"- query: {query or '(recent)'}",
+        f"- created_at: {utc_now()}",
+        "",
+        "## Sources",
+    ]
+    if results:
+        for index, item in enumerate(results, start=1):
+            lines.extend(
+                [
+                    f"{index}. {item.get('title', '')}",
+                    f"   - source: {item.get('source', '')}",
+                    f"   - snippet: {item.get('snippet', '')}",
+                ]
+            )
+    else:
+        lines.append("Brak wyników albo connector wymaga auth/config.")
+    lines.extend(["", "## Policy", "Read-only. Write/send/schedule wymagają Risk Officer i approval."])
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    response = [
+        f"[Council] Connector brief `{normalized}`",
+        f"status: {status}",
+        f"results: {len(results)}",
+        f"report: {report_path}",
+    ]
+    if not results:
+        response.append(f"Next: /connector auth {normalized}")
+    else:
+        response.append(f"Next: /source search {normalized} {query}".strip())
+    return "\n".join(response)
+
+
+def connector_response(prompt: str) -> str:
+    parts = prompt.strip().split(maxsplit=2)
+    if not parts or parts[0].lower() in {"list", "status", "show"}:
+        return connectors_response()
+    action = parts[0].lower()
+    if action in {"check", "status"}:
+        if len(parts) < 2:
+            return connectors_response()
+        return connector_check_response(parts[1])
+    if action in {"auth", "setup", "connect", "podłącz", "podlacz"}:
+        if len(parts) < 2:
+            return connectors_response()
+        return connector_auth_response(parts[1])
+    if action in {"search", "find"}:
+        if len(parts) < 2:
+            return connectors_response()
+        name = parts[1]
+        query = parts[2] if len(parts) >= 3 else ""
+        return source_response(f"search {normalize_connector_name(name)} {query}".strip())
+    if action in {"brief", "report", "summary"}:
+        if len(parts) < 2:
+            return connectors_response()
+        name = parts[1]
+        query = parts[2] if len(parts) >= 3 else ""
+        return connector_brief_response(name, query)
+    name = parts[0]
+    return connector_check_response(name)
 
 
 def task_artifact_dir(task_id: str) -> Path:
@@ -2915,9 +3132,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2930,10 +3147,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0.\n"
-        "Brakuje do Poke-level: OAuth/connector bridge dla Gmail/Calendar/Drive/GitHub na samym desktop runtime, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0.\n"
+        "Brakuje do Poke-level: real OAuth bridge dla Gmail/Calendar/Drive/GitHub na samym desktop runtime, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Następny sprint: L4.11 OAuth/Connector Bridge: real Gmail/Calendar/Drive/GitHub read przez auth, z artifactami i approval przed write."
+        "Następny sprint: L4.12 Real OAuth Bridge: GitHub auth fix + Gmail/Calendar/Drive read przez OAuth/cache, z artifactami i approval przed write."
     )
 
 
@@ -2946,10 +3163,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.10 Source Integrations read-only: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.11 Connector Bridge read-only: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.10: /health, /selftest, /goal, /sources, /source search <name> <query>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.11: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5009,6 +5226,8 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/nudges",
     "/sources",
     "/source",
+    "/connectors",
+    "/connector",
 }
 
 
@@ -5050,7 +5269,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges, /sources, /source.\n"
+        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -5178,6 +5397,32 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż źródła", "pokaz zrodla", "pokaż sources", "pokaz sources", "pokaż integracje", "pokaz integracje")
     ):
         return {"command": "/sources", "operators": ["host"], "prompt": "", "mode": "sources", "intent": "natural"}
+
+    if lower in {"connectors", "konektory", "połączenia", "polaczenia", "podłączenia", "podlaczenia"} or lower.startswith(
+        ("pokaż connectors", "pokaz connectors", "pokaż konektory", "pokaz konektory", "pokaż połączenia", "pokaz polaczenia")
+    ):
+        return {"command": "/connectors", "operators": ["host"], "prompt": "", "mode": "connectors", "intent": "natural"}
+
+    connector_prefixes = ["sprawdź connector", "sprawdz connector", "sprawdź konektor", "sprawdz konektor"]
+    if any(lower.startswith(prefix) for prefix in connector_prefixes):
+        return {
+            "command": "/connector",
+            "operators": ["host"],
+            "prompt": "check " + strip_intent_prefix(stripped, connector_prefixes),
+            "mode": "connector",
+            "intent": "natural",
+        }
+
+    connector_auth_prefixes = ["podłącz connector", "podlacz connector", "podłącz konektor", "podlacz konektor", "podłącz github", "podlacz github"]
+    if any(lower.startswith(prefix) for prefix in connector_auth_prefixes):
+        prompt = strip_intent_prefix(stripped, connector_auth_prefixes) or ("github" if "github" in lower else "")
+        return {
+            "command": "/connector",
+            "operators": ["host"],
+            "prompt": "auth " + prompt,
+            "mode": "connector_auth",
+            "intent": "natural",
+        }
 
     source_search_prefixes = ["szukaj w źródłach", "szukaj w zrodlach", "source search", "search sources"]
     if any(lower.startswith(prefix) for prefix in source_search_prefixes):
@@ -5551,6 +5796,10 @@ def route_text(text: str) -> dict:
         return {"command": "/nudges", "operators": ["host"], "prompt": prompt, "mode": "nudges"}
     if lower.startswith("/sources"):
         return {"command": "/sources", "operators": ["host"], "prompt": "", "mode": "sources"}
+    if lower.startswith("/connectors"):
+        return {"command": "/connectors", "operators": ["host"], "prompt": "", "mode": "connectors"}
+    if lower.startswith("/connector"):
+        return {"command": "/connector", "operators": ["host"], "prompt": stripped[10:].strip(), "mode": "connector"}
     if lower.startswith("/source"):
         return {"command": "/source", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "source"}
     if lower.startswith("/improvements"):
@@ -6055,6 +6304,10 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return nudges_response(prompt)
     if command == "/sources":
         return sources_response()
+    if command == "/connectors":
+        return connectors_response()
+    if command == "/connector":
+        return connector_response(prompt)
     if command == "/source":
         return source_response(prompt)
     if command == "/improvements":

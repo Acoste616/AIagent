@@ -398,6 +398,8 @@ class RoutingTests(unittest.TestCase):
             "/nudges": ("/nudges", ["host"]),
             "/sources": ("/sources", ["host"]),
             "/source search memory Poke": ("/source", ["host"]),
+            "/connectors": ("/connectors", ["host"]),
+            "/connector check github": ("/connector", ["host"]),
             "/improvements": ("/improvements", ["host"]),
             "/improve next": ("/improve", ["host"]),
             "/goal": ("/goal", ["host"]),
@@ -420,6 +422,9 @@ class RoutingTests(unittest.TestCase):
             "pokaż nudges": "/nudges",
             "pokaż źródła": "/sources",
             "szukaj w źródłach memory Poke": "/source",
+            "pokaż konektory": "/connectors",
+            "sprawdź connector github": "/connector",
+            "podłącz github": "/connector",
             "pokaż ulepszenia": "/improvements",
             "health": "/health",
             "anuluj task-1": "/cancel",
@@ -947,6 +952,71 @@ class L2LedgerTests(unittest.TestCase):
 
         self.assertIn("auth_required", status)
         self.assertEqual(results, [])
+
+    def test_connectors_response_reports_readiness_and_auth(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "OPENCLAW_EXPORT", root / "openclaw"
+            ), patch.object(
+                ai_council,
+                "SOURCE_EXPORT_DEFAULTS",
+                {
+                    "AI_COUNCIL_GMAIL_EXPORT_DIR": root / "sources" / "gmail",
+                    "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
+                    "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
+                },
+            ), patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+                ai_council, "cfg", side_effect=lambda key, default="": default
+            ):
+                response = ai_council.connectors_response()
+
+        self.assertIn("Connectors L4.11", response)
+        self.assertIn("github | auth_required", response)
+        self.assertIn("Ready:", response)
+        self.assertIn("/connector check", response)
+
+    def test_connector_auth_github_returns_nonsecret_setup_steps(self):
+        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+            ai_council, "cfg", side_effect=lambda key, default="": default
+        ):
+            response = ai_council.connector_response("auth github")
+
+        self.assertIn("gh auth login", response)
+        self.assertIn("Nie wklejaj tokenów", response)
+
+    def test_connector_name_aliases_are_normalized(self):
+        self.assertEqual(ai_council.normalize_connector_name("google drive"), "drive")
+        self.assertEqual(ai_council.normalize_connector_name("google_drive"), "drive")
+        self.assertEqual(ai_council.normalize_connector_name("mail"), "gmail")
+        self.assertEqual(ai_council.normalize_connector_name("openclaw export"), "openclaw")
+
+    def test_connector_brief_requires_query(self):
+        response = ai_council.connector_response("brief artifacts")
+
+        self.assertIn("wymaga query", response)
+        self.assertIn("/connector check artifacts", response)
+
+    def test_connector_brief_writes_source_backed_report(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            artifact = root / "artifacts" / "task-1" / "report.md"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("Poke connector brief source-backed result.", encoding="utf-8")
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "CLAUDE_COLLAB_DIR", root / "claude"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                response = ai_council.connector_response("brief artifacts Poke")
+                report_path = Path(response.split("report: ", 1)[1].splitlines()[0])
+                report_text = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("Connector brief `artifacts`", response)
+        self.assertIn("results: 1", response)
+        self.assertIn("source-backed", report_text)
 
     def test_action_create_approve_and_deny(self):
         with tempfile.TemporaryDirectory() as tmp:
