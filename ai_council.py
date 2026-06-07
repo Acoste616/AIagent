@@ -2271,7 +2271,7 @@ def integration_connector_for_intent(text: str) -> str:
 
     if has_any(("gmail", "mail", "maila", "mailu", "email", "emaila", "emailu", "wiadomość email", "wiadomosc email")):
         return "gmail"
-    if has_any(("calendar", "kalendarz", "meeting", "spotkanie", "umów", "umow", "schedule")):
+    if has_any(("calendar", "kalendarz", "kalendarza", "kalendarzu", "meeting", "spotkanie", "umów", "umow", "schedule", "dodaj do kalendarza", "wstaw do kalendarza", "wrzuć do kalendarza", "wrzuc do kalendarza")):
         return "calendar"
     if has_any(("github", "issue", "pull request", "pr", "repo", "commit")):
         return "github"
@@ -5235,12 +5235,12 @@ def shortcuts_response(prompt: str = "") -> str:
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
-        "[Council] Poke-like core online.\n"
-        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
+        "[Council] Poke-core aktywny, parity nadal w budowie.\n"
+        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe bezpieczne intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i od L4.35 sam startuje tryb R0 w tle. Zewnętrzne skutki uboczne nadal tworzą approval/draft zamiast wykonywać się bez zgody.\n"
         "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, zbudować /provider plan/show/verify/request/execute, wykonać GitHub issue, Gmail draft i Calendar event tylko za osobnym approvalem, confirm tokenem i provider-specific env gate, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień, i wymaga /provider request, /approve, confirm tokena, Google OAuth oraz AI_COUNCIL_PROVIDER_WRITE_ENABLED=true + AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=true. Pozostałe providery nadal kończą jako blocker/dry-run.\n"
+        "L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień, i wymaga /provider request, /approve, confirm tokena, Google OAuth oraz AI_COUNCIL_PROVIDER_WRITE_ENABLED=true + AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=true. Pozostałe providery nadal kończą jako blocker/dry-run.\n"
         "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, provider-write adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
@@ -5256,9 +5256,10 @@ def goal_response() -> str:
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
         "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, L4.30 provider adapter manifests, L4.31 provider write-request gate/dry-run, L4.32 GitHub issue executor v0 za twardymi gate'ami, L4.33 Gmail draft executor v0 za twardymi gate'ami, L4.34 Calendar event executor v0 za twardymi gate'ami, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: prywatny iMessage bridge, provider-write adapter Drive, dedupe/read-before-write, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
+        "Gotowe także: L4.35 Poke Safe Autostart, czyli bezpieczne R0 research/recipe/flow/council startują same zamiast prosić Cię o `start task-...`; reminder/kalendarz/mail dalej tworzą draft/approval.\n"
+        "Brakuje do Poke-level: prywatny iMessage bridge, provider-write adapter Drive, dedupe/read-before-write, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming, lepszy tone/voice frontu i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.35 Provider dedupe/read-before-write albo Drive document/file create z tym samym approval/confirm/verifier modelem."
+        "Najbliższy cel wdrożeniowy po L4.35: Provider dedupe/read-before-write albo Drive document/file create z tym samym approval/confirm/verifier modelem."
     )
 
 
@@ -5271,10 +5272,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe/draft_action, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; bezpieczne R0 research/recipe/flow/council startują od razu w tle; kalendarz/mail/GitHub/Drive external write -> draft/approval; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.34: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.35: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5302,7 +5303,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: L4.34 github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: L4.35 safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5334,7 +5335,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -5835,6 +5836,25 @@ def action_planner_trigger(text: str) -> bool:
     lower = normalize_intent_text(text)
     if not lower or lower.startswith(("/", "@")):
         return False
+    clean = lower
+    polite_prefixes = (
+        "hej ",
+        "hej, ",
+        "siema ",
+        "czy możesz mi ",
+        "czy mozesz mi ",
+        "możesz mi ",
+        "mozesz mi ",
+        "proszę ",
+        "prosze ",
+    )
+    changed = True
+    while changed:
+        changed = False
+        for prefix in polite_prefixes:
+            if clean.startswith(prefix):
+                clean = clean[len(prefix) :].strip()
+                changed = True
     prefixes = (
         "ogarnij",
         "załatw",
@@ -5854,12 +5874,27 @@ def action_planner_trigger(text: str) -> bool:
         "umow",
         "wyślij",
         "wyslij",
+        "przypomnij",
+        "przypomnij mi",
+        "dodaj do kalendarza",
+        "wstaw do kalendarza",
+        "zaplanuj spotkanie",
+        "dodaj wydarzenie",
         "napisz mail",
         "napisz email",
         "napisz odpowiedź",
         "napisz odpowiedz",
     )
-    return lower.startswith(prefixes)
+    middle_markers = (
+        "przypomnieć",
+        "przypomniec",
+        "dodaj mi do kalendarza",
+        "wrzuć do kalendarza",
+        "wrzuc do kalendarza",
+        "ustaw reminder",
+        "set reminder",
+    )
+    return clean.startswith(prefixes) or any(marker in lower for marker in middle_markers)
 
 
 def action_planner_mode(prompt: str) -> dict:
@@ -5888,7 +5923,17 @@ def action_planner_mode(prompt: str) -> dict:
             "zaplac",
             "umów",
             "umow",
+            "przypomnij",
+            "przypomnieć",
+            "przypomniec",
+            "dodaj do kalendarza",
+            "wstaw do kalendarza",
+            "wrzuć do kalendarza",
+            "wrzuc do kalendarza",
+            "dodaj wydarzenie",
+            "ustaw reminder",
             "schedule meeting",
+            "set reminder",
             "zadzwoń",
             "zadzwon",
             "contact customer",
@@ -5905,6 +5950,9 @@ def action_planner_mode(prompt: str) -> dict:
     route_prompt = prompt.strip()
     decision = "Przygotować plan wykonania i zostawić wykonanie po decyzji użytkownika."
     source_requested = any(token in lower for token in ("gmail", "calendar", "kalendarz", "drive", "docs", "źródł", "zrodl"))
+    reminder_intent = any(token in lower for token in ("przypomnij", "przypomnieć", "przypomniec", "ustaw reminder", "set reminder"))
+    if not draft_connector and reminder_intent:
+        draft_connector = "calendar"
     selected_recipe = None
 
     if has_side_effect_verb or risk in {"R2", "R4"} or (risk == "R3" and not source_requested):
@@ -5915,6 +5963,11 @@ def action_planner_mode(prompt: str) -> dict:
             command = "/connector"
             route_prompt = f"draft {draft_connector} {prompt.strip()}".strip()
             decision = f"Przygotować integration draft `{draft_connector}` i zostawić external write za approval."
+            draft_risk = {"gmail": "R3", "calendar": "R3", "drive": "R3", "github": "R3"}.get(draft_connector, "R3")
+            risk, reason = stricter_risk(
+                (risk, reason),
+                (draft_risk, f"{draft_connector} external write-capable draft requires approval"),
+            )
     else:
         selected_recipe = select_live_recipe(prompt)
     if mode == "approval":
@@ -6028,7 +6081,58 @@ def operators_for_command(command: str) -> list[str]:
     return ["host"]
 
 
-def action_planner_response(prompt: str, chat_id: str = "") -> str:
+def action_planner_safe_autostart_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_ACTION_PLANNER_AUTOSTART_SAFE", True)
+
+
+def action_planner_can_autostart(plan: dict) -> tuple[bool, str]:
+    if not action_planner_safe_autostart_enabled():
+        return False, "auto-start disabled"
+    if plan.get("approval_required"):
+        return False, "approval required"
+    risk = str(plan.get("risk") or "").upper()
+    if risk != "R0":
+        return False, f"risk {risk or 'unknown'} is not R0"
+    command = str(plan.get("command") or "")
+    if command in {"/propose", "/approve", "/deny", "/execute", "/rollback"} or command in SIDE_EFFECT_COMMANDS:
+        return False, f"command {command} is not auto-start safe"
+    if command == "/connector":
+        connector_parts = str(plan.get("prompt") or "").split(maxsplit=1)
+        connector_action = connector_parts[0].lower() if connector_parts else ""
+        auto_start_connector_actions = {"check", "status", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
+        if connector_action not in auto_start_connector_actions:
+            return False, f"/connector action `{connector_action or '(empty)'}` is not auto-start safe"
+        return True, "R0 read-only connector route"
+    if command in {"@research", "@xresearch", "/xresearch", "/poke-research", "/flow", "@claude-flow", "/council", "/recipe", "/task"}:
+        return True, "R0 safe route"
+    return False, f"command {command} is not in safe auto-start allowlist"
+
+
+def run_planned_task_route(task: dict, chat_id: str = "") -> str:
+    target_id = str(task.get("task_id") or "").strip()
+    route = task.get("recommended_route")
+    if not target_id or not isinstance(route, dict) or not route.get("command"):
+        return "[Council] Planned task nie ma recommended route."
+    route = {**route, "task_id": target_id}
+    chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    if route_should_background(route):
+        update_task_status(target_id, "running", "planner auto-start")
+        return start_background_job(route, chat_id=chat_id, task_id=target_id, send_progress=True)
+    try:
+        response = build_response(route, chat_id=chat_id)
+    except Exception as exc:
+        response = f"[Council] Error: {compact_line(redact_secrets(str(exc)), 500)}"
+        update_task_status(target_id, "failed", redact_secrets(str(exc))[:300])
+        return response
+    response_lower = response.lower()
+    if response.startswith("[Council] Error") or "nie znalazłem" in response_lower:
+        update_task_status(target_id, "failed", "planner route returned error")
+    else:
+        update_task_status(target_id, "completed", "planner route completed")
+    return response
+
+
+def action_planner_response(prompt: str, chat_id: str = "", auto_start: bool | None = None) -> str:
     clean = prompt.strip()
     if not clean:
         return "[Council] Action Planner: napisz, co mam ogarnąć."
@@ -6084,14 +6188,28 @@ def action_planner_response(prompt: str, chat_id: str = "") -> str:
             ]
         )
     else:
-        lines.extend(
-            [
-                "NEXT:",
-                f"1. start {task.get('task_id')}",
-                f"2. status {task.get('task_id')}",
-                "DO CIEBIE: napisz `start task-...`, jeśli mam uruchomić rekomendowany tryb.",
-            ]
-        )
+        should_autostart = action_planner_safe_autostart_enabled() if auto_start is None else auto_start
+        can_start, start_reason = action_planner_can_autostart(plan)
+        if should_autostart and can_start:
+            start_output = run_planned_task_route(task, chat_id=chat_id)
+            failed_start = start_output.startswith("[Council] Error") or "nie udało" in start_output.lower()
+            lines.extend(
+                [
+                    "AUTO-START: próba nieudana." if failed_start else "AUTO-START: tak, bo to bezpieczny tryb R0.",
+                    "START:",
+                    start_output,
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "NEXT:",
+                    f"1. start {task.get('task_id')}",
+                    f"2. status {task.get('task_id')}",
+                    f"AUTO-START: nie ({start_reason}).",
+                    "DO CIEBIE: napisz `start task-...`, jeśli mam uruchomić rekomendowany tryb.",
+                ]
+            )
     return "\n".join(lines)
 
 
@@ -6104,26 +6222,7 @@ def start_planned_task_response(prompt: str, chat_id: str = "") -> str:
         return f"[Council] Nie znalazłem task `{target_id}`."
     if task.get("status") not in {"planned", "queued"}:
         return task_status_response(target_id)
-    route = task.get("recommended_route")
-    if not isinstance(route, dict) or not route.get("command"):
-        return f"[Council] Task `{target_id}` nie ma recommended route.\n{task_status_response(target_id)}"
-    route = {**route, "task_id": target_id}
-    chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
-    if route_should_background(route):
-        update_task_status(target_id, "running", "planner start requested")
-        return start_background_job(route, chat_id=chat_id, task_id=target_id, send_progress=True)
-    try:
-        response = build_response(route, chat_id=chat_id)
-    except Exception as exc:
-        response = f"[Council] Error: {compact_line(redact_secrets(str(exc)), 500)}"
-        update_task_status(target_id, "failed", redact_secrets(str(exc))[:300])
-        return response
-    response_lower = response.lower()
-    if response.startswith("[Council] Error") or "failed" in response_lower or "nie znalazłem" in response_lower:
-        update_task_status(target_id, "failed", "planner route returned error")
-    else:
-        update_task_status(target_id, "completed", "planner route completed")
-    return response
+    return run_planned_task_route(task, chat_id=chat_id)
 
 
 def get_latest_action(action_id: str) -> dict | None:
@@ -10872,6 +10971,11 @@ def poke_chat_fallback(prompt: str) -> str:
             "Pisz normalnie: krótkie rzeczy odpowiadam od razu, a większe zamieniam w research, plan, Council albo task.\n"
             "Najprostszy test: `co możesz`, `zrób research o Poke`, `zrób plan ...`, `status`."
         )
+    if lower in {"hej", "hi", "hello", "siema", "yo"}:
+        return (
+            "[Council] Jestem.\n"
+            "Napisz normalnie, co mam ogarnąć. Bezpieczne research/plan/recipe wystartuję sam, a kalendarz/mail/GitHub/Drive przygotuję jako draft do approval."
+        )
     if lower in {"działasz", "dzialasz", "jesteś", "jestes", "żyjesz", "zyjesz", "online"}:
         return (
             "[Council] Działam.\n"
@@ -11378,6 +11482,30 @@ def dry_route(text: str) -> None:
     print(f"audit_log={AUDIT_LOG}")
 
 
+def respond_dry(text: str, chat_id: str = "") -> None:
+    started = time.time()
+    clean_chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    route = route_message(text, chat_id=clean_chat_id)
+    response = build_response(route, chat_id=clean_chat_id)
+    event = {
+        "request_id": short_hash(f"{time.time()}:{text}"),
+        "command": route.get("command"),
+        "operators": route.get("operators", []),
+        "status": "dry_response",
+        "duration_ms": int((time.time() - started) * 1000),
+        "dry_send": True,
+        "action_required": False,
+        "task_required": route_needs_task(route),
+        "background": route_should_background(route),
+        "prompt_preview": route.get("prompt", "")[:160],
+        "output_preview": response[:300],
+    }
+    audit(event)
+    print(response)
+    print(f"\nroute={json.dumps(sanitize_for_audit(route), ensure_ascii=False)}")
+    print(f"audit_log={AUDIT_LOG}")
+
+
 def is_allowed_message(message: dict) -> bool:
     sender = message.get("from", {})
     chat = message.get("chat", {})
@@ -11756,6 +11884,9 @@ def main() -> int:
     worker.add_argument("--task-id", required=True)
     route = sub.add_parser("dry-route")
     route.add_argument("text", nargs="+")
+    respond = sub.add_parser("respond")
+    respond.add_argument("text", nargs="+")
+    respond.add_argument("--chat-id", default="", help="Chat id for conversation context; defaults to TELEGRAM_ALLOWED_CHAT_ID")
     args = parser.parse_args()
 
     if args.cmd == "doctor":
@@ -11784,6 +11915,9 @@ def main() -> int:
         return run_background_job(args.task_id)
     if args.cmd == "dry-route":
         dry_route(" ".join(args.text))
+        return 0
+    if args.cmd == "respond":
+        respond_dry(" ".join(args.text), chat_id=args.chat_id)
         return 0
     return 2
 

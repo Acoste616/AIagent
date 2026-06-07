@@ -1,4 +1,6 @@
 import base64
+import contextlib
+import io
 import json
 import os
 import re
@@ -399,6 +401,31 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("Komendy:", response)
         self.assertNotIn("task-", response)
 
+    def test_short_greeting_has_operator_style_response(self):
+        with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
+            response = ai_council.build_response(ai_council.route_text("hej"))
+
+        self.assertIn("Jestem", response)
+        self.assertIn("Bezpieczne", response)
+        self.assertNotIn("Najlepszy następny krok", response)
+
+    def test_respond_dry_prints_response_and_audits(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            stdout = io.StringIO()
+            with patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "poke_chat_llm_response", return_value=None
+            ), contextlib.redirect_stdout(stdout):
+                ai_council.respond_dry("hej", chat_id="553")
+                rows = ai_council.read_jsonl(root / "logs" / "audit.jsonl")
+
+        output = stdout.getvalue()
+        self.assertIn("[Council] Jestem", output)
+        self.assertIn('"command": "/chat"', output)
+        self.assertEqual(rows[-1]["status"], "dry_response")
+
     def test_research_wraps_prompt_as_polish_research_brief(self):
         captured = {}
 
@@ -545,6 +572,7 @@ class RoutingTests(unittest.TestCase):
             "ogarnij mi research Poke": "/plan-action",
             "przygotuj mi plan wdrożenia": "/plan-action",
             "przygotuj mi raport z gmail": "/plan-action",
+            "hej, czy możesz mi jutro przypomnieć o spotkaniu z Tomkiem?": "/plan-action",
             "start task-20260606-120000-abcdef": "/start-task",
             "pokaż ulepszenia": "/improvements",
             "pokaż follow-upy": "/followups",
@@ -591,16 +619,7 @@ class RoutingTests(unittest.TestCase):
 
         self.assertEqual(ai_council.route_text("normalne pytanie do codexa")["command"], "/chat")
 
-    def test_natural_connector_sync_builds_connector_prompt(self):
-        route = ai_council.route_text("sync google drive Poke recipes")
-        benign = ai_council.route_text("musisz sync gmail recipes z firmą")
-
-        self.assertEqual(route["command"], "/connector")
-        self.assertEqual(route["mode"], "connector_sync")
-        self.assertEqual(route["prompt"], "sync drive Poke recipes")
-        self.assertEqual(benign["command"], "/chat")
-
-    def test_action_planner_builds_planned_research_recipe_without_auto_execute(self):
+    def test_reminder_intent_creates_calendar_draft_not_chat(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
@@ -614,6 +633,100 @@ class RoutingTests(unittest.TestCase):
             ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
                 ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
             ):
+                response = ai_council.build_response(
+                    ai_council.route_text("hej, czy możesz mi jutro przypomnieć o spotkaniu z Tomkiem?"),
+                    chat_id="553",
+                )
+                action = ai_council.latest_by_id(root / "state" / "actions.jsonl", "action_id", limit=1)[0]
+
+        self.assertIn("Pending action utworzona", response)
+        self.assertIn("RYZYKO: R3", response)
+        self.assertEqual(action["type"], "integration_draft")
+        self.assertEqual(action["risk"], "R3")
+        self.assertEqual(action["payload"]["connector"], "calendar")
+        self.assertFalse(action["payload"]["external_write"])
+
+    def test_reminder_without_meeting_word_still_creates_calendar_draft(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                response = ai_council.build_response(ai_council.route_text("przypomnij mi jutro o lekach"), chat_id="553")
+                action = ai_council.latest_by_id(root / "state" / "actions.jsonl", "action_id", limit=1)[0]
+
+        self.assertIn("integration draft `calendar`", response)
+        self.assertEqual(action["payload"]["connector"], "calendar")
+
+    def test_calendar_nouns_do_not_inflate_risk_without_action_intent(self):
+        risk, reason = ai_council.risk_level_for_text("spotkanie poszło dobrze i wydarzenie było ciekawe")
+
+        self.assertEqual(risk, "R0")
+        self.assertIn("read-only", reason)
+
+    def test_common_event_words_do_not_force_calendar_connector(self):
+        self.assertEqual(ai_council.integration_connector_for_intent("send me a reminder summary"), "")
+        self.assertEqual(ai_council.integration_connector_for_intent("fajne wydarzenie wczoraj"), "")
+
+    def test_action_planner_autostart_connector_is_subcommand_scoped(self):
+        safe, safe_reason = ai_council.action_planner_can_autostart(
+            {"approval_required": False, "risk": "R0", "command": "/connector", "prompt": "brief gmail Poke"}
+        )
+        blocked, blocked_reason = ai_council.action_planner_can_autostart(
+            {"approval_required": False, "risk": "R0", "command": "/connector", "prompt": "draft gmail send mail"}
+        )
+        empty, empty_reason = ai_council.action_planner_can_autostart(
+            {"approval_required": False, "risk": "R0", "command": "/connector", "prompt": ""}
+        )
+
+        self.assertTrue(safe, safe_reason)
+        self.assertFalse(blocked)
+        self.assertIn("not auto-start safe", blocked_reason)
+        self.assertFalse(empty)
+        self.assertIn("(empty)", empty_reason)
+
+    def test_action_planner_autostart_env_gate_can_disable_safe_start(self):
+        with patch.object(ai_council, "cfg", side_effect=lambda key, default="": "false" if key == "AI_COUNCIL_ACTION_PLANNER_AUTOSTART_SAFE" else default):
+            allowed, reason = ai_council.action_planner_can_autostart(
+                {"approval_required": False, "risk": "R0", "command": "/recipe", "prompt": "run research_brief Poke"}
+            )
+
+        self.assertFalse(allowed)
+        self.assertIn("disabled", reason)
+
+    def test_natural_connector_sync_builds_connector_prompt(self):
+        route = ai_council.route_text("sync google drive Poke recipes")
+        benign = ai_council.route_text("musisz sync gmail recipes z firmą")
+
+        self.assertEqual(route["command"], "/connector")
+        self.assertEqual(route["mode"], "connector_sync")
+        self.assertEqual(route["prompt"], "sync drive Poke recipes")
+        self.assertEqual(benign["command"], "/chat")
+
+    def test_action_planner_auto_starts_safe_research_recipe(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] started safe recipe"
+            ):
                 response = ai_council.action_planner_response("ogarnij mi research Poke funkcje", chat_id="553")
                 tasks = ai_council.latest_tasks(limit=1)
                 actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
@@ -621,8 +734,9 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("Action Planner L4.16", response)
         self.assertIn("TRYB: recipe", response)
         self.assertIn("live_recipe: research_brief", response)
-        self.assertIn("NEXT:", response)
-        self.assertEqual(tasks[0]["status"], "planned")
+        self.assertIn("AUTO-START: tak", response)
+        self.assertIn("started safe recipe", response)
+        self.assertEqual(tasks[0]["status"], "running")
         self.assertEqual(tasks[0]["planner_mode"], "recipe")
         self.assertEqual(tasks[0]["recommended_command"], "/recipe")
         self.assertEqual(tasks[0]["recommended_recipe"], "research_brief")
@@ -672,6 +786,8 @@ class RoutingTests(unittest.TestCase):
                 ai_council, "ERRORS_DIR", root / "errors"
             ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
                 ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] started gmail brief"
             ):
                 response = ai_council.action_planner_response("przygotuj mi raport z gmail o Poke", chat_id="553")
                 actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
@@ -679,6 +795,7 @@ class RoutingTests(unittest.TestCase):
 
         self.assertIn("TRYB: recipe", response)
         self.assertIn("live_recipe: gmail_context_brief", response)
+        self.assertIn("AUTO-START: tak", response)
         self.assertNotIn("Pending action", response)
         self.assertEqual(actions, [])
         self.assertEqual(task["recommended_command"], "/recipe")
@@ -881,7 +998,7 @@ class RoutingTests(unittest.TestCase):
             ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
                 ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
             ), patch.object(ai_council, "start_background_job", return_value="[AI Council] task-started") as start:
-                planner = ai_council.action_planner_response("ogarnij mi research Poke funkcje", chat_id="553")
+                planner = ai_council.action_planner_response("ogarnij mi research Poke funkcje", chat_id="553", auto_start=False)
                 task_id = re.search(r"task_id: (task-[A-Za-z0-9_.-]+)", planner).group(1)
                 response = ai_council.start_planned_task_response(task_id, chat_id="553")
                 latest = ai_council.get_latest_task(task_id)
@@ -1159,7 +1276,7 @@ class ConversationThreadTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
         self.assertEqual(turns[0]["text"], "hej")
-        self.assertIn("Rozpoznaję to jako rozmowę", turns[1]["text"])
+        self.assertIn("Jestem", turns[1]["text"])
         self.assertEqual(audit_rows[-1]["route_source"], "fallback")
         self.assertEqual(audit_rows[-1]["confidence"], 0.0)
 

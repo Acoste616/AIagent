@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.34 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, docs copied to desktop; listener restarted PID `6540` | Proven |
+| Windows deployment | L4.35 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, docs copied to desktop; listener restarted PID `17260` | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,18 +30,18 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.34: Mac `197/197 OK` + py_compile + diff check; Windows Desktop `197 passed, 107 subtests passed` + py_compile | Proven |
+| Test verification | L4.35: Mac `205/205 OK` + py_compile + diff check; Windows Desktop `205 passed, 108 subtests passed` + py_compile | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | L4.34 pushed; latest observed output: `20bcf5f..736b70b main -> main` | Proven |
+| GitHub push to `Acoste616/AIagent` | L4.34 pushed; L4.35 pending push in this audit turn | Pending |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
-- Process: one `python -X utf8 -u D:\ai-council\ai_council.py serve --send`, PID `6540`
-- Health: env OK, Telegram offset 437154833, running tasks 0, stuck tasks 0, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.34 `github_issue_executor=gated`, `gmail_draft_executor=gated`, `calendar_event_executor=gated`.
-- Selftest: docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Process: one `python -X utf8 -u D:\ai-council\ai_council.py serve --send`, PID `17260`
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.35 `safe_autostart=on`, L4.34 provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version shows `L4.35 Poke Safe Autostart + Reminder/Calendar Intent`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
 
 ## Completion Decision
 
@@ -51,7 +51,7 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.35 Provider dedupe/read-before-write albo Drive document/file create with the same approval/confirm/verifier model.
+1. L4.36 Provider dedupe/read-before-write albo Drive document/file create with the same approval/confirm/verifier model.
 2. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
 3. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
 4. Deeper source-backed integrations and proactive topic ownership.
@@ -80,6 +80,7 @@ Completed layers in the current implementation state:
 - L4.32 GitHub Issue Executor v0: `/provider execute <request_id> <confirm>` can create a GitHub issue only for `github.issues.create`, only after request approval, only with `AI_COUNCIL_PROVIDER_WRITE_ENABLED=true`, `AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED=true`, and `GITHUB_TOKEN/GH_TOKEN`; `/provider verify <request_id>` verifies provider result artifacts with URL/id/number evidence. Other providers remain dry-run/blocker only.
 - L4.33 Gmail Draft Executor v0: `/provider execute <request_id> <confirm>` can create a Gmail draft only for `gmail.users.drafts.create`, only after request approval, only with `AI_COUNCIL_PROVIDER_WRITE_ENABLED=true`, `AI_COUNCIL_GMAIL_DRAFT_WRITE_ENABLED=true`, and Google OAuth; it creates a draft only, never sends email.
 - L4.34 Calendar Event Executor v0: `/provider execute <request_id> <confirm>` can create a Calendar event only for `calendar.events.insert`, only after request approval, only with `AI_COUNCIL_PROVIDER_WRITE_ENABLED=true`, `AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=true`, and Google OAuth; it uses `sendUpdates=none`.
+- L4.35 Poke Safe Autostart + Reminder/Calendar Intent: Action Planner auto-starts safe R0 research/recipe/flow/council routes instead of requiring `start task-...`; reminder/calendar phrases create Calendar integration drafts behind approval; `/connector` auto-start is scoped to read-only subcommands; `respond` CLI dry-runs full response generation for debugging.
 
 ## External Follow-up
 
