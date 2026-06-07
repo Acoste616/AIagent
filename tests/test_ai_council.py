@@ -270,9 +270,11 @@ class OperatorOutputTests(unittest.TestCase):
         feature_recipe = recipes["feature_evolution_loop"]
 
         self.assertTrue(error_recipe["enabled"])
+        self.assertTrue(error_recipe["capture_improvement"])
         self.assertEqual(error_recipe["trigger"]["cron"], "0 9,21 * * *")
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in error_recipe["steps"]))
         self.assertTrue(feature_recipe["enabled"])
+        self.assertTrue(feature_recipe["capture_improvement"])
         self.assertEqual(feature_recipe["trigger"]["cron"], "15 10 * * *")
         self.assertTrue(any(step["command"] == "@xresearch" for step in feature_recipe["steps"]))
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in feature_recipe["steps"]))
@@ -375,6 +377,8 @@ class RoutingTests(unittest.TestCase):
             "/patch shared/test.txt :: ok => better": ("/patch", ["host"]),
             "/chat test": ("/chat", ["host"]),
             "/errors": ("/errors", ["host"]),
+            "/improvements": ("/improvements", ["host"]),
+            "/improve next": ("/improve", ["host"]),
             "/flow zrób pełny plan": ("/flow", ["claude-flow"]),
             "@claude-flow zrób pełny plan": ("@claude-flow", ["claude-flow"]),
             "/council zrób plan": ("/council", ["codex", "claude", "grok"]),
@@ -391,6 +395,7 @@ class RoutingTests(unittest.TestCase):
             "status": "/status",
             "koszty": "/cost",
             "pokaż błędy": "/errors",
+            "pokaż ulepszenia": "/improvements",
             "health": "/health",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
@@ -464,6 +469,71 @@ class ErrorStoreTests(unittest.TestCase):
         self.assertIn("telegram boom", rows[0]["traceback"])
         self.assertIn(error["error_id"], response)
         self.assertIn("telegram_message", response)
+
+
+class ImprovementBacklogTests(unittest.TestCase):
+    def test_create_show_and_close_improvement(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                improvement = ai_council.create_improvement(
+                    source="test_loop",
+                    title="Wdrożyć szybkie replies",
+                    summary="DECYZJA: Wdrożyć szybkie replies w Telegramu.",
+                    task_id="task-1",
+                    recipe="feature_evolution_loop",
+                )
+                listing = ai_council.improvements_response()
+                shown = ai_council.improvements_response(f"show {improvement['improvement_id']}")
+                done = ai_council.improvements_response(f"done {improvement['improvement_id']}")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+
+        self.assertIn(improvement["improvement_id"], listing)
+        self.assertIn("Wdrożyć szybkie replies", shown)
+        self.assertIn("done", done)
+        self.assertEqual(latest["status"], "done")
+
+    def test_recipe_with_capture_improvement_writes_backlog_item(self):
+        recipe = {
+            "loop": {
+                "name": "loop",
+                "description": "test loop",
+                "enabled": True,
+                "trigger": {"type": "manual"},
+                "capture_improvement": True,
+                "improvement_policy": {"enabled": True, "source": "test_loop", "priority": "P1"},
+                "steps": [{"command": "/chat", "prompt": "plan"}],
+            }
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "default_recipes", return_value=recipe
+            ), patch.object(ai_council, "poke_chat_response", return_value="DECYZJA: Wdrożyć backlog loop.\nNEXT: test"):
+                result = ai_council.run_recipe_background("run loop", task_id="task-loop")
+                rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "test_loop")
+        self.assertEqual(rows[0]["source_task_id"], "task-loop")
+        self.assertEqual(rows[0]["priority"], "P1")
+        self.assertIn("/improve show", " ".join(result["next_actions"]))
 
 
 class L2LedgerTests(unittest.TestCase):

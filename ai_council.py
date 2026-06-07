@@ -61,6 +61,7 @@ ARTIFACT_INDEX_FILE = STATE_DIR / "artifact_index.jsonl"
 BACKGROUND_JOB_SPECS_DIR = STATE_DIR / "background_job_specs"
 COSTS_FILE = STATE_DIR / "costs.jsonl"
 ERRORS_FILE = STATE_DIR / "errors.jsonl"
+IMPROVEMENTS_FILE = STATE_DIR / "improvements.jsonl"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
 RECIPES_DIR = PROJECT_DIR / "recipes"
 NUDGES_FILE = STATE_DIR / "nudges.jsonl"
@@ -371,6 +372,147 @@ def errors_response(prompt: str = "") -> str:
         )
     lines.append("Audit: /recipe run error_audit_twice_daily albo poczekaj na cykl 09:00/21:00.")
     return "\n".join(lines)
+
+
+def improvement_title_from_text(text: str, fallback: str = "AI Council improvement") -> str:
+    for line in extract_fact_lines(text, limit=12):
+        clean = re.sub(r"^(decyzja|next|rekomendacja|sprint|wdrożyć|wdrozyc)\s*[:：-]\s*", "", line, flags=re.IGNORECASE)
+        clean = compact_line(clean.strip("`*_ "), 120)
+        if clean and not clean.lower().startswith(("step ", "using tool", "details:")):
+            return clean
+    return compact_line(fallback, 120)
+
+
+def latest_improvements(limit: int = 20) -> list[dict]:
+    return latest_by_id(IMPROVEMENTS_FILE, "improvement_id", limit=limit)
+
+
+def open_improvements(limit: int = 20) -> list[dict]:
+    return [row for row in latest_improvements(limit=limit * 3) if row.get("status", "open") == "open"][:limit]
+
+
+def get_latest_improvement(improvement_id: str) -> dict | None:
+    improvement_id = improvement_id.strip()
+    latest = {
+        row.get("improvement_id"): row
+        for row in read_jsonl(IMPROVEMENTS_FILE)
+        if row.get("improvement_id")
+    }
+    return latest.get(improvement_id)
+
+
+def create_improvement(
+    *,
+    source: str,
+    title: str,
+    summary: str,
+    task_id: str = "",
+    recipe: str = "",
+    priority: str = "P2",
+    status: str = "open",
+) -> dict:
+    ensure_council_dirs()
+    if task_id:
+        existing = [
+            row
+            for row in read_jsonl(IMPROVEMENTS_FILE)
+            if row.get("source_task_id") == task_id and row.get("status", "open") != "superseded"
+        ]
+        if existing:
+            return existing[-1]
+    clean_title = compact_line(title or improvement_title_from_text(summary), 140)
+    improvement = {
+        "improvement_id": f"imp-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{source}:{task_id}:{title}:{time.time()}')[:6]}",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "status": status,
+        "priority": priority,
+        "source": source,
+        "source_task_id": task_id,
+        "recipe": recipe,
+        "title": clean_title,
+        "summary": compact_line(summary, 2000),
+        "next_action": f"Codex audit: /improve show <id> -> implementacja z testami. Details: /details {task_id}" if task_id else "Codex audit i implementacja z testami.",
+    }
+    append_jsonl(IMPROVEMENTS_FILE, improvement)
+    return improvement
+
+
+def create_improvement_from_recipe(recipe: dict, recipe_name: str, task_id: str, raw: str) -> dict | None:
+    policy = recipe.get("improvement_policy") or {}
+    if not (recipe.get("capture_improvement") or policy.get("enabled")):
+        return None
+    if recipe_name == "error_audit_twice_daily" and "brak zapisanych błędów" in raw.lower() and "err-" not in raw:
+        return None
+    title = improvement_title_from_text(raw, fallback=f"Recipe {recipe_name} recommendation")
+    return create_improvement(
+        source=str(policy.get("source") or f"recipe:{recipe_name}"),
+        title=title,
+        summary=raw,
+        task_id=task_id,
+        recipe=recipe_name,
+        priority=str(policy.get("priority") or "P2"),
+    )
+
+
+def update_improvement_status(improvement_id: str, status: str) -> dict | None:
+    current = get_latest_improvement(improvement_id)
+    if not current:
+        return None
+    updated = {**current, "status": status, "updated_at": utc_now()}
+    append_jsonl(IMPROVEMENTS_FILE, updated)
+    return updated
+
+
+def format_improvement(item: dict, detailed: bool = False) -> str:
+    base = (
+        f"{item.get('improvement_id')} [{item.get('status', 'open')}/{item.get('priority', 'P2')}] "
+        f"{compact_line(str(item.get('title') or ''), 140)}"
+    )
+    if not detailed:
+        return base
+    lines = [
+        f"[Council] Improvement {item.get('improvement_id')}",
+        f"status: {item.get('status', 'open')}",
+        f"priority: {item.get('priority', 'P2')}",
+        f"source: {item.get('source', '')}",
+        f"task: {item.get('source_task_id', '')}",
+        f"recipe: {item.get('recipe', '')}",
+        f"title: {item.get('title', '')}",
+        "summary:",
+        compact_line(str(item.get("summary") or ""), 1800),
+        f"next: {item.get('next_action', '')}",
+    ]
+    return "\n".join(lines)
+
+
+def improvements_response(prompt: str = "") -> str:
+    parts = prompt.strip().split(maxsplit=2)
+    action = parts[0].lower() if parts else "list"
+    if action in {"list", "open", "recent"}:
+        items = open_improvements(limit=10) if action != "recent" else latest_improvements(limit=10)
+        if not items:
+            return "[Council] Improvements: brak otwartych kandydatów.\nPętle: error_audit_twice_daily i feature_evolution_loop dopiszą tu nowe propozycje."
+        lines = ["[Council] Improvements"]
+        for index, item in enumerate(items, start=1):
+            lines.append(f"{index}. {format_improvement(item)}")
+        lines.append("Użyj: /improve next, /improve show <id>, /improve done <id>, /improve dismiss <id>.")
+        return "\n".join(lines)
+    if action == "next":
+        items = open_improvements(limit=1)
+        if not items:
+            return "[Council] Brak otwartych improvements. Uruchom /recipe run feature_evolution_loop albo poczekaj na cykl."
+        return format_improvement(items[0], detailed=True)
+    if action == "show" and len(parts) >= 2:
+        item = get_latest_improvement(parts[1])
+        return format_improvement(item, detailed=True) if item else f"[Council] Nie znalazłem improvement `{parts[1]}`."
+    if action in {"done", "dismiss"} and len(parts) >= 2:
+        status = "done" if action == "done" else "dismissed"
+        item = update_improvement_status(parts[1], status)
+        if not item:
+            return f"[Council] Nie znalazłem improvement `{parts[1]}`."
+        return f"[Council] Improvement `{parts[1]}` -> {status}."
+    return "[Council] Improvements: /improvements, /improve next, /improve show <id>, /improve done <id>, /improve dismiss <id>."
 
 
 def latest_by_id(path: Path, id_key: str, limit: int = 10) -> list[dict]:
@@ -1984,6 +2126,8 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "schedule", "cron": "0 9,21 * * *"},
             "risk": "R0",
             "approval_policy": "auto",
+            "capture_improvement": True,
+            "improvement_policy": {"enabled": True, "source": "error_audit_loop", "priority": "P1"},
             "steps": [
                 {"command": "/errors", "prompt": "recent 20"},
                 {
@@ -2004,6 +2148,8 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "schedule", "cron": "15 10 * * *"},
             "risk": "R0",
             "approval_policy": "auto",
+            "capture_improvement": True,
+            "improvement_policy": {"enabled": True, "source": "feature_evolution_loop", "priority": "P2"},
             "steps": [
                 {
                     "command": "@xresearch",
@@ -2301,11 +2447,15 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
         outputs.append(f"## Step {index}: {route['command']}\n\n{step_response}")
     raw = "\n\n".join(outputs) or "Recipe nie ma kroków."
     facts = extract_fact_lines(raw, limit=3)
+    improvement = create_improvement_from_recipe(recipe, name, task_id, raw)
+    next_actions = [f"Przejrzyj wynik: /details {task_id}", f"Pokaż recipe: /recipe show {name}"]
+    if improvement:
+        next_actions.insert(0, f"Backlog: /improve show {improvement['improvement_id']}")
     return {
         "decision": f"Recipe `{name}` zakończona.",
         "facts": facts or [f"Recipe `{name}` uruchomiona."],
         "dispute": "Recipe MVP działa deterministycznie; realne write/external actions nadal wymagają approval.",
-        "next_actions": [f"Przejrzyj wynik: /details {task_id}", f"Pokaż recipe: /recipe show {name}"],
+        "next_actions": next_actions,
         "ask_user": "Zdecyduj, czy kontynuować wynik recipe.",
         "raw_output": raw,
         "report": f"# Recipe run: {name}\n\nInput: {recipe_input}\n\n{raw}",
@@ -2317,9 +2467,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż błędy`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż błędy`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2346,6 +2496,7 @@ def health_response() -> str:
     running = [task for task in latest_tasks(limit=50) if task.get("status") in {"running", "running_background"}]
     stuck = stuck_tasks(limit=5)
     recent_errors = error_rows(days=1)
+    improvements_open = open_improvements(limit=50)
     offset = read_offset()
     lines = [
         "[Council] Health",
@@ -2355,6 +2506,7 @@ def health_response() -> str:
         f"running_tasks: {len(running)}",
         f"stuck_tasks: {len(stuck)}",
         f"errors_24h: {len(recent_errors)}",
+        f"improvements_open: {len(improvements_open)}",
     ]
     for name, item in status.items():
         marker = "OK" if item.get("configured") else "missing"
@@ -4148,6 +4300,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/errors", "operators": ["host"], "prompt": "recent", "mode": "errors", "intent": "natural"}
 
+    if lower in {"ulepszenia", "improvements", "backlog", "co wdrażać", "co wdrazac", "co wdrożyć", "co wdrozyc"} or lower.startswith(
+        ("pokaż ulepszenia", "pokaz ulepszenia", "pokaż backlog", "pokaz backlog", "następne wdrożenie", "nastepne wdrozenie")
+    ):
+        return {"command": "/improvements", "operators": ["host"], "prompt": "", "mode": "improvements", "intent": "natural"}
+
     status_id_prefixes = ["status "]
     if any(lower.startswith(prefix) for prefix in status_id_prefixes):
         return {
@@ -4466,6 +4623,10 @@ def route_text(text: str) -> dict:
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
     if lower.startswith("/errors"):
         return {"command": "/errors", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "errors"}
+    if lower.startswith("/improvements"):
+        return {"command": "/improvements", "operators": ["host"], "prompt": stripped[13:].strip(), "mode": "improvements"}
+    if lower.startswith("/improve"):
+        return {"command": "/improve", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "improvements"}
     if lower.startswith("/recipes"):
         return {"command": "/recipes", "operators": ["host"], "prompt": "", "mode": "recipes"}
     if lower.startswith("/recipe"):
@@ -4950,6 +5111,10 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return cost_response()
     if command == "/errors":
         return errors_response(prompt)
+    if command == "/improvements":
+        return improvements_response(prompt)
+    if command == "/improve":
+        return improvements_response(prompt)
     if command == "/recipes":
         return recipes_response()
     if command == "/cancel":
