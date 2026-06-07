@@ -5133,7 +5133,7 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         return {"command": "/selftest", "operators": ["host"], "prompt": "", "mode": "selftest", "intent": "natural"}
 
     if lower in {"co umiesz", "co potrafisz", "co możesz", "co mozesz", "capabilities", "możliwości", "mozliwosci"} or lower.startswith(
-        ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities")
+        ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities", "jak działasz", "jak dzialasz", "jak dziś działasz", "jak dzis dzialasz")
     ):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities", "intent": "natural"}
 
@@ -5937,9 +5937,9 @@ def poke_chat_fallback(prompt: str) -> str:
             "Obecna poprawka: zwykłe wiadomości wracają jako /chat, a research/plan/Council eskalują tylko wtedy, gdy wykryję taką intencję."
         )
     return (
-        "[Council] Mam to.\n"
-        "Rozpoznaję to jako rozmowę, nie zadanie w tle.\n"
-        "Jeżeli mam działać dalej, napisz naturalnie: `zrób research ...`, `zrób plan ...`, `skonsultuj z council ...` albo `zapisz task ...`."
+        "[Council] Rozpoznaję to jako rozmowę, nie zadanie w tle.\n"
+        "Mogę od razu przełączyć to w research, plan, Council, task, source search albo bezpieczną akcję po approval.\n"
+        "Najlepszy następny krok: napisz cel w jednym zdaniu albo dopisz `zrób research`, `zrób plan`, `skonsultuj z council`."
     )
 
 
@@ -5959,10 +5959,11 @@ def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
             "role": "system",
             "content": (
                 "Jesteś frontowym operatorem Bartek Agent OS w Telegramie, styl Poke-like. "
-                "Odpowiadasz po polsku, szybko, konkretnie i osobowo: bez ściany komend, bez logów, bez technicznego żargonu. "
+                "Odpowiadasz po polsku, szybko, konkretnie i operacyjnie: bez ściany komend, bez logów, bez technicznego żargonu i bez small talku typu 'co u Ciebie'. "
                 "Jeśli pytanie jest zwykłe, odpowiedz normalnie. Jeśli wygląda na większe zadanie, nazwij najlepszy tryb: research, plan, Council, task albo approval. "
+                "Jeśli Bartek pyta o stan systemu, cel albo Poke parity, powiedz prawdę: system nie jest jeszcze ukończony i brakuje pełnych connectorów oraz iPhone/iMessage layer. "
                 "Nie twierdź, że wykonałeś pliki, API, publikację albo kontakt, jeśli tego realnie nie wykonał system. "
-                "Maks 4 krótkie zdania albo 5 punktów. Na końcu podaj jeden najlepszy następny krok, gdy ma sens."
+                "Nie mów 'wszystko działa' bez sprawdzenia health. Maks 4 krótkie zdania albo 5 punktów. Na końcu podaj jeden najlepszy następny krok, gdy ma sens."
             ),
         }
     ]

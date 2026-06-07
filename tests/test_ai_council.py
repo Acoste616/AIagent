@@ -439,6 +439,7 @@ class RoutingTests(unittest.TestCase):
             "zrób plan rozwoju systemu": "/flow",
             "zrób research o Poke": "@research",
             "co możesz?": "/capabilities",
+            "jak dziś działasz?": "/capabilities",
             "gdzie ten cel i czemu nie odpowiada jak Poke": "/goal",
             "Ani nie odpowiada on jak poke nie ma takich możliwości, o co chodzi gdzie ten cel ?": "/goal",
         }
@@ -639,7 +640,7 @@ class ConversationThreadTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
         self.assertEqual(turns[0]["text"], "hej")
-        self.assertIn("Mam to", turns[1]["text"])
+        self.assertIn("Rozpoznaję to jako rozmowę", turns[1]["text"])
         self.assertEqual(audit_rows[-1]["route_source"], "fallback")
         self.assertEqual(audit_rows[-1]["confidence"], 0.0)
 
