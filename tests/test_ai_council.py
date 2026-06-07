@@ -443,6 +443,61 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("test zakończony", test_result["decision"])
         self.assertFalse(recipe["enabled"])
 
+    def test_recipe_test_summary_adds_activation_followup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"):
+                ai_council.save_recipe(
+                    {
+                        "name": "health_digest",
+                        "created_by": "recipe_creator_v0",
+                        "enabled": False,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                result = ai_council.run_recipe_background("test health_digest", task_id="task-test")
+                markup = ai_council.background_delivery_reply_markup(result["summary"], "task-test")
+
+        self.assertIn("Recipe Test Follow-up L4.53", result["summary"])
+        self.assertIn("activation: recipe health_digest", result["summary"])
+        buttons = [button["text"] for row in markup["inline_keyboard"] for button in row]
+        self.assertIn("Enable", buttons)
+        self.assertIn("Details", buttons)
+
+    def test_background_delivery_ignores_unanchored_activation_text(self):
+        response = "[AI Council] task\nDECYZJA: activation: recipe fake_recipe\nDetails: /details task-1"
+        markup = ai_council.background_delivery_reply_markup(response, "task-1")
+        buttons = [button["text"] for row in markup["inline_keyboard"] for button in row]
+
+        self.assertIn("Status", buttons)
+        self.assertIn("Details", buttons)
+        self.assertNotIn("Enable", buttons)
+
+    def test_blocked_recipe_test_has_no_activation_followup_markup(self):
+        result = {
+            "decision": "Recipe `unsafe_recipe` zablokowana.",
+            "facts": ["step 1: /execute is not allowed in recipes"],
+            "dispute": "blocked",
+            "next_actions": ["/recipe show unsafe_recipe"],
+            "ask_user": "Popraw recipe.",
+            "raw_output": "blocked",
+            "report": "blocked",
+            "status": "blocked",
+        }
+        summary = ai_council.format_telegram_summary(result, "task-blocked")
+        markup = ai_council.background_delivery_reply_markup(summary, "task-blocked")
+        buttons = [button["text"] for row in markup["inline_keyboard"] for button in row]
+
+        self.assertNotIn("Recipe Test Follow-up", summary)
+        self.assertNotIn("Enable", buttons)
+        self.assertIn("Details", buttons)
+
     def test_recipe_activation_callback_enable_uses_policy(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -6575,6 +6630,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("front_quality=L4.50", health)
         self.assertIn("recipe_creator=L4.51", health)
         self.assertIn("recipe_activation=L4.52", health)
+        self.assertIn("recipe_test_followup=L4.53", health)
         self.assertIn("delegate_loop=L4.49:gated", health)
 
 
