@@ -160,6 +160,7 @@ READONLY_RECIPE_COMMANDS = {
     "/connectors",
     "/connector",
     "/memory",
+    "/project-memory",
     "/chat",
     "@research",
     "@grok",
@@ -174,6 +175,7 @@ READONLY_RECIPE_COMMANDS = {
 RECIPE_CONNECTOR_READ_ACTIONS = {"check", "status", "auth", "setup", "connect", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
+RECIPE_PROJECT_MEMORY_READ_ACTIONS = {"", "recent", "show", "search", "context"}
 RECIPE_CONTROL_READ_ACTIONS = {"", "status"}
 FOLLOWUP_EXECUTABLE_COMMANDS = {
     "/plan-action",
@@ -3326,6 +3328,7 @@ def save_task_artifacts(task_id: str, route: dict, result: dict) -> dict:
         source="background",
         task_id=task_id,
     )
+    save_project_memory_from_artifact(index)
     return index
 
 
@@ -4332,6 +4335,8 @@ def recipe_step_is_allowed(step: dict) -> tuple[bool, str]:
         return False, f"/source action `{action}` is not read-only recipe allowed"
     if command == "/memory" and action and action not in RECIPE_MEMORY_READ_ACTIONS:
         return False, f"/memory action `{action}` is not read-only recipe allowed"
+    if command == "/project-memory" and action not in RECIPE_PROJECT_MEMORY_READ_ACTIONS:
+        return False, f"/project-memory action `{action}` is not read-only recipe allowed"
     if command == "/control" and action not in RECIPE_CONTROL_READ_ACTIONS:
         return False, f"/control action `{action}` is not read-only recipe allowed"
     return True, ""
@@ -4435,10 +4440,10 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, odpowiadać jednym hostowym głosem dla operatorów, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "To nadal nie jest pełny Poke: brakuje pełnego token-level streamingu, mocniejszej pamięci projektowej, iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge i głębszych write-capable integrations.\n"
+        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "To nadal nie jest pełny Poke: brakuje pełnego token-level streamingu, iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge, mocniejszego cost-ledger reservation i głębszych write-capable integrations.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4452,10 +4457,10 @@ def goal_response() -> str:
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: pełny token-level streaming, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval oraz natywna ścieżka GitHub CLI auth.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: pełny token-level streaming, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval, mocniejszy cost-ledger reservation oraz natywna ścieżka GitHub CLI auth.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.22 Project Memory Spine - trwała pamięć projektowa i source-grounded recall dla długich prac."
+        "Najbliższy cel wdrożeniowy: L4.23 Cost Ledger Reservation - serializacja kosztów i rezerwacja budżetu przed drogimi równoległymi wywołaniami."
     )
 
 
@@ -4468,10 +4473,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.21 Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.22 Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, source-backed project memory, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.21: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.22: /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4530,7 +4535,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.21 Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.22 Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -4586,14 +4591,23 @@ def memory_save(
     agent: str = "host",
     source: str = "telegram",
     task_id: str = "",
+    entry_id: str = "",
 ) -> dict:
     init_memory_db()
     clean_key = key.strip() or "note"
     clean_value = value.strip() or "(empty)"
-    entry_id = f"mem-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(clean_key + clean_value)[:6]}"
+    entry_id = entry_id.strip() or f"mem-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(clean_key + clean_value)[:6]}"
+    created_at = utc_now()
+    try:
+        with sqlite3.connect(MEMORY_DB) as conn:
+            existing = conn.execute("SELECT created_at FROM memory_entries WHERE entry_id = ?", (entry_id,)).fetchone()
+            if existing and existing[0]:
+                created_at = str(existing[0])
+    except sqlite3.Error:
+        pass
     row = {
         "entry_id": entry_id,
-        "created_at": utc_now(),
+        "created_at": created_at,
         "kind": kind,
         "agent": agent,
         "key": clean_key,
@@ -4620,6 +4634,7 @@ def memory_save(
             ),
         )
         try:
+            conn.execute("DELETE FROM memory_fts WHERE entry_id = ?", (entry_id,))
             conn.execute(
                 """
                 INSERT INTO memory_fts (entry_id, kind, agent, key, value, source)
@@ -4697,11 +4712,23 @@ def memory_search(query: str, limit: int = 8) -> list[dict]:
 
 def memory_context_for_prompt(prompt: str, limit: int = 3) -> str:
     try:
+        project_rows = project_memory_rows(prompt, limit=limit)
         rows = memory_search(prompt, limit=limit)
     except Exception:
         return ""
     lines = []
-    for row in rows:
+    seen: set[str] = set()
+    if project_rows:
+        lines.append("Project memory:")
+    for row in project_rows:
+        seen.add(str(row.get("entry_id") or ""))
+        source = compact_line(str(row.get("source") or row.get("task_id") or ""), 72)
+        lines.append(f"- {compact_line(row.get('key', ''), 48)}: {compact_line(row.get('value', ''), 180)} | source={source}")
+    regular_rows = [row for row in rows if str(row.get("entry_id") or "") not in seen]
+    if regular_rows:
+        if lines:
+            lines.append("Memory:")
+    for row in regular_rows:
         lines.append(f"- {row.get('agent', 'host')} | {compact_line(row.get('key', ''), 48)}: {compact_line(row.get('value', ''), 180)}")
     return "\n".join(lines)
 
@@ -4739,6 +4766,156 @@ def memory_response(prompt: str) -> str:
         row = memory_save(key, value)
         return f"[Council] Memory saved: {row['entry_id']} | {compact_line(row['key'], 60)}."
     return "[Council] Memory: użyj /memory recent, /memory search <tekst>, /memory save klucz = treść."
+
+
+def project_memory_entry_id(task_id: str, section: str) -> str:
+    return "pmem-" + short_hash(f"{task_id}:{section}")[:16]
+
+
+def project_memory_value(body: str, *, task_id: str, source: str) -> str:
+    lines = [body.strip()]
+    if task_id:
+        lines.append(f"Task: {task_id}")
+        lines.append(f"Details: /details {task_id}")
+    if source:
+        lines.append(f"Source: {source}")
+    return "\n".join(line for line in lines if line)
+
+
+def save_project_memory_from_artifact(artifact: dict) -> list[dict]:
+    task_id = str(artifact.get("task_id") or "").strip()
+    if not task_id:
+        return []
+    source = str(artifact.get("report_path") or artifact.get("artifact_dir") or "")
+    rows: list[dict] = []
+    decision = str(artifact.get("decision") or "").strip()
+    if decision:
+        rows.append(
+            memory_save(
+                f"project:{task_id}:decision",
+                project_memory_value(f"Decision: {decision}", task_id=task_id, source=source),
+                kind="project_memory",
+                source=source or "artifact",
+                task_id=task_id,
+                entry_id=project_memory_entry_id(task_id, "decision"),
+            )
+        )
+    facts = [str(item).strip() for item in (artifact.get("facts") or []) if str(item).strip()]
+    if facts:
+        rows.append(
+            memory_save(
+                f"project:{task_id}:facts",
+                project_memory_value("Facts: " + " | ".join(facts[:8]), task_id=task_id, source=source),
+                kind="project_memory",
+                source=source or "artifact",
+                task_id=task_id,
+                entry_id=project_memory_entry_id(task_id, "facts"),
+            )
+        )
+    next_actions = [str(item).strip() for item in (artifact.get("next_actions") or []) if str(item).strip()]
+    if next_actions:
+        rows.append(
+            memory_save(
+                f"project:{task_id}:next",
+                project_memory_value("Next: " + " | ".join(next_actions[:8]), task_id=task_id, source=source),
+                kind="project_memory",
+                source=source or "artifact",
+                task_id=task_id,
+                entry_id=project_memory_entry_id(task_id, "next"),
+            )
+        )
+    return rows
+
+
+def project_memory_rows(query: str = "", limit: int = 8) -> list[dict]:
+    init_memory_db()
+    clean_query = query.strip()
+    with sqlite3.connect(MEMORY_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        if clean_query:
+            like = f"%{clean_query}%"
+            rows = conn.execute(
+                """
+                SELECT entry_id, created_at, kind, agent, key, value, source, task_id
+                FROM memory_entries
+                WHERE kind = 'project_memory'
+                  AND (key LIKE ? OR value LIKE ? OR source LIKE ? OR task_id LIKE ?)
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (like, like, like, like, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT entry_id, created_at, kind, agent, key, value, source, task_id
+                FROM memory_entries
+                WHERE kind = 'project_memory'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def project_memory_rebuild(limit: int = 100) -> list[dict]:
+    latest: dict[str, dict] = {}
+    for row in read_jsonl(ARTIFACT_INDEX_FILE):
+        task_id = str(row.get("task_id") or "")
+        if task_id:
+            latest[task_id] = row
+    rebuilt: list[dict] = []
+    for artifact in list(latest.values())[-limit:]:
+        rebuilt.extend(save_project_memory_from_artifact(artifact))
+    return rebuilt
+
+
+def project_memory_context_for_prompt(prompt: str, limit: int = 4) -> str:
+    try:
+        rows = project_memory_rows(prompt, limit=limit)
+    except Exception:
+        return ""
+    lines = []
+    for row in rows:
+        source = compact_line(str(row.get("source") or row.get("task_id") or ""), 72)
+        value = compact_line(str(row.get("value") or ""), 220)
+        lines.append(f"- {compact_line(str(row.get('key') or ''), 64)}: {value} | source={source}")
+    return "\n".join(lines)
+
+
+def project_memory_response(prompt: str) -> str:
+    stripped = prompt.strip()
+    lower = stripped.lower()
+    if lower.startswith("rebuild"):
+        raw_limit = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
+        try:
+            limit = int(raw_limit) if raw_limit else 100
+        except ValueError:
+            limit = 100
+        rows = project_memory_rebuild(limit=max(1, min(limit, 500)))
+        return f"[Council] Project Memory rebuild: zapisano/odświeżono {len(rows)} wpisów z artifact index."
+    if lower.startswith("search"):
+        query = stripped[6:].strip()
+        rows = project_memory_rows(query, limit=10)
+        if not rows:
+            return f"[Council] Project Memory search: brak wyników dla `{query}`."
+        lines = [f"[Council] Project Memory search `{query}`"]
+    elif lower.startswith("context"):
+        query = stripped[7:].strip()
+        context = project_memory_context_for_prompt(query, limit=6)
+        return f"[Council] Project Memory context `{query}`\n{context or 'brak trafień'}"
+    else:
+        rows = project_memory_rows("", limit=10)
+        if not rows:
+            return "[Council] Project Memory puste. Użyj: /project-memory rebuild."
+        lines = ["[Council] Project Memory recent"]
+    for row in rows:
+        lines.append(
+            f"- {row['entry_id']} | {compact_line(row['key'], 48)} | {compact_line(row['value'], 120)}"
+        )
+    lines.append("Użyj: /project-memory search <tekst>, /project-memory context <tekst>, /project-memory rebuild.")
+    return "\n".join(lines)
 
 
 def risk_level_for_text(text: str) -> tuple[str, str]:
@@ -7075,6 +7252,7 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/source",
     "/connectors",
     "/connector",
+    "/project-memory",
 }
 
 
@@ -7120,7 +7298,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector, /project-memory.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -7440,6 +7618,27 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
 
     if lower in {"pamięć", "pamiec", "memory", "pokaż pamięć", "pokaz pamiec"}:
         return {"command": "/memory", "operators": ["host"], "prompt": "recent", "mode": "memory", "intent": "natural"}
+
+    if lower in {"pamięć projektu", "pamiec projektu", "project memory", "project-memory", "spine", "memory spine"} or lower.startswith(
+        ("pokaż pamięć projektu", "pokaz pamiec projektu", "pokaż project memory", "pokaz project memory")
+    ):
+        return {"command": "/project-memory", "operators": ["host"], "prompt": "recent", "mode": "project_memory", "intent": "natural"}
+
+    project_memory_search_prefixes = [
+        "szukaj w pamięci projektu",
+        "szukaj w pamieci projektu",
+        "przeszukaj pamięć projektu",
+        "przeszukaj pamiec projektu",
+        "project memory search",
+    ]
+    if any(lower.startswith(prefix) for prefix in project_memory_search_prefixes):
+        return {
+            "command": "/project-memory",
+            "operators": ["host"],
+            "prompt": "search " + strip_intent_prefix(stripped, project_memory_search_prefixes),
+            "mode": "project_memory",
+            "intent": "natural",
+        }
 
     memory_search_prefixes = ["wyszukaj w pamięci", "wyszukaj w pamieci", "szukaj w pamięci", "szukaj w pamieci", "przeszukaj pamięć", "przeszukaj pamiec", "memory search"]
     if any(lower.startswith(prefix) for prefix in memory_search_prefixes):
@@ -7762,6 +7961,8 @@ def route_text(text: str) -> dict:
         return {"command": "/rollback", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "rollback"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
+    if lower.startswith("/project-memory"):
+        return {"command": "/project-memory", "operators": ["host"], "prompt": stripped[15:].strip(), "mode": "project_memory"}
     if lower.startswith("/flow"):
         return {"command": "/flow", "operators": ["claude-flow"], "prompt": stripped[5:].strip(), "mode": "flow"}
     if lower.startswith("/council"):
@@ -8395,6 +8596,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return rollback_response(prompt)
     if command == "/memory":
         return memory_response(prompt)
+    if command == "/project-memory":
+        return project_memory_response(prompt)
     if command == "/recipe":
         return recipe_response(prompt)
     if command == "/council":

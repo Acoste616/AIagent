@@ -553,6 +553,8 @@ class RoutingTests(unittest.TestCase):
             "pokaż kolejkę": "/queue",
             "zapamiętaj cel = test": "/memory",
             "wyszukaj w pamięci test": "/memory",
+            "pamięć projektu": "/project-memory",
+            "szukaj w pamięci projektu Poke": "/project-memory",
             "zapisz plik shared/a.txt = hello": "/write",
             "dopisz do pliku shared/a.txt = hello": "/append",
             "zmień w pliku shared/a.txt :: hello => cześć": "/patch",
@@ -1458,6 +1460,16 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("not read-only", reason)
 
+    def test_recipe_policy_allows_project_memory_reads_only(self):
+        allowed_search, _ = ai_council.recipe_step_is_allowed({"command": "/project-memory", "prompt": "search Poke"})
+        allowed_context, _ = ai_council.recipe_step_is_allowed({"command": "/project-memory", "prompt": "context Poke"})
+        allowed_rebuild, reason = ai_council.recipe_step_is_allowed({"command": "/project-memory", "prompt": "rebuild"})
+
+        self.assertTrue(allowed_search)
+        self.assertTrue(allowed_context)
+        self.assertFalse(allowed_rebuild)
+        self.assertIn("not read-only", reason)
+
 
 class L2LedgerTests(unittest.TestCase):
     def test_memory_save_recent_and_search_use_sqlite(self):
@@ -1473,6 +1485,70 @@ class L2LedgerTests(unittest.TestCase):
         self.assertTrue(saved["entry_id"].startswith("mem-"))
         self.assertEqual(recent[0]["key"], "ai-council")
         self.assertEqual(found[0]["entry_id"], saved["entry_id"])
+
+    def test_project_memory_rebuild_is_source_grounded_and_idempotent(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            report = root / "artifacts" / "task-1" / "report.md"
+            report.parent.mkdir(parents=True)
+            report.write_text("Raport Poke memory spine.", encoding="utf-8")
+            artifact = {
+                "task_id": "task-1",
+                "decision": "Wdrożyć memory spine dla Poke parity.",
+                "facts": ["Poke wymaga długiej pamięci", "Artifacts są source-backed"],
+                "next_actions": ["Dodać auto recall"],
+                "report_path": str(report),
+            }
+            with patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ):
+                ai_council.append_jsonl(root / "state" / "artifact_index.jsonl", artifact)
+                first = ai_council.project_memory_rebuild()
+                created_before = {row["entry_id"]: row["created_at"] for row in ai_council.project_memory_rows("task-1")}
+                second = ai_council.project_memory_rebuild()
+                rows = ai_council.project_memory_rows("task-1")
+                created_after = {row["entry_id"]: row["created_at"] for row in rows}
+                response = ai_council.project_memory_response("search Poke")
+                context = ai_council.memory_context_for_prompt("Poke parity")
+
+        self.assertEqual(len(first), 3)
+        self.assertEqual(len(second), 3)
+        self.assertEqual(created_before, created_after)
+        self.assertTrue(ai_council.project_memory_entry_id("task-1", "decision").startswith("pmem-"))
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(row["entry_id"].startswith("pmem-") for row in rows))
+        self.assertIn("Source:", rows[0]["value"])
+        self.assertIn("/details task-1", response)
+        self.assertIn("Project memory:", context)
+        self.assertIn("source=", context)
+
+    def test_save_task_artifacts_writes_project_memory_spine(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260607-memory"
+            route = {"command": "/council", "operators": ["codex", "claude", "grok"], "prompt": "memory spine"}
+            result = {
+                "decision": "Zapisać memory spine.",
+                "facts": ["Project memory jest source-backed"],
+                "next_actions": ["Użyć auto recall"],
+                "raw_output": "raw",
+                "report": "report",
+            }
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                ai_council.save_task_artifacts(task_id, route, result)
+                rows = ai_council.project_memory_rows("source-backed")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_id"], task_id)
+        self.assertIn("Source:", rows[0]["value"])
 
     def test_sources_response_reports_github_auth_required(self):
         with temp_dir() as tmp:
@@ -2895,7 +2971,8 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Brakuje do Poke-level", response)
         self.assertIn("Progress UX L4.20", response)
         self.assertIn("Unified Front Orchestrator L4.21", response)
-        self.assertIn("L4.22 Project Memory Spine", response)
+        self.assertIn("Project Memory Spine L4.22", response)
+        self.assertIn("L4.23 Cost Ledger Reservation", response)
 
     def test_selftest_response_is_available_without_model_calls(self):
         with temp_dir() as tmp:

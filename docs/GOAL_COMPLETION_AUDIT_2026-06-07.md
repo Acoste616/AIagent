@@ -51,9 +51,9 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.22 Project Memory Spine: durable project memory and source-grounded recall for long-running work.
-2. Stronger cost-ledger serialization/reservation before high-concurrency execution.
-3. Token-level streaming or richer step progress for long model calls.
+1. L4.23 Cost Ledger Reservation: serialize/reserve model-call budget before high-concurrency execution.
+2. Token-level streaming or richer step progress for long model calls.
+3. Deeper source-backed integrations and write-capable connectors after approval.
 4. iPhone Shortcuts as primary capture layer.
 5. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
 6. Broader execution verifier coverage beyond workspace write/append/patch.
@@ -68,6 +68,7 @@ Completed layers in the current implementation state:
 - L4.19 Verifier Evidence: `/verify` persists `verified` or `verify_failed` evidence with concrete checks; `/rollback` works after `executed`, `verified`, and `verify_failed`.
 - L4.20 Progress UX: background jobs now show START, RUNNING, and final delivery-card stages in Telegram instead of looking silent while work is running.
 - L4.21 Unified Front Orchestrator: direct operator routes now return one host-style Telegram response while raw Codex/Claude/Grok output stays available in artifacts/reports.
+- L4.22 Project Memory Spine: completed artifacts write source-backed project-memory rows for decision/facts/next; `/project-memory` exposes recent/search/context/rebuild; operator prompts auto-recall project memory with sources.
 
 ## External Follow-up
 
