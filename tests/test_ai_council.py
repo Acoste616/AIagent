@@ -22,6 +22,18 @@ def temp_dir():
 
 
 class OperatorOutputTests(unittest.TestCase):
+    def test_single_instance_lock_blocks_second_listener(self):
+        with temp_dir() as tmp:
+            lock_path = Path(tmp) / "state" / "telegram_listener.lock"
+            first = ai_council.SingleInstanceLock(lock_path)
+            second = ai_council.SingleInstanceLock(lock_path)
+
+            self.assertTrue(first.acquire())
+            self.assertFalse(second.acquire())
+            first.release()
+            self.assertTrue(second.acquire())
+            second.release()
+
     def test_clean_operator_output_removes_windows_process_noise_only(self):
         raw = (
             "SUCCESS: The process with PID 1234 has been terminated.\n"
@@ -1558,6 +1570,82 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("DECYZJA:", result["summary"])
         self.assertIn("FAKTY:", result["summary"])
         self.assertIn("Details: /details task-1", result["summary"])
+
+    def test_fallback_council_synthesis_derives_from_operator_outputs(self):
+        result = ai_council.fallback_council_synthesis(
+            "zbuduj Poke-like Council",
+            claude="[Claude]\nPlan: dodać rozmowę i pamięć wątku.",
+            grok="[Grok]\nRyzyko: bez proaktywności to nadal zwykły bot.",
+            codex="[Codex]\nPatch: wdrożyć realną syntezę hosta i test regresyjny.",
+            task_id="task-1",
+        )
+
+        self.assertIn("Patch: wdrożyć realną syntezę", result["decision"])
+        self.assertIn("Ryzyko: bez proaktywności", result["facts"][0])
+        self.assertIn("Grok:", result["dispute"])
+        self.assertIn("Claude:", result["dispute"])
+        self.assertIn("Codex:", result["dispute"])
+        self.assertIn("Patch: wdrożyć realną syntezę", result["next_actions"][1])
+
+    def test_council_host_synthesis_uses_json_judge(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_COUNCIL_HOST_SYNTHESIS": "true",
+            }
+            return values.get(key, default)
+
+        judge_json = json.dumps(
+            {
+                "decision": "Wdrożyć Front Brain jako pierwszy brak Poke-like.",
+                "facts": ["bot ma routowanie", "brakuje proaktywności", "Council musi syntetyzować głosy"],
+                "dispute": "Grok ostrzega przed scope creep, Claude proponuje plan, Codex zawęża patch.",
+                "next_actions": ["dodać test host synthesis"],
+                "ask_user": "Potwierdź deploy.",
+            },
+            ensure_ascii=False,
+        )
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "grok_route_response", return_value=judge_json
+        ) as judge:
+            result = ai_council.council_host_synthesis(
+                "zbuduj Poke-like Council",
+                "Host brief",
+                "Claude: plan",
+                "Grok: ryzyka",
+                "Codex: patch",
+                task_id="task-1",
+            )
+
+        judge.assert_called_once()
+        self.assertEqual(result["synthesis_source"], "llm_host")
+        self.assertEqual(result["decision"], "Wdrożyć Front Brain jako pierwszy brak Poke-like.")
+        self.assertIn("/details task-1", "\n".join(result["next_actions"]))
+        self.assertIn("Council musi syntetyzować głosy", result["facts"])
+
+    def test_structured_council_result_uses_host_synthesis_decision(self):
+        synthesis = {
+            "decision": "Najpierw naprawić rozmowę jak Poke, potem proaktywność.",
+            "facts": ["front operator działa", "brakuje watchers", "brakuje integracji"],
+            "dispute": "Scope kontra minimalny patch.",
+            "next_actions": ["wdrożyć L4.7", "/details task-1"],
+            "ask_user": "Kontynuować L4.7?",
+            "synthesis_source": "test_host",
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "claude_response", return_value="[Claude]\nplan: watchers"
+            ), patch.object(ai_council, "grok_response", return_value="[Grok]\nryzyko: brak źródeł"), patch.object(
+                ai_council, "codex_response", return_value="[Codex]\npatch: L4.7"
+            ), patch.object(ai_council, "council_host_synthesis", return_value=synthesis):
+                result = ai_council.build_structured_council_result("zbuduj council", task_id="task-1")
+
+        self.assertEqual(result["decision"], synthesis["decision"])
+        self.assertIn("Najpierw naprawić rozmowę jak Poke", result["summary"])
+        self.assertIn("Synthesis source: test_host", result["report"])
 
 
 if __name__ == "__main__":

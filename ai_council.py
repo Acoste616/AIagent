@@ -63,6 +63,7 @@ COSTS_FILE = STATE_DIR / "costs.jsonl"
 ERRORS_FILE = STATE_DIR / "errors.jsonl"
 IMPROVEMENTS_FILE = STATE_DIR / "improvements.jsonl"
 CONVERSATIONS_FILE = STATE_DIR / "conversations.jsonl"
+TELEGRAM_LISTENER_LOCK = STATE_DIR / "telegram_listener.lock"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
 RECIPES_DIR = PROJECT_DIR / "recipes"
 NUDGES_FILE = STATE_DIR / "nudges.jsonl"
@@ -304,6 +305,58 @@ def read_jsonl(path: Path) -> list[dict]:
 
 def read_jsonl_tail(path: Path, limit: int = 8) -> list[dict]:
     return read_jsonl(path)[-limit:]
+
+
+class SingleInstanceLock:
+    def __init__(self, path: Path):
+        self.path = path
+        self.handle = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("a+", encoding="utf-8")
+        self.handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.close()
+            return False
+        self.handle.seek(0)
+        self.handle.truncate()
+        self.handle.write(str(os.getpid()))
+        self.handle.flush()
+        return True
+
+    def release(self) -> None:
+        if not self.handle:
+            return
+        try:
+            self.handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self.close()
+
+    def close(self) -> None:
+        if self.handle:
+            try:
+                self.handle.close()
+            finally:
+                self.handle = None
 
 
 def record_error(
@@ -3689,6 +3742,100 @@ def build_council_report(job: dict) -> str:
     )
 
 
+def first_meaningful_line(text: str, limit: int = 180) -> str:
+    for raw in (text or "").splitlines():
+        line = raw.strip(" -\t")
+        if not line or (line.startswith("[") and line.endswith("]")) or line.startswith("#"):
+            continue
+        return compact_line(line, limit)
+    return ""
+
+
+def fallback_council_synthesis(clean_prompt: str, claude: str, grok: str, codex: str, task_id: str = "") -> dict:
+    grok_facts = extract_fact_lines(grok, limit=3)
+    claude_facts = extract_fact_lines(claude, limit=3)
+    codex_facts = extract_fact_lines(codex, limit=3)
+    facts = (grok_facts + claude_facts + codex_facts)[:3]
+    if len(facts) < 3:
+        facts.extend(
+            [
+                "Grok dostarczył research/red-team.",
+                "Claude przygotował propozycję planu.",
+                "Codex ocenił wykonalność i testowalność.",
+            ][len(facts) : 3]
+        )
+    codex_next = codex_facts[0] if codex_facts else ""
+    claude_next = claude_facts[0] if claude_facts else ""
+    grok_signal = grok_facts[0] if grok_facts else first_meaningful_line(grok)
+    claude_signal = claude_next or first_meaningful_line(claude)
+    codex_signal = codex_next or first_meaningful_line(codex)
+    decision_seed = codex_next or claude_next or facts[0]
+    decision = f"Kontynuować od najmniejszego weryfikowalnego kroku: {compact_line(decision_seed, 180)}"
+    dispute = (
+        f"Grok: {compact_line(grok_signal or 'brak konkretnego sygnału', 120)} | "
+        f"Claude: {compact_line(claude_signal or 'brak konkretnego planu', 120)} | "
+        f"Codex: {compact_line(codex_signal or 'brak konkretnego patcha', 120)}"
+    )
+    next_actions = [
+        f"Przejrzyj pełny raport: /details {task_id}" if task_id else "Przejrzyj pełny raport w artifacts.",
+        compact_line(codex_signal or claude_signal or f"Doprecyzuj następny patch dla: {clean_prompt}", 220),
+        "Jeśli krok ma skutki uboczne, przeprowadź go przez pending action i approval.",
+    ]
+    return {
+        "decision": decision,
+        "facts": facts,
+        "dispute": dispute,
+        "next_actions": next_actions,
+        "ask_user": "Potwierdź pierwszy NEXT albo wskaż inny priorytet.",
+        "synthesis_source": "fallback",
+    }
+
+
+def normalize_council_synthesis(parsed: dict, fallback: dict, task_id: str = "") -> dict:
+    decision = compact_line(str(parsed.get("decision") or fallback["decision"]), 500)
+    raw_facts = parsed.get("facts")
+    facts = [compact_line(str(item), 220) for item in raw_facts if str(item).strip()] if isinstance(raw_facts, list) else []
+    if not facts:
+        facts = fallback["facts"]
+    raw_next = parsed.get("next_actions")
+    next_actions = [compact_line(str(item), 240) for item in raw_next if str(item).strip()] if isinstance(raw_next, list) else []
+    if not next_actions:
+        next_actions = fallback["next_actions"]
+    if task_id and not any(f"/details {task_id}" in action for action in next_actions):
+        next_actions.insert(0, f"Przejrzyj pełny raport: /details {task_id}")
+    return {
+        "decision": decision,
+        "facts": facts[:8],
+        "dispute": compact_line(str(parsed.get("dispute") or fallback["dispute"]), 500),
+        "next_actions": next_actions[:8],
+        "ask_user": compact_line(str(parsed.get("ask_user") or fallback["ask_user"]), 300),
+        "synthesis_source": "llm_host",
+    }
+
+
+def council_host_synthesis(clean_prompt: str, host_brief: str, claude: str, grok: str, codex: str, task_id: str = "") -> dict:
+    fallback = fallback_council_synthesis(clean_prompt, claude, grok, codex, task_id=task_id)
+    if not bool_cfg("AI_COUNCIL_COUNCIL_HOST_SYNTHESIS", bool(cfg("XAI_API_KEY"))) or not cfg("XAI_API_KEY"):
+        return fallback
+    prompt = (
+        "Jesteś hostem i sędzią AI Council dla Bartka. Masz rozstrzygnąć trzy głosy: Claude, Grok i Codex. "
+        "Zwróć wyłącznie JSON bez markdown w formacie: "
+        '{"decision":"...","facts":["..."],"dispute":"...","next_actions":["..."],"ask_user":"..."}.\n'
+        "Decyzja musi wynikać z treści głosów. Nie twierdź, że wykonano kod lub akcje zewnętrzne. "
+        "Preferuj najmniejszy testowalny następny krok i oznacz ryzyka.\n\n"
+        f"Host brief:\n{host_brief}\n\n"
+        f"Claude propose:\n{claude[:2500]}\n\n"
+        f"Grok research/red-team:\n{grok[:2500]}\n\n"
+        f"Codex feasibility:\n{codex[:2500]}"
+    )
+    response = grok_route_response(prompt, max_chars=int_cfg("AI_COUNCIL_COUNCIL_SYNTHESIS_MAX_CHARS", 2500), task_id=task_id)
+    parsed = extract_json_object(response)
+    if not parsed:
+        fallback["synthesis_source"] = "fallback_no_json"
+        return fallback
+    return normalize_council_synthesis(parsed, fallback, task_id=task_id)
+
+
 def build_structured_council_result(prompt: str, task_id: str = "") -> dict:
     clean_prompt = prompt.strip() or "Oceń AI Council i zaproponuj następny najlepszy krok."
     remembered = memory_search(clean_prompt, limit=5)
@@ -3723,25 +3870,12 @@ def build_structured_council_result(prompt: str, task_id: str = "") -> dict:
         f"{host_brief}",
         task_id=task_id,
     )
-    facts = extract_fact_lines("\n".join([grok, claude, codex]), limit=3)
-    if len(facts) < 3:
-        fallback_facts = [
-            "Claude przygotował propozycję rozwiązania.",
-            "Grok dostarczył research/red-team i ryzyka.",
-            "Codex ocenił wykonalność oraz najbliższy bezpieczny patch.",
-        ]
-        facts.extend(fallback_facts[len(facts) : 3])
-    next_actions = [
-        f"Przejrzyj pełny raport: /details {task_id}" if task_id else "Przejrzyj pełny raport w artifacts.",
-        "Wybierz jeden najbliższy krok do wdrożenia lub poproś o doprecyzowanie decyzji.",
-        "Jeśli krok ma skutki uboczne, przeprowadź go przez pending action i approval.",
-    ]
-    decision = (
-        "Kontynuować małym, weryfikowalnym krokiem: najpierw stabilny messaging/background/artifact core, "
-        "dopiero potem execution i integracje."
-    )
-    dispute = "Grok ma rolę red-team/research, Claude proponuje plan, Codex ogranicza go do wykonalnego i testowalnego kroku."
-    ask_user = "Wskaż, który NEXT mam wdrożyć jako kolejny albo napisz, że mam kontynuować według decyzji."
+    synthesis = council_host_synthesis(clean_prompt, host_brief, claude, grok, codex, task_id=task_id)
+    facts = synthesis["facts"]
+    next_actions = synthesis["next_actions"]
+    decision = synthesis["decision"]
+    dispute = synthesis["dispute"]
+    ask_user = synthesis["ask_user"]
     report = (
         f"# Structured AI Council v0: {task_id or 'manual'}\n\n"
         f"Created: {utc_now()}\n\n"
@@ -3756,6 +3890,7 @@ def build_structured_council_result(prompt: str, task_id: str = "") -> dict:
         + codex
         + "\n\n## Host decision\n\n"
         + decision
+        + f"\n\nSynthesis source: {synthesis.get('synthesis_source', 'unknown')}\n"
         + "\n\n## Facts\n\n"
         + "\n".join(f"- {fact}" for fact in facts)
         + "\n\n## Next actions\n\n"
@@ -5858,11 +5993,25 @@ def listen_loop(send: bool = False, seconds: int = 120, limit: int = 10, sleep_s
 
 def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int:
     print(f"serve_started send={send}")
-    log_startup()
-    reconciled = reconcile_background_jobs()
-    if reconciled:
-        print(f"reconciled_background_jobs={len(reconciled)}")
+    listener_lock = SingleInstanceLock(TELEGRAM_LISTENER_LOCK)
+    if not listener_lock.acquire():
+        print(f"serve_already_running lock={TELEGRAM_LISTENER_LOCK}")
+        audit(
+            {
+                "timestamp": utc_now(),
+                "command": "serve",
+                "operators": ["host"],
+                "status": "skipped_already_running",
+                "duration_ms": 0,
+                "output_preview": f"lock={TELEGRAM_LISTENER_LOCK}",
+            }
+        )
+        return 0
     try:
+        log_startup()
+        reconciled = reconcile_background_jobs()
+        if reconciled:
+            print(f"reconciled_background_jobs={len(reconciled)}")
         while True:
             scheduled = run_due_recipes(send=send)
             if scheduled:
@@ -5876,6 +6025,8 @@ def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int
     except KeyboardInterrupt:
         print("serve_stopped")
         return 0
+    finally:
+        listener_lock.release()
 
 
 def doctor() -> int:
