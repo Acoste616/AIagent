@@ -1125,6 +1125,282 @@ def artifacts_response(limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+SOURCE_TEXT_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".json",
+    ".jsonl",
+    ".csv",
+    ".log",
+    ".html",
+    ".htm",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".ics",
+}
+
+
+def configured_source_dir(key: str, default: Path | None = None) -> Path | None:
+    value = cfg(key)
+    if value:
+        return Path(value).expanduser()
+    return default
+
+
+def command_status(command: str, args: list[str], timeout: int = 10) -> tuple[bool, str]:
+    found = shutil.which(command)
+    if not found:
+        return False, "command_missing"
+    try:
+        completed = subprocess.run(
+            [found, *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
+    except OSError as exc:
+        return False, compact_line(str(exc), 160)
+    detail = (completed.stdout or completed.stderr or "").strip()
+    return completed.returncode == 0, compact_line(detail, 260)
+
+
+def source_statuses() -> list[dict]:
+    openclaw_dir = configured_source_dir("OPENCLAW_EXPORT", OPENCLAW_EXPORT)
+    gmail_dir = configured_source_dir("AI_COUNCIL_GMAIL_EXPORT_DIR")
+    calendar_dir = configured_source_dir("AI_COUNCIL_CALENDAR_EXPORT_DIR")
+    drive_dir = configured_source_dir("AI_COUNCIL_DRIVE_EXPORT_DIR")
+    gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
+    github_repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
+    sources = [
+        {
+            "name": "memory",
+            "status": "available",
+            "mode": "read-only",
+            "detail": str(MEMORY_DB),
+            "search": True,
+        },
+        {
+            "name": "artifacts",
+            "status": "available" if ARTIFACTS_DIR.exists() or REPORTS_DIR.exists() else "empty",
+            "mode": "read-only",
+            "detail": f"{ARTIFACTS_DIR}; {REPORTS_DIR}",
+            "search": True,
+        },
+        {
+            "name": "openclaw",
+            "status": "available" if openclaw_dir and openclaw_dir.exists() else "unavailable",
+            "mode": "read-only",
+            "detail": str(openclaw_dir or ""),
+            "search": bool(openclaw_dir and openclaw_dir.exists()),
+        },
+        {
+            "name": "github",
+            "status": "available" if gh_ok else "auth_required",
+            "mode": "read-only",
+            "detail": github_repo if gh_ok else f"gh auth status: {gh_detail}",
+            "search": gh_ok,
+        },
+        {
+            "name": "gmail",
+            "status": "available" if gmail_dir and gmail_dir.exists() else "auth_required",
+            "mode": "read-only",
+            "detail": str(gmail_dir or "set AI_COUNCIL_GMAIL_EXPORT_DIR or Gmail OAuth bridge"),
+            "search": bool(gmail_dir and gmail_dir.exists()),
+        },
+        {
+            "name": "calendar",
+            "status": "available" if calendar_dir and calendar_dir.exists() else "auth_required",
+            "mode": "read-only",
+            "detail": str(calendar_dir or "set AI_COUNCIL_CALENDAR_EXPORT_DIR or Calendar OAuth bridge"),
+            "search": bool(calendar_dir and calendar_dir.exists()),
+        },
+        {
+            "name": "drive",
+            "status": "available" if drive_dir and drive_dir.exists() else "auth_required",
+            "mode": "read-only",
+            "detail": str(drive_dir or "set AI_COUNCIL_DRIVE_EXPORT_DIR or Drive OAuth bridge"),
+            "search": bool(drive_dir and drive_dir.exists()),
+        },
+    ]
+    return sources
+
+
+def source_status(name: str) -> dict | None:
+    normalized = name.strip().lower()
+    return next((item for item in source_statuses() if item["name"] == normalized), None)
+
+
+def sources_response() -> str:
+    lines = ["[Council] Sources read-only"]
+    for item in source_statuses():
+        lines.append(
+            f"- {item['name']} | {item['status']} | {item['mode']} | search={'yes' if item.get('search') else 'no'} | {compact_line(str(item.get('detail') or ''), 120)}"
+        )
+    lines.append("Użyj: /source search <name> <query>. Write/send/schedule wymagają Risk Officer i approval.")
+    return "\n".join(lines)
+
+
+def text_file_matches(path: Path, query: str) -> bool:
+    if path.suffix.lower() not in SOURCE_TEXT_SUFFIXES:
+        return False
+    if not query:
+        return True
+    try:
+        preview = path.read_text(encoding="utf-8", errors="replace")[:20000]
+    except OSError:
+        return False
+    return query.lower() in preview.lower() or query.lower() in path.name.lower()
+
+
+def search_text_source(paths: list[Path], query: str, limit: int = 5) -> list[dict]:
+    results: list[dict] = []
+    max_files = int_cfg("AI_COUNCIL_SOURCE_SEARCH_MAX_FILES", 350)
+    scanned = 0
+    for root in paths:
+        if not root or not root.exists():
+            continue
+        files = [root] if root.is_file() else root.rglob("*")
+        for path in files:
+            if len(results) >= limit:
+                return results
+            if scanned >= max_files:
+                return results
+            if not path.is_file():
+                continue
+            scanned += 1
+            if not path.is_file() or not text_file_matches(path, query):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            snippet = ""
+            if query:
+                index = text.lower().find(query.lower())
+                if index >= 0:
+                    start = max(0, index - 140)
+                    snippet = text[start : start + 320]
+            if not snippet:
+                snippet = text[:320]
+            results.append({"source": str(path), "title": path.name, "snippet": compact_line(snippet, 260)})
+    return results
+
+
+def github_source_search(query: str, limit: int = 5) -> tuple[str, list[dict]]:
+    gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
+    if not gh_ok:
+        return f"auth_required: {gh_detail}", []
+    repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
+    found = shutil.which("gh")
+    if not found:
+        return "command_missing", []
+    try:
+        completed = subprocess.run(
+            [
+                found,
+                "issue",
+                "list",
+                "--repo",
+                repo,
+                "--search",
+                query or "AI Council",
+                "--limit",
+                str(limit),
+                "--json",
+                "number,title,state,url,updatedAt",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return compact_line(str(exc), 200), []
+    if completed.returncode != 0:
+        return compact_line(completed.stderr or completed.stdout or "github query failed", 240), []
+    try:
+        issues = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError:
+        issues = []
+    results = [
+        {
+            "source": str(item.get("url") or repo),
+            "title": f"#{item.get('number')} {item.get('title')}",
+            "snippet": f"{item.get('state')} updated {item.get('updatedAt')}",
+        }
+        for item in issues
+    ]
+    return "available", results
+
+
+def source_search(name: str, query: str, limit: int = 5) -> tuple[str, list[dict]]:
+    normalized = name.strip().lower()
+    if normalized == "memory":
+        rows = memory_search(query, limit=limit)
+        return "available", [
+            {
+                "source": f"memory:{row.get('entry_id')}",
+                "title": str(row.get("key") or ""),
+                "snippet": compact_line(str(row.get("value") or ""), 260),
+            }
+            for row in rows
+        ]
+    if normalized == "artifacts":
+        return "available", search_text_source([ARTIFACTS_DIR, REPORTS_DIR, CLAUDE_COLLAB_DIR], query, limit=limit)
+    if normalized == "openclaw":
+        root = configured_source_dir("OPENCLAW_EXPORT", OPENCLAW_EXPORT)
+        if not root or not root.exists():
+            return "unavailable", []
+        return "available", search_text_source([root], query, limit=limit)
+    if normalized == "github":
+        return github_source_search(query, limit=limit)
+    env_map = {
+        "gmail": "AI_COUNCIL_GMAIL_EXPORT_DIR",
+        "calendar": "AI_COUNCIL_CALENDAR_EXPORT_DIR",
+        "drive": "AI_COUNCIL_DRIVE_EXPORT_DIR",
+    }
+    if normalized in env_map:
+        root = configured_source_dir(env_map[normalized])
+        if not root or not root.exists():
+            return "auth_required", []
+        return "available", search_text_source([root], query, limit=limit)
+    return "unknown_source", []
+
+
+def source_response(prompt: str) -> str:
+    parts = prompt.strip().split(maxsplit=2)
+    if not parts:
+        return sources_response()
+    action = parts[0].lower()
+    if action == "status":
+        return sources_response()
+    if action == "search" and len(parts) >= 2:
+        name = parts[1]
+        query = parts[2] if len(parts) >= 3 else ""
+    else:
+        name = parts[0]
+        query = parts[1] if len(parts) >= 2 else ""
+    status, results = source_search(name, query, limit=int_cfg("AI_COUNCIL_SOURCE_SEARCH_LIMIT", 5))
+    lines = [f"[Council] Source search `{name}`", f"status: {status}", f"query: {query or '(recent)'}"]
+    if not results:
+        lines.append("Źródła: brak wyników albo źródło wymaga auth/config.")
+    else:
+        lines.append("Źródła:")
+        for index, item in enumerate(results, start=1):
+            lines.append(f"{index}. {compact_line(item.get('title', ''), 90)}")
+            lines.append(f"   source: {compact_line(item.get('source', ''), 160)}")
+            lines.append(f"   snippet: {compact_line(item.get('snippet', ''), 220)}")
+    lines.append("Tryb: read-only. Write/send/schedule wymagają approval.")
+    return "\n".join(lines)
+
+
 def task_artifact_dir(task_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", task_id.strip())
     return ARTIFACTS_DIR / safe_id
@@ -2639,9 +2915,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -2654,10 +2930,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1.\n"
-        "Brakuje do Poke-level: źródłowe integracje Gmail/Calendar/Drive/GitHub, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0.\n"
+        "Brakuje do Poke-level: OAuth/connector bridge dla Gmail/Calendar/Drive/GitHub na samym desktop runtime, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Następny sprint: L4.10 Source Integrations Read-only: Gmail/Calendar/Drive/GitHub -> source-backed summaries -> approval przed write."
+        "Następny sprint: L4.11 OAuth/Connector Bridge: real Gmail/Calendar/Drive/GitHub read przez auth, z artifactami i approval przed write."
     )
 
 
@@ -2670,10 +2946,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L3.5 active + L4.9 Proactive Event Brain: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.10 Source Integrations read-only: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.9: /health, /selftest, /goal, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.10: /health, /selftest, /goal, /sources, /source search <name> <query>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4731,6 +5007,8 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/improvements",
     "/goal",
     "/nudges",
+    "/sources",
+    "/source",
 }
 
 
@@ -4772,7 +5050,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges.\n"
+        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges, /sources, /source.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -4859,7 +5137,13 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities", "intent": "natural"}
 
-    if lower in {"goal", "cel", "jaki jest cel", "gdzie cel", "gdzie jest cel", "poke parity"} or any(
+    if lower in {"goal", "cel", "jaki jest cel", "gdzie cel", "gdzie jest cel", "poke parity"} or (
+        "nie odpowiada" in lower and "poke" in lower
+    ) or (
+        "nie ma takich" in lower and "możliwo" in lower
+    ) or (
+        "nie ma takich" in lower and "mozliwo" in lower
+    ) or any(
         marker in lower
         for marker in (
             "gdzie ten cel",
@@ -4889,6 +5173,21 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż nudges", "pokaz nudges", "pokaż nudge", "pokaz nudge", "pokaż proaktywne", "pokaz proaktywne")
     ):
         return {"command": "/nudges", "operators": ["host"], "prompt": "", "mode": "nudges", "intent": "natural"}
+
+    if lower in {"źródła", "zrodla", "sources", "integracje", "integrations"} or lower.startswith(
+        ("pokaż źródła", "pokaz zrodla", "pokaż sources", "pokaz sources", "pokaż integracje", "pokaz integracje")
+    ):
+        return {"command": "/sources", "operators": ["host"], "prompt": "", "mode": "sources", "intent": "natural"}
+
+    source_search_prefixes = ["szukaj w źródłach", "szukaj w zrodlach", "source search", "search sources"]
+    if any(lower.startswith(prefix) for prefix in source_search_prefixes):
+        return {
+            "command": "/source",
+            "operators": ["host"],
+            "prompt": "search " + strip_intent_prefix(stripped, source_search_prefixes),
+            "mode": "source_search",
+            "intent": "natural",
+        }
 
     if lower in {"ulepszenia", "improvements", "backlog", "co wdrażać", "co wdrazac", "co wdrożyć", "co wdrozyc"} or lower.startswith(
         ("pokaż ulepszenia", "pokaz ulepszenia", "pokaż backlog", "pokaz backlog", "następne wdrożenie", "nastepne wdrozenie")
@@ -5250,6 +5549,10 @@ def route_text(text: str) -> dict:
     if lower.startswith("/nudges") or lower.startswith("/nudge"):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/nudges", "operators": ["host"], "prompt": prompt, "mode": "nudges"}
+    if lower.startswith("/sources"):
+        return {"command": "/sources", "operators": ["host"], "prompt": "", "mode": "sources"}
+    if lower.startswith("/source"):
+        return {"command": "/source", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "source"}
     if lower.startswith("/improvements"):
         return {"command": "/improvements", "operators": ["host"], "prompt": stripped[13:].strip(), "mode": "improvements"}
     if lower.startswith("/improve"):
@@ -5749,6 +6052,10 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return errors_response(prompt)
     if command == "/nudges":
         return nudges_response(prompt)
+    if command == "/sources":
+        return sources_response()
+    if command == "/source":
+        return source_response(prompt)
     if command == "/improvements":
         return improvements_response(prompt)
     if command == "/improve":

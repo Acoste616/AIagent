@@ -396,6 +396,8 @@ class RoutingTests(unittest.TestCase):
             "/chat test": ("/chat", ["host"]),
             "/errors": ("/errors", ["host"]),
             "/nudges": ("/nudges", ["host"]),
+            "/sources": ("/sources", ["host"]),
+            "/source search memory Poke": ("/source", ["host"]),
             "/improvements": ("/improvements", ["host"]),
             "/improve next": ("/improve", ["host"]),
             "/goal": ("/goal", ["host"]),
@@ -416,6 +418,8 @@ class RoutingTests(unittest.TestCase):
             "koszty": "/cost",
             "pokaż błędy": "/errors",
             "pokaż nudges": "/nudges",
+            "pokaż źródła": "/sources",
+            "szukaj w źródłach memory Poke": "/source",
             "pokaż ulepszenia": "/improvements",
             "health": "/health",
             "anuluj task-1": "/cancel",
@@ -436,6 +440,7 @@ class RoutingTests(unittest.TestCase):
             "zrób research o Poke": "@research",
             "co możesz?": "/capabilities",
             "gdzie ten cel i czemu nie odpowiada jak Poke": "/goal",
+            "Ani nie odpowiada on jak poke nie ma takich możliwości, o co chodzi gdzie ten cel ?": "/goal",
         }
 
         for text, command in cases.items():
@@ -888,6 +893,59 @@ class L2LedgerTests(unittest.TestCase):
         self.assertTrue(saved["entry_id"].startswith("mem-"))
         self.assertEqual(recent[0]["key"], "ai-council")
         self.assertEqual(found[0]["entry_id"], saved["entry_id"])
+
+    def test_sources_response_reports_github_auth_required(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "OPENCLAW_EXPORT", root / "openclaw"
+            ), patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+                ai_council, "cfg", side_effect=lambda key, default="": default
+            ):
+                response = ai_council.sources_response()
+
+        self.assertIn("github | auth_required", response)
+        self.assertIn("gmail | auth_required", response)
+        self.assertIn("Write/send/schedule", response)
+
+    def test_source_search_memory_is_source_backed(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                ai_council.memory_save("poke", "Poke ma recipes i Apple Messages.", source="test")
+                response = ai_council.source_response("search memory recipes")
+
+        self.assertIn("Source search `memory`", response)
+        self.assertIn("memory:mem-", response)
+        self.assertIn("Poke ma recipes", response)
+        self.assertIn("read-only", response)
+
+    def test_source_search_artifacts_reads_local_files_only(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            artifact = root / "artifacts" / "task-1" / "report.md"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("Raport o Gmail Calendar Drive GitHub read-only.", encoding="utf-8")
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "CLAUDE_COLLAB_DIR", root / "claude"):
+                status, results = ai_council.source_search("artifacts", "Gmail", limit=3)
+
+        self.assertEqual(status, "available")
+        self.assertEqual(len(results), 1)
+        self.assertIn("report.md", results[0]["source"])
+        self.assertIn("Gmail Calendar", results[0]["snippet"])
+
+    def test_source_search_github_requires_auth_when_gh_invalid(self):
+        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")):
+            status, results = ai_council.source_search("github", "issue", limit=3)
+
+        self.assertIn("auth_required", status)
+        self.assertEqual(results, [])
 
     def test_action_create_approve_and_deny(self):
         with tempfile.TemporaryDirectory() as tmp:
