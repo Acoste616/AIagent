@@ -484,17 +484,18 @@ class RoutingTests(unittest.TestCase):
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
         self.assertEqual(route["command"], "/poke-gap")
-        self.assertIn("Poke Gap L4.39", response)
+        self.assertIn("Poke Gap L4.42", response)
         self.assertIn("DECYZJA: masz rację", response)
-        self.assertIn("CO JEST NIE TAK", response)
-        self.assertIn("CO ROBIĘ TERAZ", response)
-        self.assertIn("CZEGO BRAKUJE DO POKE", response)
+        self.assertIn("FAKTY:", response)
+        self.assertIn("TERAZ:", response)
+        self.assertIn("L4.41 read-before-write jest już wdrożone", response)
         self.assertIn("NEXT:", response)
         self.assertIn("TWOJA WIADOMOŚĆ:", response)
         self.assertIn("improvement=imp-", response)
+        self.assertNotIn("Drive write/read-before-write", response)
         self.assertNotIn("Gotowe:", response)
         self.assertNotIn("/goal", response)
-        self.assertLess(len(response), 1300)
+        self.assertLess(len(response), 900)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["source"], "poke_gap")
 
@@ -503,8 +504,25 @@ class RoutingTests(unittest.TestCase):
             response = ai_council.build_response(ai_council.route_text("hej"))
 
         self.assertIn("Jestem", response)
-        self.assertIn("Bezpieczne", response)
+        self.assertIn("approval", response)
         self.assertNotIn("Najlepszy następny krok", response)
+
+    def test_short_operator_question_can_use_llm_front_without_status_dump(self):
+        self.assertTrue(ai_council.poke_chat_should_use_llm("jak to otworzyć tutaj?"))
+        self.assertTrue(ai_council.poke_chat_should_use_llm("który model będzie ze mną rozmawiał?"))
+        self.assertFalse(ai_council.poke_chat_should_use_llm("co tam u ciebie"))
+        self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
+        self.assertFalse(ai_council.poke_chat_should_use_llm("co dalej"))
+
+    def test_default_chat_fallback_is_single_operator_next_move(self):
+        with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
+            response = ai_council.build_response(ai_council.route_text("normalne krótkie pytanie"))
+
+        self.assertIn("Przyjąłem", response)
+        self.assertIn("NEXT:", response)
+        self.assertNotIn("Komendy:", response)
+        self.assertNotIn("/goal", response)
+        self.assertNotIn("Odbieram to jako rozmowę", response)
 
     def test_poke_chat_fallback_gap_is_pure_and_precise(self):
         with temp_dir() as tmp:
@@ -524,7 +542,7 @@ class RoutingTests(unittest.TestCase):
                 neutral = ai_council.poke_chat_fallback("pokemon jest spoko")
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
-        self.assertIn("Poke Gap L4.39", gap)
+        self.assertIn("Poke Gap L4.42", gap)
         self.assertIn("improvement=not_logged_chat_fallback", gap)
         self.assertIn("running_tasks=1", gap)
         self.assertIn("errors_24h=1", gap)
