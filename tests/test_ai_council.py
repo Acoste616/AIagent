@@ -299,6 +299,141 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("enabled", enabled)
         self.assertTrue(enabled_recipe["enabled"])
 
+    def test_recipe_creator_natural_intent_routes_to_recipe_create(self):
+        route = ai_council.route_message("stwórz recipe codziennie o 8 health digest")
+
+        self.assertEqual(route["command"], "/recipe")
+        self.assertEqual(route["mode"], "recipe_creator")
+        self.assertTrue(route["prompt"].startswith("create codziennie o 8"))
+        self.assertFalse(ai_council.route_needs_task(route))
+
+    def test_recipe_creator_explicit_name_uses_name_not_preposition(self):
+        name = ai_council.recipe_creator_name_from_intent("codziennie o 8 o nazwie smoke_l451_test health digest")
+
+        self.assertEqual(name, "smoke_l451_test")
+
+    def test_recipe_creator_creates_pending_action_not_recipe_file(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                response = ai_council.recipe_response("create codziennie o 8 health digest")
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+                recipe_files = list((root / "recipes").glob("*.json"))
+
+        self.assertIn("Recipe Creator L4.51", response)
+        self.assertIn("Pending action utworzona", response)
+        self.assertEqual(actions[0]["type"], "recipe_create")
+        self.assertEqual(actions[0]["risk"], "R1")
+        self.assertEqual(actions[0]["payload"]["recipe"]["trigger"]["cron"], "0 8 * * *")
+        self.assertEqual(recipe_files, [])
+        self.assertIsNotNone(ai_council.response_reply_markup(response))
+
+    def test_recipe_creator_approve_saves_disabled_recipe(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                create_response = ai_council.recipe_response("create codziennie o 8 health digest")
+                action_id = re.search(r"id:\s*(act-[A-Za-z0-9_.-]+)", create_response).group(1)
+                approve = ai_council.approve_response(action_id)
+                action_rows = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+                recipe_name = action_rows[-1]["payload"]["recipe"]["name"]
+                recipe = ai_council.load_recipe(recipe_name)
+
+        self.assertIn("Approved + recipe saved", approve)
+        self.assertEqual(action_rows[-1]["status"], "executed")
+        self.assertIsNotNone(recipe)
+        self.assertFalse(recipe["enabled"])
+        self.assertEqual(recipe["recipe_version"], "L4.51")
+        self.assertEqual(recipe["steps"][0]["command"], "/health")
+
+    def test_recipe_creator_blocks_existing_recipe_name_before_action(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                ai_council.save_recipe(
+                    {
+                        "name": "health_digest",
+                        "description": "existing",
+                        "enabled": True,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                response = ai_council.recipe_response("create codziennie o 8 health digest")
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+                recipe = ai_council.load_recipe("health_digest")
+
+        self.assertIn("już istnieje", response)
+        self.assertEqual(actions, [])
+        self.assertEqual(recipe["description"], "existing")
+        self.assertTrue(recipe["enabled"])
+
+    def test_recipe_creator_approve_blocks_race_overwrite(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                recipe, violations = ai_council.build_recipe_from_intent("codziennie o 8 health digest")
+                self.assertEqual(violations, [])
+                action = ai_council.create_recipe_action("codziennie o 8 health digest", recipe)
+                ai_council.save_recipe(
+                    {
+                        "name": recipe["name"],
+                        "description": "race winner",
+                        "enabled": True,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                approve = ai_council.approve_response(action["action_id"])
+                saved = ai_council.load_recipe(recipe["name"])
+
+        self.assertIn("zablokowane", approve)
+        self.assertIn("already exists", approve)
+        self.assertEqual(saved["description"], "race winner")
+        self.assertTrue(saved["enabled"])
+
+    def test_recipe_creator_allows_readonly_gmail_brief_but_blocks_send(self):
+        recipe, violations = ai_council.build_recipe_from_intent("codziennie o 8 podsumuj maile z ostatniej doby")
+        blocked_recipe, blocked = ai_council.build_recipe_from_intent("codziennie o 8 wyślij mail do klienta")
+
+        self.assertEqual(violations, [])
+        self.assertEqual(recipe["steps"][0]["command"], "/connector")
+        self.assertIn("brief gmail", recipe["steps"][0]["prompt"])
+        self.assertIsNone(blocked_recipe)
+        self.assertTrue(any("external" in item for item in blocked))
+
     def test_recipe_due_window_matches_simple_cron(self):
         recipe = {"trigger": {"type": "schedule", "cron": "30 8 * * *"}}
         due, window = ai_council.recipe_due_window(recipe, now=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc))
@@ -4404,6 +4539,22 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("call limit", reason)
         self.assertIn("grok: calls=1", cost)
 
+    def test_grok_cost_report_calibrates_legacy_default_estimate(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "COSTS_FILE", root / "costs.jsonl"), patch.dict(
+                os.environ,
+                {"AI_COUNCIL_GROK_ESTIMATED_COST_USD": "0.0023"},
+                clear=False,
+            ):
+                ai_council.record_operator_usage("grok", task_id="task-legacy", estimated_usd=0.02)
+                summary = ai_council.operator_usage_summary()
+                cost = ai_council.cost_response()
+
+        self.assertAlmostEqual(summary["grok"]["estimated_usd"], 0.0023)
+        self.assertIn("est=$0.0023", cost)
+        self.assertIn("billing xAI", cost)
+
     def test_operator_reservation_counts_against_daily_limit(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -6261,6 +6412,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Grok zbiera research pack", goal)
         self.assertIn("Desktop", goal)
         self.assertIn("front_quality=L4.50", health)
+        self.assertIn("recipe_creator=L4.51", health)
         self.assertIn("delegate_loop=L4.49:gated", health)
 
 
