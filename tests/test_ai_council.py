@@ -2410,6 +2410,145 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertNotIn("Claude Flow", improvement["title"])
         self.assertIn("Step 3: /flow", improvement["summary"])
 
+    def test_improvement_repair_resynthesizes_generic_title_from_task_raw(self):
+        raw = (
+            "## Step 1: @xresearch\n\n"
+            "[Council]\nResearch gotowy.\n\n"
+            "## Step 2: /flow\n\n"
+            "[Council]\nPlan workflow gotowy.\n\n"
+            "## Decyzja\n"
+            "**L4.49 - Proactive Topic Ownership**: lokalny generator follow-upów ma wyciągać temat rozmowy.\n\n"
+            "## Testy\nDodać regresję na follow-up ownership."
+        )
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            artifact_dir = root / "artifacts" / "task-loop"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "raw.md").write_text(raw, encoding="utf-8")
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                improvement = ai_council.create_improvement(
+                    source="feature_evolution_loop",
+                    title="Research gotowy.",
+                    summary="Research gotowy.",
+                    task_id="task-loop",
+                    recipe="feature_evolution_loop",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+                rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
+
+        self.assertIn(ai_council.IMPROVEMENT_REPAIR_VERSION, response)
+        self.assertIn("repaired: 1", response)
+        self.assertIn("Proactive Topic Ownership", latest["title"])
+        self.assertNotIn("**", latest["title"])
+        self.assertEqual(latest["previous_title"], "Research gotowy.")
+        self.assertEqual(latest["repair_version"], ai_council.IMPROVEMENT_REPAIR_VERSION)
+        self.assertEqual(len(rows), 2)
+
+    def test_improvement_repair_skips_specific_title(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                improvement = ai_council.create_improvement(
+                    source="feature_evolution_loop",
+                    title="Poke Host gap: domyślna odpowiedź Telegrama musi działać jak operator",
+                    summary="Konkretny P0 gap.",
+                    task_id="task-specific",
+                    recipe="feature_evolution_loop",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+                rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
+
+        self.assertIn("repaired: 0", response)
+        self.assertEqual(latest["title"], "Poke Host gap: domyślna odpowiedź Telegrama musi działać jak operator")
+        self.assertEqual(len(rows), 1)
+
+    def test_improvement_repair_handles_bracketed_council_errors_title(self):
+        raw = (
+            "## Step 1: /errors\n\n"
+            "[Council] Errors\n"
+            "- operator_claude-flow timeout\n\n"
+            "## Step 2: @grok\n\n"
+            "## Decyzja\n"
+            "Napraw Claude Flow watchdog dla długich timeoutów i dopisz retry policy.\n\n"
+            "## Testy\nDodać regresję na zapis timeoutu operatora."
+        )
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            artifact_dir = root / "artifacts" / "task-errors"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "raw.md").write_text(raw, encoding="utf-8")
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                improvement = ai_council.create_improvement(
+                    source="error_audit_loop",
+                    title="[Council] Errors",
+                    summary="[Council] Errors",
+                    task_id="task-errors",
+                    recipe="error_audit_twice_daily",
+                    priority="P1",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+
+        self.assertIn("repaired: 1", response)
+        self.assertIn("Napraw Claude Flow watchdog", latest["title"])
+        self.assertEqual(latest["previous_title"], "[Council] Errors")
+
+    def test_improvement_repair_skips_error_artifact_without_actionable_decision(self):
+        raw = (
+            "## Step 1: /errors\n\n"
+            "[Council] Errors\n"
+            "last_7d: 13 | showing: 13\n"
+            "top_contexts: telegram_getUpdates:13\n"
+            "folder: D:\\ai-council\\errors\n"
+            "- err-20260607-204200-754593 telegram_getUpdates timeout\n\n"
+            "## Step 2: /flow\n\n"
+            "[Claude Flow] (357993ms)\n"
+            "Plan jest zapisany i kompletny. Nie wykonuję żadnych zmian — czekam na Twoją decyzję.\n"
+            "Jeśli chcesz, mogę przed implementacją:\n"
+            "- doprecyzować **topologię** (czy bot odpytywany jest tylko z tego PC, czy też z innego hosta/cron/recipe)\n"
+            "- albo zawęzić zakres fixu.\n"
+            "Daj znać czy zatwierdzasz plan, czy mam go zmodyfikować."
+        )
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            artifact_dir = root / "artifacts" / "task-no-decision"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "raw.md").write_text(raw, encoding="utf-8")
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                improvement = ai_council.create_improvement(
+                    source="error_audit_loop",
+                    title="[Council] Errors",
+                    summary="[Council] Errors",
+                    task_id="task-no-decision",
+                    recipe="error_audit_twice_daily",
+                    priority="P1",
+                )
+                response = ai_council.improvements_response("repair")
+                latest = ai_council.get_latest_improvement(improvement["improvement_id"])
+                rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
+
+        self.assertIn("repaired: 0", response)
+        self.assertEqual(latest["title"], "[Council] Errors")
+        self.assertEqual(len(rows), 1)
+
     def test_create_show_and_close_improvement(self):
         with temp_dir() as tmp:
             root = Path(tmp)
