@@ -1,7 +1,7 @@
 # Goal Status Audit
 
 Date: 2026-06-07
-Updated: 2026-06-07 19:48 Europe/Warsaw
+Updated: 2026-06-07 19:59 Europe/Warsaw
 
 Goal:
 
@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.43 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, loop recipe JSON files, and `D:\ai-council\docs\implementation\L4_43_AUTONOMOUS_LOOP_CADENCE.md`; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 19:46 | Proven |
+| Windows deployment | L4.44 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, and `D:\ai-council\docs\implementation\L4_44_ONE_CONTACT_MEMORY_FRONT.md`; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 19:57 | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,21 +30,22 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.43: Mac py_compile, target scheduler/front tests `6/6 OK`, full `227/227 OK`; Windows Desktop py_compile, target `5/5 OK`, full `227 passed, 111 subtests passed` | Proven |
+| Test verification | L4.44: Mac py_compile, target front/memory tests `15/15 OK`, full `230/230 OK`; Windows Desktop py_compile, full `230 passed, 111 subtests passed` | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | L4.43 functional commit pushed: `53c208f Add autonomous loop cadence`; earlier L4.42 and L4.41 commits remain present | Proven |
-| Claude review | Claude Code reviewed L4.43 twice; final verdict: approve/ship-able, with only optional polish noted. Applied the relevant polish before deploy. | Proven |
+| GitHub push to `Acoste616/AIagent` | L4.44 functional commit pushed: `4c81b58 Add one-contact memory front`; L4.43 functional commit `53c208f` and audit commit `f84fa58` remain present | Proven |
+| Claude review | Claude Code reviewed L4.44; final verdict: ship it. It confirmed no new daemon, no new writes, and chat-scoped conversation memory. | Proven |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
-- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 19:46:19`.
-- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.43 `loop_cadence=on`, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
-- Selftest: version now includes `L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 19:57:11`.
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.44 `memory_front=on`, L4.43 `loop_cadence=on`, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version now includes `L4.44 One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
 - Loops smoke: `/loops` returns `Autonomous loops L4.43`; `error_audit_twice_daily` next windows `2026-06-07 21:00 +0200`, `2026-06-08 09:00 +0200`; `feature_evolution_loop` next windows `2026-06-07 22:15 +0200`, `2026-06-08 10:15 +0200`.
-- Front smoke: the exact complaint `Ani nie odpowiada on jak poke...` routes to `/poke-gap` and returns `Poke Gap L4.43` without a long status dump.
+- Front smoke: the exact complaint `Ani nie odpowiada on jak poke...` routes to `/poke-gap` and returns `Poke Gap L4.44` without a long status dump.
+- Memory-front smoke: with front LLM disabled for the process, `a teraz krócej` after prior local turn `zrób research o Poke` returns `OSTATNI WĄTEK: Ty: zrób research o Poke` and does not start a blank status response.
 
 ## Completion Decision
 
@@ -56,9 +57,9 @@ Next required layers:
 
 1. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
 2. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
-3. More personal default front-host memory/personality for ordinary conversation.
-4. Deeper source-backed integrations and proactive topic ownership.
-5. Broader execution verifier coverage beyond workspace write/append/patch and optional token-level streaming if it proves useful.
+3. Deeper source-backed integrations and proactive topic ownership.
+4. Broader execution verifier coverage beyond workspace write/append/patch and optional token-level streaming if it proves useful.
+5. Cleanup of long runtime version strings into one source of truth.
 
 Completed layers in the current implementation state:
 
@@ -92,6 +93,7 @@ Completed layers in the current implementation state:
 - L4.41 Provider Read-Before-Write: `/provider execute <request_id> <confirm>` now runs provider-specific reads before external write for GitHub issues, Gmail drafts, Calendar events, and Drive documents. Duplicate or failed preflight creates a `write_blocked` dry-run with `external_write_performed=false`; successful provider writes persist `provider_read_before_write` evidence in result artifacts.
 - L4.42 Default Front Host: Poke/parity frustration now returns `Poke Gap L4.42`, does not redirect to long `/goal` dumps, reports L4.41 as done, names front UX/proactive ownership as the current gap, and routes more short ordinary questions to the front LLM while keeping status/system phrases local.
 - L4.43 Autonomous Loop Cadence: `error_audit_twice_daily` and `feature_evolution_loop` are versioned system-managed recipes with `cadence=twice_daily`; `feature_evolution_loop` now runs at `10:15` and `22:15`; stale deployed recipe JSON files migrate to L4.43 while preserving `enabled`; `/loops` shows cadence, next windows, and last run.
+- L4.44 One Contact Memory Front: deterministic local `/chat` fallback uses the latest conversation turn for the same Telegram chat, so follow-ups such as `a teraz krócej` and `co dalej` no longer sound like a fresh empty conversation when Grok front chat is gated; the Grok front prompt also treats Telegram as one continuous contact.
 
 ## External Follow-up
 
