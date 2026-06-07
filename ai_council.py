@@ -146,6 +146,7 @@ BACKGROUND_COMMANDS = {
 READONLY_RECIPE_COMMANDS = {
     "/health",
     "/selftest",
+    "/front",
     "/status",
     "/cost",
     "/control",
@@ -3704,6 +3705,98 @@ def route_source_summary(limit: int = 200) -> dict[str, int]:
     return counts
 
 
+def audit_event_age(row: dict | None) -> str:
+    if not row:
+        return "none"
+    parsed = parse_utc(str(row.get("timestamp") or ""))
+    if not parsed:
+        return "unknown"
+    seconds = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m"
+    hours = minutes // 60
+    return f"{hours}h"
+
+
+def latest_telegram_audit(limit: int = 500) -> dict:
+    rows = read_jsonl(AUDIT_LOG)[-limit:]
+    inbound = [row for row in rows if row.get("update_id") is not None and row.get("command") != "startup"]
+    sent = [row for row in inbound if row.get("status") in {"responded", "callback", "facts", "details", "status"}]
+    failed = [row for row in inbound if row.get("status") == "send_failed"]
+    dry = [row for row in inbound if row.get("status") == "dry_responded" or row.get("dry_send") is True]
+    last = inbound[-1] if inbound else None
+    return {
+        "last": last,
+        "last_age": audit_event_age(last),
+        "inbound_count": len(inbound),
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "dry_count": len(dry),
+    }
+
+
+def front_runtime_snapshot() -> dict:
+    usage = operator_usage_summary()
+    grok = usage.get("grok", {"calls": 0, "blocked": 0, "estimated_usd": 0.0})
+    recent_errors = error_rows(days=1)
+    control = load_control_state()
+    latest = latest_telegram_audit()
+    listener_pid = ""
+    try:
+        listener_pid = TELEGRAM_LISTENER_LOCK.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        listener_pid = ""
+    return {
+        "latest": latest,
+        "offset": read_offset(),
+        "listener_pid": listener_pid or "unknown",
+        "llm_router": llm_router_enabled() and bool(cfg("XAI_API_KEY")),
+        "poke_chat_llm": poke_chat_llm_configured(),
+        "models_paused": bool(control.get("model_calls_paused")),
+        "kill": bool(control.get("global_kill_switch")),
+        "grok_calls": int(grok.get("calls") or 0),
+        "grok_blocked": int(grok.get("blocked") or 0),
+        "grok_estimated_usd": float(grok.get("estimated_usd") or 0.0),
+        "errors_24h": len(recent_errors),
+        "send_failed_24h": sum(1 for row in recent_errors if row.get("context") == "telegram_response_send"),
+    }
+
+
+def front_reliability_response(prompt: str = "") -> str:
+    snap = front_runtime_snapshot()
+    latest = snap["latest"]
+    last = latest.get("last") or {}
+    last_update = (
+        f"{last.get('update_id')} {last.get('command')} {last.get('status')} age={latest.get('last_age')}"
+        if last
+        else "brak w ostatnim oknie audytu"
+    )
+    decision = "Front działa lokalnie i nie powinien odpalać Groka dla krótkich wiadomości."
+    if snap["kill"] or snap["models_paused"]:
+        decision = "Front działa w trybie lokalnym, ale modele są zatrzymane przez /control."
+    if latest.get("failed_count"):
+        decision = "Front odbiera wiadomości, ale były błędy wysyłki Telegram."
+    lines = [
+        "[Council] Front Reliability L4.24",
+        f"DECYZJA: {decision}",
+        "FAKTY:",
+        f"1. last_telegram_update: {last_update}",
+        f"2. telegram_offset: {snap['offset'] if snap['offset'] is not None else 'none'} | listener_pid: {snap['listener_pid']}",
+        f"3. outbound: sent={latest.get('sent_count')} failed={latest.get('failed_count')} dry={latest.get('dry_count')}",
+        f"4. models: kill={snap['kill']} paused={snap['models_paused']} llm_router={'on' if snap['llm_router'] else 'off'} poke_chat_llm={'gated' if snap['poke_chat_llm'] else 'off'}",
+        f"5. grok_today: calls={snap['grok_calls']} blocked={snap['grok_blocked']} est=${snap['grok_estimated_usd']:.4f}",
+        f"6. errors_24h: {snap['errors_24h']} | telegram_send_failed_errors: {snap['send_failed_24h']}",
+        "NEXT: jeśli właśnie napisałeś i `last_telegram_update` się nie zmienia, problem jest przed botem: zły chat/bot albo Telegram nie dostarczył update. Jeśli update rośnie, a failed=0, odpowiedź powinna wrócić.",
+        "DO CIEBIE: wyślij `/selftest` w Telegramie; jeśli audit nie pokaże nowego update, piszesz nie do tego bota albo Telegram nie dostarcza wiadomości.",
+    ]
+    if prompt.strip():
+        lines.append(f"Prompt: {compact_line(prompt, 180)}")
+    return "\n".join(lines)
+
+
 def operator_call_allowed(operator: str) -> tuple[bool, str]:
     operator = operator_key(operator)
     paused = control_paused_reason("model")
@@ -4549,10 +4642,10 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "L4.23: model calle mają cost-ledger reservation, a LLM router nie przepala Groka domyślnie na zwykły chat.\n"
+        "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "L4.24: krótki chat i diagnostyka frontu działają lokalnie, /front pokazuje audit Telegrama, a Grok chat jest bramkowany.\n"
         "To nadal nie jest pełny Poke: brakuje pełnego token-level streamingu, iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge i głębszych write-capable integrations.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
@@ -4567,10 +4660,10 @@ def goal_response() -> str:
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
         "Brakuje do Poke-level: pełny token-level streaming, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval oraz natywna ścieżka GitHub CLI auth.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.24 Poke Front Reliability - front bez ciszy, lepsze degraded-mode, richer progress i mniej zależności od jednego modelu."
+        "Najbliższy cel wdrożeniowy: L4.25 Rich Progress Streaming - dokładniejsze etapy pracy i mniej wrażenia ciszy przy długich model-callach."
     )
 
 
@@ -4583,10 +4676,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.23 Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.24 Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.23: /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.24: /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4614,6 +4707,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
+        f"front: L4.24 local_short_chat=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -4645,7 +4739,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.23 Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.24 Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -7339,6 +7433,7 @@ def normalize_intent_text(text: str) -> str:
 
 LLM_ROUTER_ALLOWED_COMMANDS = {
     "/chat",
+    "/front",
     "/plan-action",
     "@research",
     "/xresearch",
@@ -7520,6 +7615,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż health", "pokaz health", "sprawdź health", "sprawdz health")
     ):
         return {"command": "/health", "operators": ["host"], "prompt": "", "mode": "health", "intent": "natural"}
+
+    if lower in {"front", "front status", "front reliability", "czemu nie odpowiada", "dlaczego nie odpowiada", "bot nie odpowiada"} or lower.startswith(
+        ("pokaż front", "pokaz front", "sprawdź front", "sprawdz front", "czemu bot nie odpowiada", "dlaczego bot nie odpowiada")
+    ):
+        return {"command": "/front", "operators": ["host"], "prompt": stripped, "mode": "front", "intent": "natural"}
 
     if lower in {"selftest", "self test", "test systemu", "sprawdź wszystko", "sprawdz wszystko"} or lower.startswith(
         ("pokaż selftest", "pokaz selftest", "uruchom selftest")
@@ -8128,6 +8228,8 @@ def route_text(text: str) -> dict:
         return {"command": "/health", "operators": ["host"], "prompt": "", "mode": "health"}
     if lower.startswith("/selftest"):
         return {"command": "/selftest", "operators": ["host"], "prompt": "", "mode": "selftest"}
+    if lower.startswith("/front"):
+        return {"command": "/front", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "front"}
     if lower.startswith("/workspace"):
         return {"command": "/workspace", "operators": ["host"], "prompt": "", "mode": "workspace"}
     natural_route = natural_intent_route(stripped, lower)
@@ -8435,6 +8537,10 @@ def build_research_prompt(prompt: str) -> str:
     )
 
 
+def poke_chat_llm_configured() -> bool:
+    return bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) and bool(cfg("XAI_API_KEY"))
+
+
 def poke_chat_fallback(prompt: str) -> str:
     text = prompt.strip()
     lower = normalize_intent_text(text)
@@ -8466,8 +8572,77 @@ def poke_chat_fallback(prompt: str) -> str:
     )
 
 
+def poke_chat_should_use_llm(prompt: str) -> bool:
+    if not poke_chat_llm_configured():
+        return False
+    text = prompt.strip()
+    lower = normalize_intent_text(text)
+    if not text:
+        return False
+    local_markers = (
+        "dzialasz",
+        "działa",
+        "jestes",
+        "jesteś",
+        "online",
+        "co dalej",
+        "co teraz",
+        "status",
+        "goal",
+        "cel",
+        "jak poke",
+        "poke parity",
+        "poke-level",
+        "nie odpowiada",
+        "front",
+        "health",
+        "selftest",
+        "koszty",
+        "kontrola",
+        "limity",
+    )
+    if lower in {"hej", "hi", "hello", "siema", "yo", "ok", "dobra"}:
+        return False
+    words = set(lower.split())
+    def has_marker(marker: str) -> bool:
+        if " " not in marker and len(marker) <= 5:
+            return marker in words
+        return marker in lower
+
+    if any(has_marker(marker) for marker in local_markers):
+        return False
+    followup_markers = (
+        "a teraz",
+        "teraz krócej",
+        "teraz krocej",
+        "rozwiń",
+        "rozwin",
+        "doprecyzuj",
+        "przeredaguj",
+    )
+    if any(lower.startswith(marker) for marker in followup_markers):
+        return True
+    min_chars = int_cfg("AI_COUNCIL_POKE_CHAT_LLM_MIN_CHARS", 90)
+    if len(text) < min_chars:
+        return False
+    value_markers = (
+        "wyjaśnij",
+        "wyjasnij",
+        "przeanalizuj",
+        "podsumuj",
+        "porównaj",
+        "porownaj",
+        "napisz",
+        "odpisz",
+        "pomóż",
+        "pomoz",
+        "zinterpretuj",
+    )
+    return len(text) >= max(min_chars, 140) or any(marker in lower for marker in value_markers)
+
+
 def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
-    if not bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) or not cfg("XAI_API_KEY"):
+    if not poke_chat_should_use_llm(prompt):
         return None
     started = time.time()
     allowed, reason, reservation = reserve_operator_call("grok", detail="poke_chat")
@@ -8665,6 +8840,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return health_response()
     if command == "/selftest":
         return selftest_response()
+    if command == "/front":
+        return front_reliability_response(prompt)
     if command == "/workspace":
         ensure_council_dirs()
         return "[Council] Workspace: D:\\ai-council. L2.5: workspaces, artifacts, reports, state\\tasks.jsonl, state\\actions.jsonl, state\\background_jobs.jsonl, state\\artifact_index.jsonl, state\\costs.jsonl, state\\memory.sqlite. Codex: read-only. Claude quick: bez tools. Claude Flow: Opus 4.8 plan workflow. Grok: API research."

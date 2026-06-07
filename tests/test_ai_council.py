@@ -545,6 +545,8 @@ class RoutingTests(unittest.TestCase):
             "pokaż follow-upy": "/followups",
             "pokaż pętle": "/loops",
             "health": "/health",
+            "front status": "/front",
+            "czemu bot nie odpowiada": "/front",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
             "szczegóły task-1": "/details",
@@ -989,6 +991,38 @@ class RoutingTests(unittest.TestCase):
 
         self.assertIsNone(route)
         request_json.assert_not_called()
+
+    def test_short_poke_chat_does_not_use_grok_llm(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+            }
+            return values.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(ai_council, "request_json") as request_json:
+            response = ai_council.poke_chat_response("Hej", chat_id="553")
+
+        self.assertIn("[Council]", response)
+        request_json.assert_not_called()
+
+    def test_poke_chat_llm_gate_allows_followups_and_long_value_prompts(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_LLM_MIN_CHARS": "90",
+            }
+            return values.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg):
+            self.assertTrue(ai_council.poke_chat_should_use_llm("a teraz krócej"))
+            self.assertTrue(
+                ai_council.poke_chat_should_use_llm(
+                    "Wyjaśnij mi proszę spokojnie i konkretnie jak mam dalej używać tego systemu w codziennej pracy."
+                )
+            )
+            self.assertFalse(ai_council.poke_chat_should_use_llm("akceleracja projektu bez dodatkowego kontekstu"))
 
     def test_route_message_prefers_explicit_then_keyword_then_llm(self):
         with patch.object(ai_council, "llm_route", return_value={"command": "@research", "operators": ["grok"], "prompt": "x", "route_source": "llm", "confidence": 0.9}) as llm:
@@ -3023,6 +3057,72 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("[Council] Health", response)
         self.assertIn("codex: OK", response)
 
+    def test_front_reliability_response_uses_audit_without_network_calls(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audit_path = root / "logs" / "audit.jsonl"
+            lock_path = root / "state" / "telegram_listener.lock"
+            offset_path = root / "state" / "telegram_offset"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path.write_text("1234", encoding="utf-8")
+            offset_path.write_text("43", encoding="utf-8")
+            ai_council.append_jsonl(
+                audit_path,
+                {
+                    "timestamp": ai_council.utc_now(),
+                    "update_id": 42,
+                    "command": "/selftest",
+                    "operators": ["host"],
+                    "status": "responded",
+                    "duration_ms": 7,
+                    "send_requested": True,
+                },
+            )
+            with patch.object(ai_council, "AUDIT_LOG", audit_path), patch.object(
+                ai_council, "TELEGRAM_LISTENER_LOCK", lock_path
+            ), patch.object(ai_council, "OFFSET_FILE", offset_path), patch.object(
+                ai_council, "CONTROL_FILE", root / "state" / "control.json"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"):
+                ai_council.record_operator_usage("grok", status="completed", duration_ms=10)
+                response = ai_council.build_response({"command": "/front", "operators": ["host"], "prompt": ""})
+
+        self.assertIn("Front Reliability L4.24", response)
+        self.assertIn("last_telegram_update: 42 /selftest responded", response)
+        self.assertIn("listener_pid: 1234", response)
+        self.assertIn("grok_today: calls=1", response)
+
+    def test_front_reliability_response_reports_paused_models_and_send_failures(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            audit_path = root / "logs" / "audit.jsonl"
+            ai_council.append_jsonl(
+                audit_path,
+                {
+                    "timestamp": ai_council.utc_now(),
+                    "update_id": 50,
+                    "command": "/chat",
+                    "operators": ["host"],
+                    "status": "send_failed",
+                    "duration_ms": 4,
+                    "send_requested": True,
+                },
+            )
+            with patch.object(ai_council, "AUDIT_LOG", audit_path), patch.object(
+                ai_council, "TELEGRAM_LISTENER_LOCK", root / "state" / "telegram_listener.lock"
+            ), patch.object(ai_council, "OFFSET_FILE", root / "state" / "telegram_offset"), patch.object(
+                ai_council, "CONTROL_FILE", root / "state" / "control.json"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"):
+                ai_council.control_response("pause models test")
+                response = ai_council.front_reliability_response()
+
+        self.assertIn("były błędy wysyłki Telegram", response)
+        self.assertIn("paused=True", response)
+        self.assertIn("failed=1", response)
+
     def test_goal_response_exposes_poke_parity_gap(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -3047,6 +3147,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Unified Front Orchestrator L4.21", response)
         self.assertIn("Project Memory Spine L4.22", response)
         self.assertIn("L4.23 Cost Ledger Reservation", response)
+        self.assertIn("L4.24 Poke Front Reliability", response)
 
     def test_selftest_response_is_available_without_model_calls(self):
         with temp_dir() as tmp:

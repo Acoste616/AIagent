@@ -30,10 +30,10 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | Local Mac `66/66 OK`; Windows Desktop `66/66 OK`; py_compile OK | Proven |
+| Test verification | L4.24: Mac `163/163 OK` + py_compile; Windows Desktop `163/163 OK` + py_compile | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | Local repo configured, commits exist; push blocked by missing GitHub auth. This is an external publishing follow-up, not required for the Windows Desktop runtime goal. | External follow-up |
+| GitHub push to `Acoste616/AIagent` | Push works; observed output before L4.24: `4a2babb..1119988 main -> main`. L4.24 push is verified after commit. | Proven |
 
 ## Current Desktop State
 
@@ -51,12 +51,11 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.24 Poke Front Reliability: front without silence, stronger degraded-mode, richer progress, less dependence on one model.
-2. Token-level streaming or richer step progress for long model calls.
-3. Deeper source-backed integrations and write-capable connectors after approval.
-4. iPhone Shortcuts as primary capture layer.
-5. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
-6. Broader execution verifier coverage beyond workspace write/append/patch.
+1. L4.25 Rich Progress Streaming: more granular long-task stages and less perceived silence during model calls.
+2. Deeper source-backed integrations and write-capable connectors after approval.
+3. iPhone Shortcuts as primary capture layer.
+4. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+5. Broader execution verifier coverage beyond workspace write/append/patch.
 
 Completed layers in the current implementation state:
 
@@ -70,9 +69,8 @@ Completed layers in the current implementation state:
 - L4.21 Unified Front Orchestrator: direct operator routes now return one host-style Telegram response while raw Codex/Claude/Grok output stays available in artifacts/reports.
 - L4.22 Project Memory Spine: completed artifacts write source-backed project-memory rows for decision/facts/next; `/project-memory` exposes recent/search/context/rebuild; operator prompts auto-recall project memory with sources.
 - L4.23 Cost Ledger Reservation: model calls reserve cost/call budget before execution, `reserved -> final` rows collapse to one logical usage, and the LLM router no longer burns Grok on ordinary chat by default.
+- L4.24 Poke Front Reliability: `/front` reports Telegram/audit/model front state, short chat is local-first, and Grok chat is gated so diagnostics do not burn research budget.
 
 ## External Follow-up
 
-1. Authenticate GitHub.
-   - Current error: `fatal: could not read Username for 'https://github.com': Device not configured`
-   - After auth: run `git push origin main`.
+No current GitHub publishing blocker. The broader Poke parity goal remains active because iPhone/iMessage, richer progress, and write-capable integrations are not yet complete.
