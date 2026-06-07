@@ -6,6 +6,7 @@ import base64
 import csv
 from datetime import datetime, timezone
 import difflib
+from email.message import EmailMessage
 import hmac
 import hashlib
 import json
@@ -224,6 +225,10 @@ PROVIDER_ADAPTER_CONFIG = {
         "scopes": ["repo", "fine-grained: Issues: Write"],
         "auth": "github_token",
     },
+}
+PROVIDER_EXECUTOR_OPERATIONS = {
+    "github": "github.issues.create",
+    "gmail": "gmail.users.drafts.create",
 }
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
@@ -1495,6 +1500,8 @@ SOURCE_EXPORT_DEFAULTS = {
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GITHUB_ISSUE_TITLE_LIMIT = 256
 GITHUB_ISSUE_BODY_LIMIT = 65536
+GMAIL_DRAFT_SUBJECT_LIMIT = 998
+GMAIL_DRAFT_BODY_LIMIT = 100000
 
 
 CONNECTOR_AUTH_GUIDES = {
@@ -2149,7 +2156,7 @@ def connector_status(name: str) -> dict | None:
 
 
 def connectors_response() -> str:
-    lines = ["[Council] Connectors L4.32 read-sync + draft actions + provider manifests + GitHub issue executor gate"]
+    lines = ["[Council] Connectors L4.33 read-sync + draft actions + provider manifests + GitHub issue + Gmail draft executor gates"]
     ready = 0
     needs_auth = 0
     for item in connector_statuses():
@@ -5229,7 +5236,7 @@ def capabilities_response() -> str:
         "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, zbudować /provider plan/show/verify/request/execute, wykonać GitHub issue write tylko za osobnym approvalem, confirm tokenem, tokenem GitHub i dwoma env gate'ami, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "L4.32: GitHub Issue Executor v0 dodaje pierwszy realny provider write, ale tylko dla github.issues.create i tylko po /provider request, /approve, confirm tokenie, GITHUB_TOKEN/GH_TOKEN oraz AI_COUNCIL_PROVIDER_WRITE_ENABLED=true + AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED=true. Pozostałe providery nadal kończą jako blocker/dry-run.\n"
+        "L4.33: Provider Executor expansion dodaje Gmail draft create obok GitHub issue create. Gmail tworzy tylko szkic, nie wysyła maila, i wymaga /provider request, /approve, confirm tokena, Google OAuth oraz AI_COUNCIL_PROVIDER_WRITE_ENABLED=true + AI_COUNCIL_GMAIL_DRAFT_WRITE_ENABLED=true. Pozostałe providery nadal kończą jako blocker/dry-run.\n"
         "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, provider-write adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
@@ -5244,10 +5251,10 @@ def goal_response() -> str:
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, L4.30 provider adapter manifests, L4.31 provider write-request gate/dry-run, L4.32 GitHub issue executor v0 za twardymi gate'ami, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: prywatny iMessage bridge, provider-write adaptery Gmail/Calendar/Drive, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, L4.30 provider adapter manifests, L4.31 provider write-request gate/dry-run, L4.32 GitHub issue executor v0 za twardymi gate'ami, L4.33 Gmail draft executor v0 za twardymi gate'ami, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: prywatny iMessage bridge, provider-write adaptery Calendar/Drive, dedupe/read-before-write, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.33 Provider Executor expansion - Gmail draft create albo Calendar event create z tym samym approval/confirm/verifier modelem."
+        "Najbliższy cel wdrożeniowy: L4.34 Provider Executor expansion - Calendar event create albo provider dedupe/read-before-write z tym samym approval/confirm/verifier modelem."
     )
 
 
@@ -5260,10 +5267,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.32 GitHub Issue Executor v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe/draft_action, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.33 GitHub Issue + Gmail Draft Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe/draft_action, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.32: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.33: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5291,7 +5298,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: L4.32 github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: L4.33 github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5323,7 +5330,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.32 GitHub Issue Executor v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.33 GitHub Issue + Gmail Draft Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -7328,7 +7335,7 @@ def provider_write_request_payload(action: dict) -> dict:
         "provider_operation": operation,
         "provider_manifest": manifest,
         "request_body": provider_request_body(connector, payload.get("draft") or manifest.get("draft") or {}),
-        "adapter_note": "L4.32 can execute github.issues.create only for the github connector, only when both provider write gates and GitHub token are configured; other providers remain dry-run/blocker only.",
+        "adapter_note": "L4.33 can execute github.issues.create or gmail.users.drafts.create only for their matching connector, only when provider write gates and provider auth are configured; other providers remain dry-run/blocker only.",
         "external_write_intended": True,
         "external_write_performed": False,
         "write_gate": "requires_explicit_approve_and_confirm",
@@ -7376,7 +7383,7 @@ def provider_request_response(action_id: str) -> str:
         payload=payload,
     )
     return (
-        "[Provider] Pending provider write request utworzony L4.32.\n"
+        "[Provider] Pending provider write request utworzony L4.33.\n"
         f"id: {request['action_id']}\n"
         f"source: {action_id}\n"
         f"connector: {payload.get('connector')}\n"
@@ -7394,7 +7401,7 @@ def write_provider_dry_run(action: dict, reason: str) -> dict:
     json_path = target_dir / "provider_write_dry_run.json"
     markdown_path = target_dir / "provider_write_dry_run.md"
     dry_run = {
-        "version": "L4.32",
+        "version": "L4.33",
         "action_id": action_id,
         "created_at": utc_now(),
         "status": "write_blocked",
@@ -7430,6 +7437,10 @@ def github_issue_write_enabled() -> bool:
     return bool_cfg("AI_COUNCIL_PROVIDER_WRITE_ENABLED", False) and bool_cfg("AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED", False)
 
 
+def gmail_draft_write_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_PROVIDER_WRITE_ENABLED", False) and bool_cfg("AI_COUNCIL_GMAIL_DRAFT_WRITE_ENABLED", False)
+
+
 def github_repo_parts(repo: str) -> tuple[str, str, str]:
     clean = (repo or "").strip()
     if clean.startswith("https://github.com/"):
@@ -7447,23 +7458,71 @@ def github_repo_parts(repo: str) -> tuple[str, str, str]:
     return owner, name, ""
 
 
+def normalize_email_recipients(value) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[,;]", str(value or ""))
+    recipients = []
+    for item in raw_items:
+        clean = str(item or "").strip()
+        if clean:
+            recipients.append(clean)
+    return recipients
+
+
+def gmail_request_draft(request_body: dict) -> dict:
+    draft = request_body.get("draft") if isinstance(request_body, dict) else {}
+    return draft if isinstance(draft, dict) else {}
+
+
+def email_address_looks_valid(value: str) -> bool:
+    if "\n" in value or "\r" in value or " " in value:
+        return False
+    local, separator, domain = value.partition("@")
+    return bool(local and separator and domain and "." in domain)
+
+
+def gmail_draft_blockers(request_body: dict) -> list[str]:
+    draft = gmail_request_draft(request_body)
+    recipients = normalize_email_recipients(draft.get("to"))
+    subject = str(draft.get("subject") or "").strip()
+    body = str(draft.get("body") or "")
+    blockers: list[str] = []
+    if not recipients:
+        blockers.append("recipient missing")
+    for recipient in recipients:
+        if not email_address_looks_valid(recipient):
+            blockers.append("recipient invalid")
+            break
+    if not subject:
+        blockers.append("subject missing")
+    if "\n" in subject or "\r" in subject:
+        blockers.append("subject contains newline")
+    if len(subject) > GMAIL_DRAFT_SUBJECT_LIMIT:
+        blockers.append(f"subject too large: max {GMAIL_DRAFT_SUBJECT_LIMIT} chars")
+    if len(body) > GMAIL_DRAFT_BODY_LIMIT:
+        blockers.append(f"body too large: max {GMAIL_DRAFT_BODY_LIMIT} chars")
+    return blockers
+
+
 def provider_write_gate_blockers(action: dict) -> list[str]:
     payload = action.get("payload") or {}
     connector = normalize_connector_name(str(payload.get("connector") or ""))
     operation = str(payload.get("provider_operation") or "")
     request_body = payload.get("request_body") or {}
     blockers: list[str] = []
-    if connector != "github":
-        blockers.append("L4.32 executor supports github only")
-    if operation != "github.issues.create":
-        blockers.append("L4.32 executor supports github.issues.create only")
+    if connector not in PROVIDER_EXECUTOR_OPERATIONS:
+        blockers.append("L4.33 executor supports github issue and gmail draft only")
+    elif operation != PROVIDER_EXECUTOR_OPERATIONS[connector]:
+        blockers.append(f"L4.33 executor supports {PROVIDER_EXECUTOR_OPERATIONS[connector]} only for {connector}")
     if not bool_cfg("AI_COUNCIL_PROVIDER_WRITE_ENABLED", False):
         blockers.append("AI_COUNCIL_PROVIDER_WRITE_ENABLED=false")
-    if not bool_cfg("AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED", False):
-        blockers.append("AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED=false")
-    if not github_token():
-        blockers.append("GITHUB_TOKEN/GH_TOKEN missing")
     if connector == "github":
+        if not bool_cfg("AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED", False):
+            blockers.append("AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED=false")
+        if not github_token():
+            blockers.append("GITHUB_TOKEN/GH_TOKEN missing")
         repo = str(request_body.get("repo") or cfg("AI_COUNCIL_GITHUB_REPO", ""))
         _, _, repo_error = github_repo_parts(repo)
         if repo_error:
@@ -7475,6 +7534,12 @@ def provider_write_gate_blockers(action: dict) -> list[str]:
             blockers.append(f"title too large: max {GITHUB_ISSUE_TITLE_LIMIT} chars")
         if len(str(request_body.get("body") or "")) > GITHUB_ISSUE_BODY_LIMIT:
             blockers.append(f"body too large: max {GITHUB_ISSUE_BODY_LIMIT} chars")
+    if connector == "gmail":
+        if not bool_cfg("AI_COUNCIL_GMAIL_DRAFT_WRITE_ENABLED", False):
+            blockers.append("AI_COUNCIL_GMAIL_DRAFT_WRITE_ENABLED=false")
+        if not google_oauth_configured():
+            blockers.append("Google OAuth missing")
+        blockers.extend(gmail_draft_blockers(request_body))
     return blockers
 
 
@@ -7499,6 +7564,31 @@ def github_issue_payload_for_request(action: dict) -> tuple[dict, str, str]:
     return issue_payload, f"{owner}/{name}", ""
 
 
+def gmail_draft_payload_for_request(action: dict) -> tuple[dict, dict, str]:
+    payload = action.get("payload") or {}
+    request_body = payload.get("request_body") or {}
+    blockers = gmail_draft_blockers(request_body)
+    if blockers:
+        return {}, {}, "; ".join(blockers)
+    draft = gmail_request_draft(request_body)
+    recipients = normalize_email_recipients(draft.get("to"))
+    subject = str(draft.get("subject") or "").strip()
+    body = str(draft.get("body") or "")
+    message = EmailMessage()
+    from_addr = cfg("AI_COUNCIL_GMAIL_FROM", "").strip() or cfg("GOOGLE_ACCOUNT_EMAIL", "").strip()
+    if from_addr:
+        if not email_address_looks_valid(from_addr):
+            return {}, {}, "from address invalid"
+        message["From"] = from_addr
+    message["To"] = ", ".join(recipients)
+    message["Subject"] = subject
+    message.set_content(body, subtype="plain", charset="utf-8")
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+    api_payload = {"message": {"raw": raw}}
+    metadata = {"to": recipients, "subject": subject, "body_chars": len(body), "from_configured": bool(from_addr)}
+    return api_payload, metadata, ""
+
+
 def redacted_json_value(value: dict) -> dict:
     raw = redact_secrets(json.dumps(value, ensure_ascii=False))
     try:
@@ -7515,8 +7605,9 @@ def write_provider_result(action: dict, *, status: str, request_payload: dict, p
     json_path = target_dir / "provider_write_result.json"
     markdown_path = target_dir / "provider_write_result.md"
     safe_provider_response = redacted_json_value(provider_response)
+    provider_message = safe_provider_response.get("message")
     result = {
-        "version": "L4.32",
+        "version": "L4.33",
         "action_id": action_id,
         "source_action_id": payload.get("source_action_id"),
         "created_at": utc_now(),
@@ -7530,6 +7621,8 @@ def write_provider_result(action: dict, *, status: str, request_payload: dict, p
         "html_url": safe_provider_response.get("html_url", ""),
         "provider_id": safe_provider_response.get("id", ""),
         "provider_number": safe_provider_response.get("number", ""),
+        "provider_message_id": provider_message.get("id", "") if isinstance(provider_message, dict) else "",
+        "provider_thread_id": provider_message.get("threadId", "") if isinstance(provider_message, dict) else "",
     }
     redacted_provider_response = json.dumps(safe_provider_response, ensure_ascii=False, indent=2)
     lines = [
@@ -7545,6 +7638,10 @@ def write_provider_result(action: dict, *, status: str, request_payload: dict, p
         lines.append(f"- url: {result['html_url']}")
     if result["provider_number"]:
         lines.append(f"- number: {result['provider_number']}")
+    if result["provider_message_id"]:
+        lines.append(f"- message_id: {result['provider_message_id']}")
+    if result["provider_thread_id"]:
+        lines.append(f"- thread_id: {result['provider_thread_id']}")
     lines.extend(
         [
             "",
@@ -7600,6 +7697,41 @@ def execute_github_issue_provider_write(action: dict) -> tuple[bool, dict, str]:
     return True, result, ""
 
 
+def execute_gmail_draft_provider_write(action: dict) -> tuple[bool, dict, str]:
+    api_payload, metadata, payload_error = gmail_draft_payload_for_request(action)
+    if payload_error:
+        return False, {}, payload_error
+    status, token = google_access_token()
+    if status != "available" or not token:
+        return False, {}, f"google access token unavailable: {status}"
+    response = request_json(
+        "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+        headers=google_headers(token),
+        method="POST",
+        payload=api_payload,
+        timeout=30,
+    )
+    request_artifact_payload = {"message": {"raw": api_payload["message"]["raw"]}, "metadata": metadata}
+    if response.get("ok") is False:
+        detail = compact_line(redact_secrets(str(response.get("body_preview") or response.get("reason") or response.get("error") or "provider error")), 260)
+        result = write_provider_result(
+            action,
+            status="provider_write_failed",
+            request_payload=request_artifact_payload,
+            provider_response=response,
+            external_write_performed=False,
+        )
+        return False, result, detail
+    result = write_provider_result(
+        action,
+        status="executed",
+        request_payload=request_artifact_payload,
+        provider_response=response,
+        external_write_performed=True,
+    )
+    return True, result, ""
+
+
 def provider_write_request_verify(action: dict) -> dict:
     checks: list[dict] = []
 
@@ -7635,19 +7767,21 @@ def provider_write_request_verify(action: dict) -> dict:
             add("provider write failed", False, failure_detail)
             return {
                 "ok": False,
-                "detail": "provider write failed; check GitHub manually before creating a new request",
+                "detail": "provider write failed; check provider manually before creating a new request",
                 "checks": checks,
             }
         action_match = data.get("action_id") == action.get("action_id")
-        connector_match = data.get("connector") == "github"
-        operation_match = data.get("provider_operation") == "github.issues.create"
+        connector = str(data.get("connector") or "")
+        expected_operation = PROVIDER_ADAPTER_CONFIG.get(connector, {}).get("operation")
+        connector_match = connector in PROVIDER_EXECUTOR_OPERATIONS
+        operation_match = data.get("provider_operation") == expected_operation
         performed = data.get("external_write_performed") is True and payload.get("external_write_performed") is True
-        has_provider_ref = bool(data.get("html_url") or data.get("provider_number") or data.get("provider_id"))
+        has_provider_ref = bool(data.get("html_url") or data.get("provider_number") or data.get("provider_id") or data.get("provider_message_id"))
         add("action id matches", action_match, str(data.get("action_id")))
-        add("connector github", connector_match, str(data.get("connector")))
+        add("connector supported", connector_match, str(data.get("connector")))
         add("operation matches", operation_match, str(data.get("provider_operation")))
         add("external write true", performed, f"result={data.get('external_write_performed')} payload={payload.get('external_write_performed')}")
-        add("provider reference present", has_provider_ref, str(data.get("html_url") or data.get("provider_number") or data.get("provider_id")))
+        add("provider reference present", has_provider_ref, str(data.get("html_url") or data.get("provider_number") or data.get("provider_id") or data.get("provider_message_id")))
         ok = action_match and connector_match and operation_match and performed and has_provider_ref
         return {
             "ok": ok,
@@ -7857,7 +7991,7 @@ def provider_execute_response(action_id: str) -> str:
         if action.get("status") in {"provider_write_failed", "verify_failed"} and previous_result:
             return (
                 f"[Provider] Execute zablokowane: provider write request `{action_id}` ma wcześniejszy provider POST/result.\n"
-                "manual_check: sprawdź GitHub przed utworzeniem nowego requestu, bo POST mógł dojść do providera mimo błędu sieciowego."
+                "manual_check: sprawdź providera przed utworzeniem nowego requestu, bo POST mógł dojść mimo błędu sieciowego."
             )
         if action.get("status") not in {"approved", "write_blocked", "verify_failed"}:
             return f"[Provider] Execute zablokowane: status={action.get('status')}."
@@ -7868,16 +8002,52 @@ def provider_execute_response(action_id: str) -> str:
                 f"Użyj: /provider execute {action_id} {expected_token}\n"
                 "external_write_performed: false"
             )
+        connector = normalize_connector_name(str(payload.get("connector") or ""))
         blockers = provider_write_gate_blockers(action)
         if not blockers:
-            ok, result, detail = execute_github_issue_provider_write(action)
+            if connector == "github":
+                ok, result, detail = execute_github_issue_provider_write(action)
+                success_label = "GitHub issue"
+                success_source = "provider_executor_github_issue"
+                failure_source = "provider_executor_github_issue_failed"
+                success_result = f"github issue created {result.get('html_url') or result.get('provider_number')}"
+            elif connector == "gmail":
+                ok, result, detail = execute_gmail_draft_provider_write(action)
+                success_label = "Gmail draft"
+                success_source = "provider_executor_gmail_draft"
+                failure_source = "provider_executor_gmail_draft_failed"
+                success_result = f"gmail draft created {result.get('provider_id') or result.get('provider_message_id')}"
+            else:
+                ok, result, detail = False, {}, f"unsupported connector: {connector}"
+                success_label = "Provider write"
+                success_source = "provider_executor_unknown"
+                failure_source = "provider_executor_unknown_failed"
+                success_result = "provider write"
+            if not result and not ok:
+                dry_run = write_provider_dry_run(action, detail)
+                updated = {
+                    **action,
+                    "status": "write_blocked",
+                    "updated_at": utc_now(),
+                    "payload": {**payload, "provider_write_dry_run": dry_run, "external_write_performed": False},
+                    "execution_result": f"provider write blocked; dry-run saved {dry_run.get('markdown_path')}",
+                }
+                append_jsonl(ACTIONS_FILE, updated)
+                return (
+                    f"[Provider] Write gate L4.33: {action_id}\n"
+                    "status: write_blocked\n"
+                    "external_write_performed: false\n"
+                    f"reason: {detail}\n"
+                    f"dry_run: {dry_run.get('markdown_path')}\n"
+                    f"Verify: /provider verify {action_id}"
+                )
             if ok:
                 updated = {
                     **action,
                     "status": "executed",
                     "updated_at": utc_now(),
                     "payload": {**payload, "provider_write_result": result, "external_write_performed": True},
-                    "execution_result": f"github issue created {result.get('html_url') or result.get('provider_number')}",
+                    "execution_result": success_result,
                 }
                 append_jsonl(ACTIONS_FILE, updated)
                 memory_save(
@@ -7885,14 +8055,14 @@ def provider_execute_response(action_id: str) -> str:
                     str(result.get("markdown_path") or ""),
                     kind="action",
                     agent="host",
-                    source="provider_executor_github_issue",
+                    source=success_source,
                     task_id=action_id,
                 )
                 return (
-                    f"[Provider] GitHub issue executed L4.32: {action_id}\n"
+                    f"[Provider] {success_label} executed L4.33: {action_id}\n"
                     "status: executed\n"
                     "external_write_performed: true\n"
-                    f"url: {result.get('html_url') or 'n/a'}\n"
+                    f"provider_ref: {result.get('html_url') or result.get('provider_id') or result.get('provider_message_id') or 'n/a'}\n"
                     f"result: {result.get('markdown_path')}\n"
                     f"Verify: /provider verify {action_id}"
                 )
@@ -7901,7 +8071,7 @@ def provider_execute_response(action_id: str) -> str:
                 "status": "provider_write_failed",
                 "updated_at": utc_now(),
                 "payload": {**payload, "provider_write_result": result, "external_write_performed": False},
-                "execution_result": f"github issue write failed: {detail}",
+                "execution_result": f"{connector} provider write failed: {detail}",
             }
             append_jsonl(ACTIONS_FILE, updated)
             memory_save(
@@ -7909,15 +8079,15 @@ def provider_execute_response(action_id: str) -> str:
                 str(result.get("markdown_path") or ""),
                 kind="action",
                 agent="host",
-                source="provider_executor_github_issue_failed",
+                source=failure_source,
                 task_id=action_id,
             )
             return (
-                f"[Provider] GitHub issue write failed L4.32: {action_id}\n"
+                f"[Provider] {success_label} write failed L4.33: {action_id}\n"
                 "status: provider_write_failed\n"
                 "external_write_performed: false\n"
                 f"reason: {detail}\n"
-                "manual_check: sprawdź GitHub przed utworzeniem nowego requestu, bo POST mógł dojść do providera mimo błędu sieciowego.\n"
+                "manual_check: sprawdź providera przed utworzeniem nowego requestu, bo POST mógł dojść mimo błędu sieciowego.\n"
                 f"result: {result.get('markdown_path')}\n"
                 f"Verify: /provider verify {action_id}"
             )
@@ -7940,7 +8110,7 @@ def provider_execute_response(action_id: str) -> str:
             task_id=action_id,
         )
         return (
-            f"[Provider] Write gate L4.32: {action_id}\n"
+            f"[Provider] Write gate L4.33: {action_id}\n"
             "status: write_blocked\n"
             "external_write_performed: false\n"
             f"reason: {reason}\n"
@@ -7980,9 +8150,9 @@ def provider_response(prompt: str = "") -> str:
         if item.get("type") == "integration_draft"
     ]
     lines = [
-        "[Provider] L4.32 GitHub issue executor v0",
+        "[Provider] L4.33 GitHub issue + Gmail draft executors v0",
         "Komendy: /provider plan <id>, /provider show <id>, /provider verify <id>, /provider request <id>, /provider execute <request_id> <confirm>.",
-        "Granica: tylko github.issues.create może wykonać realny provider write i tylko gdy AI_COUNCIL_PROVIDER_WRITE_ENABLED=true oraz AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED=true.",
+        "Granica: realny provider write tylko dla github.issues.create i gmail.users.drafts.create; Gmail tworzy draft, nie wysyła maila.",
     ]
     for item in rows[:8]:
         manifest = provider_manifest_for_action(item)

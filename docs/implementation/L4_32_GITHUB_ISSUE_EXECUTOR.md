@@ -75,11 +75,8 @@ The provider result stores:
 
 This is not full Poke parity yet.
 
-L4.33 should expand the same approval/confirm/verifier model to one Google provider:
-
-- Gmail draft create, or
-- Calendar event create.
+L4.33 expands the same approval/confirm/verifier model to Gmail draft create.
 
 L4.33 should also add client-side dedupe/read-before-write for GitHub, because GitHub's create issue endpoint does not provide a native idempotency key. L4.32 blocks retry on the same request id, but two separate approved write requests can still create duplicate issues.
 
-After that, the system still needs deeper proactive recipes, richer memory retrieval, better long-task UX, iPhone Shortcuts hardening, and eventually a private Messages/iMessage bridge.
+After that, the system still needs Calendar/Drive write adapters, deeper proactive recipes, richer memory retrieval, better long-task UX, iPhone Shortcuts hardening, provider dedupe/read-before-write, and eventually a private Messages/iMessage bridge.
