@@ -977,6 +977,90 @@ class L2LedgerTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("Connector bridge", results[0]["title"])
 
+    def test_source_search_github_uses_token_api_when_gh_invalid(self):
+        payload = {
+            "items": [
+                {
+                    "number": 9,
+                    "title": "Private connector task",
+                    "html_url": "https://github.com/Acoste616/AIagent/issues/9",
+                    "body": "Private repo source",
+                    "labels": [],
+                }
+            ]
+        }
+
+        def fake_cfg(key, default=""):
+            values = {
+                "GITHUB_TOKEN": "ghp_test_token_secret",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+            }
+            return values.get(key, default)
+
+        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+            ai_council, "request_json", return_value=payload
+        ) as request_json, patch.object(ai_council, "cfg", side_effect=fake_cfg):
+            status, results = ai_council.source_search("github", "private", limit=3)
+
+        self.assertIn("token_api", status)
+        self.assertEqual(len(results), 1)
+        self.assertIn("Private connector task", results[0]["title"])
+        headers = request_json.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer ghp_test_token_secret")
+        self.assertIn("api.github.com/search/issues", request_json.call_args.args[0])
+        self.assertIn("repo%3AAcoste616%2FAIagent", request_json.call_args.args[0])
+
+    def test_source_search_github_token_auth_error_does_not_fall_back_public(self):
+        calls = []
+
+        def fake_request(url, **kwargs):
+            calls.append(url)
+            return {"ok": False, "error": "http_401"}
+
+        def fake_cfg(key, default=""):
+            return {"GITHUB_TOKEN": "ghp_test_token_secret"}.get(key, default)
+
+        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+            ai_council, "request_json", side_effect=fake_request
+        ), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+            status, results = ai_council.source_search("github", "private", limit=3)
+
+        self.assertIn("token_api_error: http_401", status)
+        self.assertEqual(results, [])
+        self.assertEqual(len(calls), 1)
+
+    def test_connectors_response_reports_github_token_present(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "GITHUB_TOKEN": "ghp_test_token_secret",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "OPENCLAW_EXPORT", root / "openclaw"
+            ), patch.object(
+                ai_council,
+                "SOURCE_EXPORT_DEFAULTS",
+                {
+                    "AI_COUNCIL_GMAIL_EXPORT_DIR": root / "sources" / "gmail",
+                    "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
+                    "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
+                },
+            ), patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+                ai_council, "cfg", side_effect=fake_cfg
+            ):
+                response = ai_council.connectors_response()
+
+        self.assertIn("github | token_present", response)
+        self.assertNotIn("ghp_test_token_secret", response)
+
     def test_connectors_response_reports_readiness_and_auth(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -999,7 +1083,7 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.12", response)
+        self.assertIn("Connectors L4.13", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)

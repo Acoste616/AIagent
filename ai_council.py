@@ -1156,6 +1156,7 @@ CONNECTOR_AUTH_GUIDES = {
     "github": [
         "Na desktopie uruchom: gh auth login -h github.com",
         "Potem sprawdź: gh auth status",
+        "Alternatywa read-only: ustaw GITHUB_TOKEN albo GH_TOKEN w .env/system env; nie wklejaj tokena w Telegram.",
         "Opcjonalnie ustaw repo: AI_COUNCIL_GITHUB_REPO=Acoste616/AIagent",
     ],
     "memory": ["Gotowe lokalnie. Użyj: /source search memory <query>."],
@@ -1192,6 +1193,20 @@ def command_status(command: str, args: list[str], timeout: int = 10) -> tuple[bo
     return completed.returncode == 0, compact_line(detail, 260)
 
 
+def github_token() -> str:
+    return cfg("GITHUB_TOKEN") or cfg("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
+
+
+def github_headers(token: str = "") -> dict[str, str]:
+    headers = {
+        "User-Agent": "ai-council-readonly",
+        "Accept": "application/vnd.github+json",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def source_statuses() -> list[dict]:
     openclaw_dir = configured_source_dir("OPENCLAW_EXPORT", OPENCLAW_EXPORT)
     gmail_dir = configured_source_dir("AI_COUNCIL_GMAIL_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_GMAIL_EXPORT_DIR"])
@@ -1201,6 +1216,7 @@ def source_statuses() -> list[dict]:
     calendar_indexed = connector_index_count("calendar")
     drive_indexed = connector_index_count("drive")
     gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
+    gh_token_present = bool(github_token())
     github_repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
     sources = [
         {
@@ -1226,10 +1242,10 @@ def source_statuses() -> list[dict]:
         },
         {
             "name": "github",
-            "status": "available" if gh_ok else "auth_required",
+            "status": "available" if gh_ok else ("token_present" if gh_token_present else "auth_required"),
             "mode": "read-only",
-            "detail": github_repo if gh_ok else f"gh auth status: {gh_detail}",
-            "search": gh_ok,
+            "detail": github_repo if gh_ok else (f"{github_repo}; token configured; gh auth status: {gh_detail}" if gh_token_present else f"gh auth status: {gh_detail}"),
+            "search": gh_ok or gh_token_present or bool_cfg("AI_COUNCIL_GITHUB_PUBLIC_FALLBACK", True),
         },
         {
             "name": "gmail",
@@ -1526,12 +1542,16 @@ def connector_ingest_source(connector: str, limit: int | None = None) -> tuple[s
 def github_public_search(query: str, limit: int = 5) -> tuple[str, list[dict]]:
     if not bool_cfg("AI_COUNCIL_GITHUB_PUBLIC_FALLBACK", True):
         return "public_fallback_disabled", []
+    return github_api_search(query, limit=limit, token="", status_label="public_fallback")
+
+
+def github_api_search(query: str, limit: int = 5, token: str = "", status_label: str = "github_api") -> tuple[str, list[dict]]:
     repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
     q = f"{query or 'AI Council'} repo:{repo}"
     url = "https://api.github.com/search/issues?" + urlencode({"q": q, "per_page": str(limit)})
-    data = request_json(url, headers={"User-Agent": "ai-council-readonly"})
+    data = request_json(url, headers=github_headers(token))
     if data.get("ok") is False:
-        return f"public_fallback_error: {data.get('error')}", []
+        return f"{status_label}_error: {data.get('error')}", []
     results = []
     for item in data.get("items", [])[:limit]:
         labels = ", ".join(label.get("name", "") for label in item.get("labels", []) if isinstance(label, dict))
@@ -1545,12 +1565,23 @@ def github_public_search(query: str, limit: int = 5) -> tuple[str, list[dict]]:
                 "snippet": snippet,
             }
         )
-    return "public_fallback", results
+    return status_label, results
 
 
 def github_source_search(query: str, limit: int = 5) -> tuple[str, list[dict]]:
     gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
     if not gh_ok:
+        token = github_token()
+        if token:
+            token_status, token_results = github_api_search(query, limit=limit, token=token, status_label="token_api")
+            if token_results:
+                return f"{token_status}; gh_unavailable: {gh_detail}", token_results
+            if "http_401" in token_status or "http_403" in token_status:
+                return f"{token_status}; gh_unavailable: {gh_detail}", []
+            public_status, public_results = github_public_search(query, limit=limit)
+            if public_results:
+                return f"{token_status}; gh_unavailable: {gh_detail}; {public_status}", public_results
+            return f"{token_status}; gh_unavailable: {gh_detail}; {public_status}", []
         public_status, public_results = github_public_search(query, limit=limit)
         if public_results:
             return f"auth_required: {gh_detail}; {public_status}", public_results
@@ -1735,7 +1766,7 @@ def connector_status(name: str) -> dict | None:
 
 
 def connectors_response() -> str:
-    lines = ["[Council] Connectors L4.12 read-only bridge + cache"]
+    lines = ["[Council] Connectors L4.13 read-only bridge + cache"]
     ready = 0
     needs_auth = 0
     for item in connector_statuses():
@@ -3400,7 +3431,7 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny fallback GitHub search, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -3415,10 +3446,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback.\n"
-        "Brakuje do Poke-level: real OAuth bridge dla Gmail/Calendar/Drive na samym desktop runtime, naprawiony GitHub CLI auth dla prywatnych zasobów, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge.\n"
+        "Brakuje do Poke-level: real OAuth bridge dla Gmail/Calendar/Drive na samym desktop runtime, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Następny sprint: L4.13 Real OAuth Bridge: Gmail/Calendar/Drive read przez OAuth/cache sync, z artifactami i approval przed write."
+        "Następny sprint: L4.14 Google OAuth Bridge: Gmail/Calendar/Drive read przez OAuth/cache sync, z artifactami i approval przed write."
     )
 
 
@@ -3431,10 +3462,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.12 Connector Cache + GitHub fallback: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache ingest, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.13 GitHub Token Bridge + Connector Cache: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache ingest, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.12: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.13: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
