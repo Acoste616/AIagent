@@ -363,6 +363,156 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(recipe["recipe_version"], "L4.51")
         self.assertEqual(recipe["steps"][0]["command"], "/health")
 
+    def test_recipe_creator_approve_returns_activation_card(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                create_response = ai_council.recipe_response("create codziennie o 8 health digest")
+                action_id = re.search(r"id:\s*(act-[A-Za-z0-9_.-]+)", create_response).group(1)
+                approve = ai_council.approve_response(action_id)
+                markup = ai_council.response_reply_markup(approve)
+
+        self.assertIn("Recipe Activation L4.52", approve)
+        self.assertIn("activation: recipe health_digest", approve)
+        self.assertIsNotNone(markup)
+        buttons = [button["text"] for row in markup["inline_keyboard"] for button in row]
+        self.assertIn("Test", buttons)
+        self.assertIn("Enable", buttons)
+
+    def test_recipe_activation_enable_blocks_custom_recipe_limit(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.dict(
+                os.environ, {"AI_COUNCIL_RECIPE_ACTIVE_LIMIT": "5"}, clear=False
+            ):
+                for index in range(5):
+                    ai_council.save_recipe(
+                        {
+                            "name": f"custom_{index}",
+                            "created_by": "recipe_creator_v0",
+                            "enabled": True,
+                            "steps": [{"command": "/health", "prompt": ""}],
+                        }
+                    )
+                ai_council.save_recipe(
+                    {
+                        "name": "custom_six",
+                        "created_by": "recipe_creator_v0",
+                        "enabled": False,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                response = ai_council.set_recipe_enabled("custom_six", True)
+                recipe = ai_council.load_recipe("custom_six")
+
+        self.assertIn("active custom recipe limit", response)
+        self.assertFalse(recipe["enabled"])
+
+    def test_recipe_test_allows_disabled_recipe_without_enabling(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"):
+                ai_council.save_recipe(
+                    {
+                        "name": "health_digest",
+                        "created_by": "recipe_creator_v0",
+                        "enabled": False,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                run_result = ai_council.run_recipe_background("run health_digest", task_id="task-run")
+                test_result = ai_council.run_recipe_background("test health_digest", task_id="task-test")
+                recipe = ai_council.load_recipe("health_digest")
+
+        self.assertIn("disabled", run_result["decision"])
+        self.assertIn("test zakończony", test_result["decision"])
+        self.assertFalse(recipe["enabled"])
+
+    def test_recipe_activation_callback_enable_uses_policy(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"):
+                ai_council.save_recipe(
+                    {
+                        "name": "health_digest",
+                        "created_by": "recipe_creator_v0",
+                        "enabled": False,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                response, status = ai_council.handle_callback_query(
+                    {"data": "recipe-enable:health_digest", "message": {"chat": {"id": "1"}}}
+                )
+                recipe = ai_council.load_recipe("health_digest")
+
+        self.assertEqual(status, "recipe_enable")
+        self.assertIn("aktywna", response)
+        self.assertTrue(recipe["enabled"])
+
+    def test_recipe_activation_callback_uses_canonical_recipe_token(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"):
+                ai_council.save_recipe(
+                    {
+                        "name": "custom long name",
+                        "created_by": "recipe_creator_v0",
+                        "enabled": False,
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                )
+                summary = ai_council.recipe_activation_summary("custom long name")
+                markup = ai_council.response_reply_markup(summary)
+                callback_data = markup["inline_keyboard"][0][1]["callback_data"]
+                response, status = ai_council.handle_callback_query(
+                    {"data": callback_data, "message": {"chat": {"id": "1"}}}
+                )
+                recipe = ai_council.load_recipe("custom long name")
+
+        self.assertIn("activation: recipe custom_long_name", summary)
+        self.assertEqual(callback_data, "recipe-enable:custom_long_name")
+        self.assertEqual(status, "recipe_enable")
+        self.assertIn("aktywna", response)
+        self.assertTrue(recipe["enabled"])
+
+    def test_recipe_test_blocks_unsafe_disabled_recipe(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"):
+                ai_council.save_recipe(
+                    {
+                        "name": "unsafe_recipe",
+                        "created_by": "recipe_creator_v0",
+                        "enabled": False,
+                        "steps": [{"command": "/execute", "prompt": "act-1"}],
+                    }
+                )
+                result = ai_council.run_recipe_background("test unsafe_recipe", task_id="task-unsafe")
+
+        self.assertIn("zablokowana", result["decision"])
+        self.assertTrue(any("/execute" in fact for fact in result["facts"]))
+
     def test_recipe_creator_blocks_existing_recipe_name_before_action(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -433,6 +583,17 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("brief gmail", recipe["steps"][0]["prompt"])
         self.assertIsNone(blocked_recipe)
         self.assertTrue(any("external" in item for item in blocked))
+
+    def test_recipe_test_route_runs_in_background(self):
+        route = ai_council.route_message("/recipe test health_digest")
+        natural = ai_council.route_message("test recipe health_digest")
+
+        self.assertEqual(route["command"], "/recipe")
+        self.assertTrue(ai_council.route_needs_task(route))
+        self.assertTrue(ai_council.route_should_background(route))
+        self.assertEqual(natural["command"], "/recipe")
+        self.assertEqual(natural["prompt"], "test health_digest")
+        self.assertTrue(ai_council.route_should_background(natural))
 
     def test_recipe_due_window_matches_simple_cron(self):
         recipe = {"trigger": {"type": "schedule", "cron": "30 8 * * *"}}
@@ -6413,6 +6574,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Desktop", goal)
         self.assertIn("front_quality=L4.50", health)
         self.assertIn("recipe_creator=L4.51", health)
+        self.assertIn("recipe_activation=L4.52", health)
         self.assertIn("delegate_loop=L4.49:gated", health)
 
 
