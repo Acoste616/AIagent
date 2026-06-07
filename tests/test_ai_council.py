@@ -482,6 +482,8 @@ class RoutingTests(unittest.TestCase):
             "/control": ("/control", ["host"]),
             "/health": ("/health", ["host"]),
             "/cancel task-1": ("/cancel", ["host"]),
+            "/agent": ("/agent", ["host"]),
+            "/inbox": ("/agent", ["host"]),
             "/status task-1": ("/status", ["host"]),
             "/progress task-1": ("/progress", ["host"]),
             "/details task-1": ("/details", ["host"]),
@@ -548,6 +550,9 @@ class RoutingTests(unittest.TestCase):
             "health": "/health",
             "front status": "/front",
             "czemu bot nie odpowiada": "/front",
+            "co dalej": "/agent",
+            "agent inbox": "/agent",
+            "czym się zająć": "/agent",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
             "postęp task-1": "/progress",
@@ -1181,6 +1186,117 @@ class ErrorStoreTests(unittest.TestCase):
 
 
 class ProactiveEventBrainTests(unittest.TestCase):
+    def test_agent_inbox_prioritizes_safe_followup_and_run_starts_it(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] follow-up started"
+            ) as start:
+                action = ai_council.create_action(
+                    "Follow-up for task-test: plan improvement",
+                    action_type="followup_proposal",
+                    risk="R0",
+                    payload={
+                        "source_task_id": "task-test",
+                        "intent": "plan improvement",
+                        "recommended_command": "/improve",
+                        "recommended_prompt": "apply imp-1",
+                    },
+                )
+                inbox = ai_council.agent_response()
+                response = ai_council.agent_response(f"run {action['action_id']}", chat_id="553")
+                latest = ai_council.get_latest_action(action["action_id"])
+
+        self.assertIn("Agent Inbox L4.26", inbox)
+        self.assertIn(f"RUN: /agent run {action['action_id']}", inbox)
+        self.assertIn("follow-up started", response)
+        self.assertEqual(latest["status"], "executed")
+        start.assert_called_once()
+
+    def test_agent_run_open_improvement_starts_apply_background_task(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] improvement started"
+            ) as start:
+                improvement = ai_council.create_improvement(
+                    source="test_loop",
+                    title="Dodaj agent inbox",
+                    summary="Potrzebny jeden next action.",
+                    priority="P1",
+                )
+                inbox = ai_council.agent_response()
+                response = ai_council.agent_response(f"run {improvement['improvement_id']}", chat_id="553")
+                task = ai_council.latest_tasks(limit=1)[0]
+
+        self.assertIn("Dodaj agent inbox", inbox)
+        self.assertIn("improvement started", response)
+        self.assertEqual(task["command"], "/improve")
+        self.assertIn(improvement["improvement_id"], task["prompt"])
+        start.assert_called_once()
+
+    def test_agent_runtime_prompt_does_not_trigger_run_parser(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "start_background_job", return_value="should not start") as start:
+                response = ai_council.agent_response("runtime status", chat_id="553")
+
+        self.assertIn("Agent Inbox L4.26", response)
+        self.assertEqual(start.call_count, 0)
+
+    def test_proactive_scan_creates_improvement_nudge(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ):
+                improvement = ai_council.create_improvement(
+                    source="feature_evolution_loop",
+                    title="Następna funkcja",
+                    summary="Zaplanuj kolejny sprint.",
+                    priority="P2",
+                )
+                created = ai_council.run_proactive_scan(send=False)
+                rows = ai_council.read_jsonl(root / "state" / "nudges.jsonl")
+
+        self.assertEqual(created, 1)
+        self.assertEqual(rows[0]["kind"], "improvement")
+        self.assertIn(improvement["improvement_id"], rows[0]["next_action"])
+
     def test_proactive_scan_creates_deduped_error_nudge(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -1202,6 +1318,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
                 ai_council, "NUDGES_FILE", nudges_file
             ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
                 ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"):
                 first = ai_council.run_proactive_scan(send=False)
                 second = ai_council.run_proactive_scan(send=False)
@@ -1236,6 +1353,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
                 ai_council, "NUDGES_FILE", nudges_file
             ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
                 ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"):
                 created = ai_council.run_proactive_scan(send=False)
                 rows = ai_council.read_jsonl(nudges_file)
@@ -2302,6 +2420,7 @@ class L2LedgerTests(unittest.TestCase):
                 ai_council, "ERRORS_DIR", root / "errors"
             ), patch.object(
                 ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
                 ai_council, "LOG_DIR", root / "logs"
             ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.dict(
