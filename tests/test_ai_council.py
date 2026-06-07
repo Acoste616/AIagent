@@ -484,12 +484,17 @@ class RoutingTests(unittest.TestCase):
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
         self.assertEqual(route["command"], "/poke-gap")
-        self.assertIn("Poke Gap L4.37", response)
+        self.assertIn("Poke Gap L4.39", response)
         self.assertIn("DECYZJA: masz rację", response)
+        self.assertIn("CO JEST NIE TAK", response)
+        self.assertIn("CO ROBIĘ TERAZ", response)
+        self.assertIn("CZEGO BRAKUJE DO POKE", response)
+        self.assertIn("NEXT:", response)
         self.assertIn("TWOJA WIADOMOŚĆ:", response)
         self.assertIn("improvement=imp-", response)
         self.assertNotIn("Gotowe:", response)
-        self.assertLess(len(response), 1800)
+        self.assertNotIn("/goal", response)
+        self.assertLess(len(response), 1300)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["source"], "poke_gap")
 
@@ -500,6 +505,31 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("Jestem", response)
         self.assertIn("Bezpieczne", response)
         self.assertNotIn("Najlepszy następny krok", response)
+
+    def test_poke_chat_fallback_gap_is_pure_and_precise(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"):
+                ai_council.append_jsonl(
+                    ai_council.TASKS_FILE,
+                    {"task_id": "task-1", "status": "running_background", "created_at": ai_council.utc_now()},
+                )
+                ai_council.append_jsonl(
+                    ai_council.ERRORS_FILE,
+                    {"error_id": "err-1", "created_at": ai_council.utc_now(), "message": "x"},
+                )
+                gap = ai_council.poke_chat_fallback("nie odpowiada jak Poke")
+                neutral = ai_council.poke_chat_fallback("pokemon jest spoko")
+                rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
+
+        self.assertIn("Poke Gap L4.39", gap)
+        self.assertIn("improvement=not_logged_chat_fallback", gap)
+        self.assertIn("running_tasks=1", gap)
+        self.assertIn("errors_24h=1", gap)
+        self.assertNotIn("Poke Gap", neutral)
+        self.assertEqual(rows, [])
 
     def test_respond_dry_prints_response_and_audits(self):
         with temp_dir() as tmp:
