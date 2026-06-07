@@ -484,6 +484,7 @@ class RoutingTests(unittest.TestCase):
             "/cancel task-1": ("/cancel", ["host"]),
             "/agent": ("/agent", ["host"]),
             "/inbox": ("/agent", ["host"]),
+            "/shortcuts": ("/shortcuts", ["host"]),
             "/status task-1": ("/status", ["host"]),
             "/progress task-1": ("/progress", ["host"]),
             "/details task-1": ("/details", ["host"]),
@@ -553,6 +554,8 @@ class RoutingTests(unittest.TestCase):
             "co dalej": "/agent",
             "agent inbox": "/agent",
             "czym się zająć": "/agent",
+            "iphone shortcuts": "/shortcuts",
+            "pokaż skróty": "/shortcuts",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
             "postęp task-1": "/progress",
@@ -1219,7 +1222,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
                 response = ai_council.agent_response(f"run {action['action_id']}", chat_id="553")
                 latest = ai_council.get_latest_action(action["action_id"])
 
-        self.assertIn("Agent Inbox L4.26", inbox)
+        self.assertIn("Agent Inbox L4.27", inbox)
         self.assertIn(f"RUN: /agent run {action['action_id']}", inbox)
         self.assertIn("follow-up started", response)
         self.assertEqual(latest["status"], "executed")
@@ -1271,7 +1274,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
             ), patch.object(ai_council, "start_background_job", return_value="should not start") as start:
                 response = ai_council.agent_response("runtime status", chat_id="553")
 
-        self.assertIn("Agent Inbox L4.26", response)
+        self.assertIn("Agent Inbox L4.27", response)
         self.assertEqual(start.call_count, 0)
 
     def test_proactive_scan_creates_improvement_nudge(self):
@@ -2989,6 +2992,154 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertEqual(result["command"], "/flow")
         self.assertEqual(task["source"], "iphone_shortcut")
         start.assert_called_once()
+
+    def test_shortcut_url_payload_defaults_to_research_recipe(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] url research started"
+            ) as start:
+                result = ai_council.process_shortcut_payload(
+                    {"url": "https://example.com/poke", "title": "Poke thread", "mode": "url", "send_telegram": False},
+                    remote_addr="127.0.0.1",
+                )
+                task = ai_council.get_latest_task(result["task_id"])
+                route = start.call_args.args[0]
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "running_background")
+        self.assertEqual(result["command"], "/recipe")
+        self.assertEqual(task["source"], "iphone_shortcut")
+        self.assertIn("run research_brief", task["prompt"])
+        self.assertIn("https://example.com/poke", task["prompt"])
+        self.assertEqual(route["command"], "/recipe")
+
+    def test_shortcut_action_agent_returns_inbox(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ):
+                result = ai_council.process_shortcut_payload({"action": "agent", "send_telegram": False}, remote_addr="127.0.0.1")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["command"], "/agent")
+        self.assertIn("Agent Inbox L4.27", result["response"])
+
+    def test_shortcut_mutating_action_is_blocked(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                result = ai_council.process_shortcut_payload(
+                    {"action": "cancel", "task_id": "task-1", "send_telegram": False},
+                    remote_addr="127.0.0.1",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["command"], "/cancel")
+        self.assertEqual(result["task_id"], "")
+        self.assertIn("wymaga świadomego approval", result["response"])
+
+    def test_shortcut_mode_does_not_hijack_text(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                results = [
+                    ai_council.process_shortcut_payload(
+                        {"mode": mode, "text": "krótkie pytanie " + mode, "send_telegram": False},
+                        remote_addr="127.0.0.1",
+                    )
+                    for mode in ("goal", "agent")
+                ]
+
+        for result in results:
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["command"], "/chat")
+            self.assertNotIn("Goal: Bartek Agent OS", result["response"])
+            self.assertNotIn("Agent Inbox L4.27", result["response"])
+
+    def test_shortcut_chat_payload_persists_text_for_agent_inbox(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
+            ), patch.object(ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                result = ai_council.process_shortcut_payload({"text": "krótkie pytanie", "send_telegram": False}, remote_addr="127.0.0.1")
+                task = ai_council.get_latest_task(result["task_id"])
+                inbox = ai_council.agent_response()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "responded")
+        self.assertEqual(task["source"], "iphone_shortcut_text")
+        self.assertEqual(task["status"], "completed")
+        self.assertIn("iphone_inputs=1", inbox)
+        self.assertIn(result["task_id"], inbox)
+
+    def test_shortcut_chat_payload_idempotency_blocks_duplicate(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                payload = {"text": "krótkie pytanie", "idempotency_key": "shortcut-once", "send_telegram": False}
+                first = ai_council.process_shortcut_payload(payload, remote_addr="127.0.0.1")
+                second = ai_council.process_shortcut_payload(payload, remote_addr="127.0.0.1")
+                tasks = ai_council.latest_tasks(limit=10)
+
+        self.assertEqual(first["status"], "responded")
+        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(second["task_id"], first["task_id"])
+        self.assertEqual(len({task["task_id"] for task in tasks}), 1)
+
+    def test_shortcut_auto_idempotency_is_scoped_by_route(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "start_background_job", return_value="[AI Council] task started"):
+                task_result = ai_council.process_shortcut_payload(
+                    {"command": "@research", "text": "krótkie pytanie", "send_telegram": False},
+                    remote_addr="127.0.0.1",
+                )
+                chat_result = ai_council.process_shortcut_payload(
+                    {"text": "krótkie pytanie", "send_telegram": False},
+                    remote_addr="127.0.0.1",
+                )
+
+        self.assertEqual(task_result["status"], "running_background")
+        self.assertEqual(chat_result["status"], "responded")
+        self.assertNotEqual(task_result["task_id"], chat_result["task_id"])
 
     def test_shortcut_media_payload_saves_capture_and_routes_intent(self):
         media_text = "uruchom flow zrób plan z tego pliku"

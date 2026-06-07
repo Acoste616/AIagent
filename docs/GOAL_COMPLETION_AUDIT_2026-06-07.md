@@ -30,7 +30,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.26: Mac `167/167 OK` + py_compile; Windows Desktop `167 passed, 101 subtests passed` + py_compile | Proven |
+| Test verification | L4.27: Mac `174/174 OK` + py_compile; Windows Desktop `174 passed, 104 subtests passed` + py_compile | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
 | GitHub push to `Acoste616/AIagent` | Push works; observed outputs: `4a2babb..1119988 main -> main`, then L4.24 `1119988..e844896 main -> main` | Proven |
@@ -51,10 +51,10 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.27 iPhone Primary Capture: Shortcut/voice/screenshot/share-sheet as a first-class inbox connected to `/agent`.
-2. Deeper source-backed integrations and write-capable connectors after approval.
-3. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
-4. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+1. L4.28 Integration Action Drafts: Gmail/Calendar/Drive/GitHub write drafts after Risk Officer and approval, without automatic external write.
+2. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
+3. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+4. Deeper source-backed integrations and proactive topic ownership.
 5. Broader execution verifier coverage beyond workspace write/append/patch and optional token-level streaming if it proves useful.
 
 Completed layers in the current implementation state:
@@ -72,6 +72,7 @@ Completed layers in the current implementation state:
 - L4.24 Poke Front Reliability: `/front` reports Telegram/audit/model front state, short chat is local-first, and Grok chat is gated so diagnostics do not burn research budget.
 - L4.25 Rich Progress Streaming: long background tasks write durable progress events, expose `/progress <task_id>`, include progress timeline in `/status`, send heartbeat for long work, and avoid extra Telegram spam on short jobs.
 - L4.26 Agent Inbox: `/agent` aggregates tasks, approvals, follow-ups, improvements, errors, and nudges into one prioritized next action; `/agent run` starts only safe local next steps and keeps R3/R4 behind explicit approval.
+- L4.27 iPhone Primary Capture: `/shortcuts` exposes private iPhone ingress status, Share Sheet URLs route to `research_brief`, read-only Shortcut control actions open `/agent/status/progress/details/facts/next`, mutating `approve/deny/cancel` is blocked back to Telegram approval, and recent Shortcut inputs appear in `/agent`.
 
 ## External Follow-up
 

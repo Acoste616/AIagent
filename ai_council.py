@@ -160,6 +160,7 @@ READONLY_RECIPE_COMMANDS = {
     "/status",
     "/progress",
     "/agent",
+    "/shortcuts",
     "/cost",
     "/control",
     "/queue",
@@ -806,7 +807,8 @@ def create_task(
     clean_prompt = prompt.strip()
     if not clean_prompt:
         clean_prompt = "Brak opisu zadania"
-    task_id = f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(clean_prompt)[:6]}"
+    task_seed = f"{clean_prompt}:{source}:{command}:{request_id}:{idempotency_key}:{time.time_ns()}"
+    task_id = f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(task_seed)[:6]}"
     task = {
         "task_id": task_id,
         "created_at": utc_now(),
@@ -3011,6 +3013,111 @@ def shortcut_chat_id(payload: dict, send_telegram: bool) -> str:
     return allowed
 
 
+def shortcut_target_id(payload: dict) -> str:
+    for key in ("task_id", "action_id", "id", "target_id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def shortcut_mutation_blocked_response(action: str, target: str) -> str:
+    target_text = f" {target}" if target else ""
+    return (
+        "[Council] iPhone Shortcut action blocked.\n"
+        f"DECYZJA: `{action}{target_text}` wymaga świadomego approval w Telegramie.\n"
+        "FAKTY:\n"
+        "1. Shortcut token daje dostęp do capture/read/status, nie do approve/deny/cancel.\n"
+        "2. R3/R4 i mutacje lokalne zostają za approval path.\n"
+        f"NEXT: wyślij w Telegramie `/{action}{target_text}` albo sprawdź /agent."
+    )
+
+
+def shortcut_action_route(payload: dict) -> dict | None:
+    raw = str(payload.get("action") or payload.get("shortcut_action") or "").strip()
+    prompt_text = shortcut_text_from_payload(payload)
+    if not raw:
+        mode = str(payload.get("mode") or "").strip().lower()
+        if not prompt_text and mode in {"agent", "inbox", "shortcuts", "shortcut", "iphone"}:
+            raw = mode
+    if not raw:
+        return None
+    lower = raw.lower()
+    target = shortcut_target_id(payload)
+    if lower in {"cancel", "approve", "deny"}:
+        return {
+            "command": f"/{lower}",
+            "operators": ["host"],
+            "prompt": target,
+            "mode": "shortcut_blocked_mutation",
+            "blocked_action": lower,
+            "target_id": target,
+        }
+    if lower in {"agent", "inbox"}:
+        return {"command": "/agent", "operators": ["host"], "prompt": prompt_text, "mode": "agent"}
+    if lower in {"shortcuts", "shortcut", "iphone"}:
+        return {"command": "/shortcuts", "operators": ["host"], "prompt": "", "mode": "shortcuts"}
+    if lower in {"health", "selftest", "goal"}:
+        return route_text(f"/{lower}")
+    if lower in {"status", "progress", "details", "facts", "next"}:
+        return route_text(f"/{lower} {target}".strip())
+    if raw.startswith(("/", "@")):
+        return route_text(f"{raw} {prompt_text}".strip())
+    return None
+
+
+def shortcut_should_research_url(payload: dict) -> bool:
+    url = str(payload.get("url") or payload.get("share_url") or "").strip()
+    if not url:
+        return False
+    mode = str(payload.get("mode") or payload.get("kind") or payload.get("shortcut_type") or "").strip().lower()
+    if mode in {"ask", "chat", "note"}:
+        return False
+    if mode in {"url", "share", "research", "brief", "link"}:
+        return True
+    return payload_bool(payload, "research", bool_cfg("AI_COUNCIL_SHORTCUT_URL_RESEARCH_DEFAULT", True))
+
+
+def shortcut_route_for_text(payload: dict, text: str) -> dict:
+    command = str(payload.get("command") or payload.get("route") or "").strip()
+    if command.startswith(("/", "@")):
+        return route_text(f"{command} {text}".strip())
+    if shortcut_should_research_url(payload):
+        return route_text(f"/recipe run research_brief {text}".strip())
+    return route_text(text)
+
+
+def persist_shortcut_text_artifact(text: str, route: dict, response: str, remote_addr: str, chat_id: str, idem_key: str) -> str:
+    task = create_task(
+        text,
+        source="iphone_shortcut_text",
+        status="completed",
+        command=str(route.get("command") or ""),
+        operators=route.get("operators", []),
+        request_id=short_hash(f"{remote_addr}:{idem_key}:responded"),
+        idempotency_key=idem_key,
+        chat_id_hash=short_hash(chat_id),
+    )
+    result = {
+        "decision": "iPhone Shortcut text handled and stored as Agent Inbox context.",
+        "facts": extract_fact_lines(response, limit=3) or [compact_line(text, 180)],
+        "dispute": "Text shortcut is read-only unless routed through approval-protected commands.",
+        "next_actions": ["/agent", f"/details {task['task_id']}"],
+        "ask_user": "Użyj /agent, żeby wybrać następny krok.",
+        "raw_output": response,
+        "report": f"# iPhone Shortcut text {task['task_id']}\n\nInput:\n{text}\n\nRoute: {route.get('command')}\n\nResponse:\n{response}",
+    }
+    artifact = save_task_artifacts(task["task_id"], route, result)
+    update_task_status(
+        task["task_id"],
+        "completed",
+        "iphone shortcut text persisted",
+        report_path=artifact.get("report_path"),
+        summary_path=artifact.get("summary_path"),
+    )
+    return task["task_id"]
+
+
 def capture_shortcut_media_payload(payload: dict, remote_addr: str = "") -> dict:
     send_telegram = shortcut_send_to_telegram(payload)
     chat_id = shortcut_chat_id(payload, send_telegram)
@@ -3119,16 +3226,50 @@ def capture_shortcut_media_payload(payload: dict, remote_addr: str = "") -> dict
 
 def process_shortcut_payload(payload: dict, remote_addr: str = "") -> dict:
     ensure_council_dirs()
+    send_telegram = shortcut_send_to_telegram(payload)
+    chat_id = shortcut_chat_id(payload, send_telegram)
+    action_route = shortcut_action_route(payload)
+    if action_route:
+        if action_route.get("mode") == "shortcut_blocked_mutation":
+            response = shortcut_mutation_blocked_response(
+                str(action_route.get("blocked_action") or "").strip("/"),
+                str(action_route.get("target_id") or ""),
+            )
+            status = "blocked"
+        else:
+            response = build_response(action_route, chat_id=chat_id)
+            status = "responded"
+        if send_telegram and chat_id:
+            telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
+        audit(
+            {
+                "command": action_route.get("command"),
+                "operators": action_route.get("operators", []),
+                "status": status,
+                "source": "iphone_shortcut_action",
+                "remote_addr_hash": short_hash(remote_addr),
+                "output_preview": str(response)[:300],
+            }
+        )
+        return {
+            "ok": True,
+            "status": status,
+            "task_id": shortcut_target_id(payload)
+            if action_route.get("mode") != "shortcut_blocked_mutation" and str(action_route.get("command")) in {"/status", "/progress", "/details", "/facts", "/next"}
+            else "",
+            "command": action_route.get("command"),
+            "operators": action_route.get("operators", []),
+            "response": response,
+        }
     if any(payload.get(key) for key in ("media_base64", "file_base64", "attachment_base64")):
         return capture_shortcut_media_payload(payload, remote_addr=remote_addr)
     text = shortcut_text_from_payload(payload)
     if not text:
         return {"ok": False, "status": "failed", "error": "missing_text_or_media"}
-    send_telegram = shortcut_send_to_telegram(payload)
-    chat_id = shortcut_chat_id(payload, send_telegram)
-    route = route_text(text)
-    idem_key = str(payload.get("idempotency_key") or f"shortcut-text:{short_hash(text)}")
-    duplicate = find_recent_duplicate(idem_key) if route_needs_task(route) else None
+    route = shortcut_route_for_text(payload, text)
+    route_key = short_hash(str(route.get("command") or route.get("mode") or "text"))
+    idem_key = str(payload.get("idempotency_key") or f"shortcut-text:{route_key}:{short_hash(text)}")
+    duplicate = find_recent_duplicate(idem_key)
     task = None
     background_started = False
     if duplicate:
@@ -3136,8 +3277,9 @@ def process_shortcut_payload(payload: dict, remote_addr: str = "") -> dict:
         status = "duplicate"
         task_id = str(duplicate.get("task_id") or "")
     elif route_needs_task(route):
+        task_prompt = str(route.get("prompt") or text)
         task = create_task(
-            text,
+            task_prompt,
             source="iphone_shortcut",
             status="running",
             command=str(route.get("command") or ""),
@@ -3159,7 +3301,7 @@ def process_shortcut_payload(payload: dict, remote_addr: str = "") -> dict:
     else:
         response = build_response(route, chat_id=chat_id)
         status = "responded"
-        task_id = ""
+        task_id = persist_shortcut_text_artifact(text, route, response, remote_addr, chat_id, idem_key)
     if send_telegram and chat_id:
         telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
     audit(
@@ -4804,6 +4946,55 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
     return result
 
 
+def shortcut_recent_tasks(limit: int = 5) -> list[dict]:
+    window = int_cfg("AI_COUNCIL_SHORTCUT_INBOX_WINDOW_SECONDS", 86400)
+    rows: list[dict] = []
+    now = datetime.now(timezone.utc)
+    for task in latest_tasks(limit=120):
+        if not str(task.get("source") or "").startswith("iphone_shortcut"):
+            continue
+        created = parse_utc(str(task.get("created_at") or ""))
+        if created and (now - created).total_seconds() > window:
+            continue
+        rows.append(task)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def shortcuts_response(prompt: str = "") -> str:
+    ensure_council_dirs()
+    token_ready = bool(cfg("AI_COUNCIL_SHORTCUT_TOKEN"))
+    host = cfg("AI_COUNCIL_SHORTCUT_HOST", "127.0.0.1")
+    port = int_cfg("AI_COUNCIL_SHORTCUT_PORT", 8788)
+    send_default = bool_cfg("AI_COUNCIL_SHORTCUT_SEND_TELEGRAM", True)
+    recent = shortcut_recent_tasks(limit=5)
+    lines = [
+        "[Council] iPhone Shortcuts L4.27",
+        f"token: {'configured' if token_ready else 'missing'}",
+        f"endpoint: http://{host}:{port}/shortcut",
+        f"send_telegram_default: {send_default}",
+        "payloads:",
+        "- Ask Council: {\"text\":\"...\"}",
+        "- Share URL research: {\"url\":\"https://...\", \"title\":\"...\", \"mode\":\"url\"}",
+        "- Voice/screenshot/file: {\"media_base64\":\"...\", \"filename\":\"...\", \"mime_type\":\"...\", \"caption\":\"...\"}",
+        "- Control read-only: {\"action\":\"agent\"} albo {\"action\":\"status\", \"task_id\":\"task-...\"}",
+        "headers: X-AI-Council-Token albo Authorization: Bearer <token>",
+        "safety: capture/read/research/status only; approve/deny/cancel są blokowane w Shortcuts i wymagają Telegram approval.",
+    ]
+    if recent:
+        lines.append("recent:")
+        for task in recent:
+            lines.append(f"- {task.get('task_id')} | {task.get('status')} | {task.get('command')} | {compact_line(str(task.get('prompt') or ''), 90)}")
+    else:
+        lines.append("recent: brak iPhone Shortcut tasków.")
+    if not token_ready:
+        lines.append("NEXT: ustaw AI_COUNCIL_SHORTCUT_TOKEN i uruchom serve-shortcuts przez zatwierdzony launcher.")
+    else:
+        lines.append("NEXT: wyślij z iPhone Shortcut POST /shortcut albo wpisz /agent po capture.")
+    return "\n".join(lines)
+
+
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
@@ -4812,8 +5003,8 @@ def capabilities_response() -> str:
         "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "L4.26: /agent agreguje taski, approvals, follow-upy, improvements, błędy i nudges w jeden priorytetowy next action; /agent run uruchamia tylko bezpieczne lokalne kroki.\n"
-        "To nadal nie jest pełny Poke: brakuje iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge, głębszych write-capable integrations i bardziej proaktywnego prowadzenia tematów.\n"
+        "L4.27: iPhone Shortcuts jest pierwszorzędnym capture inboxem: Ask Council, Share URL -> research brief, media/voice/screenshot -> task, control actions -> /agent/status/approve/cancel.\n"
+        "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, głębszych write-capable integrations i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4827,10 +5018,10 @@ def goal_response() -> str:
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.27 iPhone Primary Capture - Shortcut/voice/screenshot/share-sheet jako pierwszorzędny inbox, spięty z /agent."
+        "Najbliższy cel wdrożeniowy: L4.28 Integration Action Drafts - Gmail/Calendar/Drive/GitHub write drafts po Risk Officer i approval, bez automatycznego external write."
     )
 
 
@@ -4843,10 +5034,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.26 Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.27 iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /shortcuts status, Share URL -> research brief, shortcut action/status/approve/cancel, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.26: /agent, /agent run [id], /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.27: /agent, /agent run [id], /shortcuts, /front, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4874,7 +5065,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: L4.26 agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: L4.27 shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -4906,7 +5097,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.26 Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.27 iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -6160,6 +6351,7 @@ def agent_inbox_snapshot() -> dict:
     improvements = open_improvements(limit=10)
     nudges = [row for row in latest_nudges(limit=20) if row.get("status", "open") in {"open", "sent"}]
     errors = error_rows(days=1)
+    shortcut_tasks = shortcut_recent_tasks(limit=5)
     return {
         "running": running,
         "stuck": stuck,
@@ -6168,6 +6360,7 @@ def agent_inbox_snapshot() -> dict:
         "improvements": improvements,
         "nudges": nudges,
         "errors": errors,
+        "shortcut_tasks": shortcut_tasks,
     }
 
 
@@ -6250,6 +6443,21 @@ def agent_inbox_items(snapshot: dict | None = None, limit: int = 12) -> list[dic
                 "next_action": next_action or "/nudges",
                 "run_kind": "",
                 "reason": "existing proactive signal",
+            }
+        )
+    for task in snap.get("shortcut_tasks", [])[:3]:
+        task_id = str(task.get("task_id") or "")
+        if not task_id:
+            continue
+        items.append(
+            {
+                "priority": 52,
+                "kind": "iphone_capture",
+                "id": task_id,
+                "title": compact_line(str(task.get("prompt") or "iPhone Shortcut capture"), 140),
+                "next_action": f"/details {task_id}",
+                "run_kind": "",
+                "reason": "recent iPhone Shortcut input",
             }
         )
     if not items:
@@ -6345,12 +6553,12 @@ def agent_response(prompt: str = "", chat_id: str = "") -> str:
     top = items[0] if items else {}
     pending_runnable = sum(1 for item in items if item.get("run_kind"))
     lines = [
-        "[Council] Agent Inbox L4.26",
+        "[Council] Agent Inbox L4.27",
         f"DECYZJA: {compact_line(str(top.get('title') or 'Brak pilnych spraw.'), 180)}",
         "FAKTY:",
         f"1. running={len(snapshot['running'])} stuck={len(snapshot['stuck'])} errors_24h={len(snapshot['errors'])}",
         f"2. pending_actions={len(snapshot['pending_actions'])} followups={len(snapshot['followups'])} improvements={len(snapshot['improvements'])}",
-        f"3. nudges={len(snapshot['nudges'])} safe_auto_candidates={pending_runnable}",
+        f"3. nudges={len(snapshot['nudges'])} iphone_inputs={len(snapshot.get('shortcut_tasks', []))} safe_auto_candidates={pending_runnable}",
         "PRIORYTET:",
     ]
     for index, item in enumerate(items[:5], start=1):
@@ -7904,6 +8112,7 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/council",
     "/task",
     "/agent",
+    "/shortcuts",
     "/status",
     "/progress",
     "/details",
@@ -8001,7 +8210,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /agent, /status, /progress, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector, /project-memory.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /agent, /shortcuts, /status, /progress, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector, /project-memory.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -8167,6 +8376,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż agent", "pokaz agent", "pokaż inbox", "pokaz inbox", "agent status", "agent next", "operator status")
     ):
         return {"command": "/agent", "operators": ["host"], "prompt": "", "mode": "agent", "intent": "natural"}
+
+    if lower in {"shortcuts", "iphone shortcuts", "ios shortcuts", "skrót iphone", "skrot iphone", "skróty iphone", "skroty iphone", "iphone inbox"} or lower.startswith(
+        ("pokaż shortcuts", "pokaz shortcuts", "pokaż skróty", "pokaz skroty", "pokaż iphone", "pokaz iphone", "sprawdź shortcuts", "sprawdz shortcuts")
+    ):
+        return {"command": "/shortcuts", "operators": ["host"], "prompt": "", "mode": "shortcuts", "intent": "natural"}
 
     if lower in {"źródła", "zrodla", "sources", "integracje", "integrations"} or lower.startswith(
         ("pokaż źródła", "pokaz zrodla", "pokaż sources", "pokaz sources", "pokaż integracje", "pokaz integracje")
@@ -8648,6 +8862,9 @@ def route_text(text: str) -> dict:
         return {"command": "/agent", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "agent"}
     if lower.startswith("/inbox"):
         return {"command": "/agent", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "agent"}
+    if lower == "/shortcuts" or lower.startswith("/shortcuts ") or lower == "/shortcut" or lower.startswith("/shortcut "):
+        prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
+        return {"command": "/shortcuts", "operators": ["host"], "prompt": prompt, "mode": "shortcuts"}
     if lower.startswith("/start-task"):
         return {"command": "/start-task", "operators": ["host"], "prompt": stripped[11:].strip(), "mode": "start_task"}
     if lower.startswith("/cost"):
@@ -9356,6 +9573,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/agent":
         return agent_response(prompt, chat_id=chat_id)
+    if command == "/shortcuts":
+        return shortcuts_response(prompt)
     if command == "/plan-action":
         return action_planner_response(prompt, chat_id=chat_id)
     if command == "/start-task":
