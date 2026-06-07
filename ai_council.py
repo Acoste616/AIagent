@@ -2646,6 +2646,20 @@ def capabilities_response() -> str:
     )
 
 
+def goal_response() -> str:
+    ensure_council_dirs()
+    recent_errors = error_rows(days=1)
+    improvements_open = open_improvements(limit=50)
+    return (
+        "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
+        "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock.\n"
+        "Brakuje do Poke-level: proaktywne watchers/nudges, źródłowe integracje Gmail/Calendar/Drive/GitHub, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}.\n"
+        "Następny sprint: L4.8 Proactive Event Brain: watchers -> nudge -> council -> approval -> wykonanie."
+    )
+
+
 def system_status_response() -> str:
     stuck = stuck_tasks(limit=3)
     usage = operator_usage_summary()
@@ -4532,6 +4546,7 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/cost",
     "/errors",
     "/improvements",
+    "/goal",
 }
 
 
@@ -4659,6 +4674,22 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities")
     ):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities", "intent": "natural"}
+
+    if lower in {"goal", "cel", "jaki jest cel", "gdzie cel", "gdzie jest cel", "poke parity"} or any(
+        marker in lower
+        for marker in (
+            "gdzie ten cel",
+            "jaki jest goal",
+            "nasz goal",
+            "nie odpowiada jak poke",
+            "nie jest jak poke",
+            "brakuje do poke",
+            "poke-level",
+            "poke like",
+            "poke-like",
+        )
+    ):
+        return {"command": "/goal", "operators": ["host"], "prompt": stripped, "mode": "goal", "intent": "natural"}
 
     if lower in {"koszty", "cost", "costs", "usage", "zużycie", "zuzycie"} or lower.startswith(
         ("pokaż koszty", "pokaz koszty", "pokaż usage", "pokaz usage")
@@ -5019,6 +5050,8 @@ def route_text(text: str) -> dict:
         return {"command": "/artifacts", "operators": ["host"], "prompt": "", "mode": "artifacts"}
     if lower.startswith("/capabilities"):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities"}
+    if lower.startswith("/goal"):
+        return {"command": "/goal", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "goal"}
     if lower.startswith("/chat"):
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/cost"):
@@ -5514,6 +5547,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return "[Council] Workspace: D:\\ai-council. L2.5: workspaces, artifacts, reports, state\\tasks.jsonl, state\\actions.jsonl, state\\background_jobs.jsonl, state\\artifact_index.jsonl, state\\costs.jsonl, state\\memory.sqlite. Codex: read-only. Claude quick: bez tools. Claude Flow: Opus 4.8 plan workflow. Grok: API research."
     if command == "/capabilities":
         return capabilities_response()
+    if command == "/goal":
+        return goal_response()
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/cost":

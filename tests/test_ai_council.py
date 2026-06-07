@@ -365,6 +365,12 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(route["command"], "/capabilities")
         self.assertEqual(route["operators"], ["host"])
 
+    def test_goal_command_routes_to_host(self):
+        route = ai_council.route_text("/goal")
+
+        self.assertEqual(route["command"], "/goal")
+        self.assertEqual(route["operators"], ["host"])
+
     def test_l2_commands_route_to_host_or_council(self):
         cases = {
             "/cost": ("/cost", ["host"]),
@@ -391,6 +397,7 @@ class RoutingTests(unittest.TestCase):
             "/errors": ("/errors", ["host"]),
             "/improvements": ("/improvements", ["host"]),
             "/improve next": ("/improve", ["host"]),
+            "/goal": ("/goal", ["host"]),
             "/flow zrób pełny plan": ("/flow", ["claude-flow"]),
             "@claude-flow zrób pełny plan": ("@claude-flow", ["claude-flow"]),
             "/council zrób plan": ("/council", ["codex", "claude", "grok"]),
@@ -426,6 +433,7 @@ class RoutingTests(unittest.TestCase):
             "zrób plan rozwoju systemu": "/flow",
             "zrób research o Poke": "@research",
             "co możesz?": "/capabilities",
+            "gdzie ten cel i czemu nie odpowiada jak Poke": "/goal",
         }
 
         for text, command in cases.items():
@@ -1501,6 +1509,26 @@ class L25BackgroundTests(unittest.TestCase):
 
         self.assertIn("[Council] Health", response)
         self.assertIn("codex: OK", response)
+
+    def test_goal_response_exposes_poke_parity_gap(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                response = ai_council.build_response({"command": "/goal", "operators": ["host"], "prompt": ""})
+
+        self.assertIn("Goal: Bartek Agent OS", response)
+        self.assertIn("NIE jest ukończony", response)
+        self.assertIn("Brakuje do Poke-level", response)
 
     def test_selftest_response_is_available_without_model_calls(self):
         with temp_dir() as tmp:
