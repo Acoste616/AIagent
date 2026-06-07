@@ -501,6 +501,56 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertIn("done", done)
         self.assertEqual(latest["status"], "done")
 
+    def test_improve_apply_routes_to_background_task(self):
+        route = ai_council.route_text("/improve apply imp-1")
+        show_route = ai_council.route_text("/improve show imp-1")
+
+        self.assertEqual(route["command"], "/improve")
+        self.assertTrue(ai_council.route_needs_task(route))
+        self.assertTrue(ai_council.route_should_background(route))
+        self.assertFalse(ai_council.route_needs_task(show_route))
+        self.assertFalse(ai_council.route_should_background(show_route))
+
+    def test_improve_apply_background_marks_item_planned(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council,
+                "build_structured_council_result",
+                return_value={
+                    "decision": "plan ready",
+                    "facts": ["scope wybrany"],
+                    "dispute": "",
+                    "next_actions": ["wdrożyć test"],
+                    "ask_user": "zatwierdź",
+                    "raw_output": "plan",
+                    "report": "plan",
+                },
+            ) as council:
+                improvement = ai_council.create_improvement(
+                    source="test_loop",
+                    title="Front Brain",
+                    summary="Zbudować LLM router intencji.",
+                    task_id="task-source",
+                )
+                result = ai_council.run_improve_background(f"apply {improvement['improvement_id']}", task_id="task-plan")
+                planned = ai_council.get_latest_improvement(improvement["improvement_id"])
+
+        council.assert_called_once()
+        self.assertEqual(planned["status"], "planned")
+        self.assertEqual(planned["plan_task_id"], "task-plan")
+        self.assertIn("/details task-plan", " ".join(result["next_actions"]))
+        self.assertIn("/improve done", " ".join(result["next_actions"]))
+        self.assertIn("Improvement apply", result["report"])
+
     def test_recipe_with_capture_improvement_writes_backlog_item(self):
         recipe = {
             "loop": {

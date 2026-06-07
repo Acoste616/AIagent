@@ -464,6 +464,85 @@ def update_improvement_status(improvement_id: str, status: str) -> dict | None:
     return updated
 
 
+def update_improvement_fields(improvement_id: str, **fields) -> dict | None:
+    current = get_latest_improvement(improvement_id)
+    if not current:
+        return None
+    updated = {**current, **fields, "updated_at": utc_now()}
+    append_jsonl(IMPROVEMENTS_FILE, updated)
+    return updated
+
+
+def build_improvement_apply_prompt(item: dict) -> str:
+    return (
+        "AI Council improvement apply flow.\n"
+        "Cel: zamienić backlog item na konkretny, bezpieczny sprint implementacyjny dla Codex.\n"
+        "Nie wykonuj jeszcze zmian plików. Nie rób external write, publikacji, kontaktu, auth/billing/DNS ani kasowania.\n"
+        "Wynik ma wskazać: decyzję, scope, dokładne pliki/funkcje, minimalny patch, testy, acceptance criteria, ryzyka i rollback.\n\n"
+        f"Improvement ID: {item.get('improvement_id')}\n"
+        f"Priority: {item.get('priority')}\n"
+        f"Source: {item.get('source')}\n"
+        f"Recipe: {item.get('recipe')}\n"
+        f"Source task: {item.get('source_task_id')}\n"
+        f"Title: {item.get('title')}\n\n"
+        f"Summary:\n{item.get('summary')}\n"
+    )
+
+
+def run_improve_background(prompt: str, task_id: str = "") -> dict:
+    parts = prompt.strip().split(maxsplit=1)
+    if len(parts) < 2 or parts[0].lower() not in {"apply", "plan"}:
+        response = improvements_response(prompt)
+        return {
+            "decision": "Improvement nie został zaplanowany.",
+            "facts": [response],
+            "dispute": "",
+            "next_actions": ["/improve next", "/improvements"],
+            "ask_user": "Użyj /improve apply <id> albo /improve plan <id>.",
+            "raw_output": response,
+            "report": response,
+        }
+    action = parts[0].lower()
+    improvement_id = parts[1].strip()
+    item = get_latest_improvement(improvement_id)
+    if not item:
+        response = f"[Council] Nie znalazłem improvement `{improvement_id}`."
+        return {
+            "decision": response,
+            "facts": [response],
+            "dispute": "",
+            "next_actions": ["/improvements"],
+            "ask_user": "Wybierz istniejący improvement.",
+            "raw_output": response,
+            "report": response,
+        }
+    apply_prompt = build_improvement_apply_prompt(item)
+    result = build_structured_council_result(apply_prompt, task_id=task_id)
+    update_improvement_fields(
+        improvement_id,
+        status="planned",
+        plan_task_id=task_id,
+        plan_created_at=utc_now(),
+        next_action=f"Przejrzyj plan: /details {task_id}. Po wdrożeniu: /improve done {improvement_id}",
+    )
+    result["decision"] = f"Improvement `{improvement_id}` zaplanowany przez AI Council."
+    result["next_actions"] = [
+        f"Przejrzyj plan: /details {task_id}",
+        f"Wdrożenie kodu po audycie Codex; po zakończeniu: /improve done {improvement_id}",
+        f"Jeśli odrzucasz: /improve dismiss {improvement_id}",
+    ]
+    result["ask_user"] = "Potwierdź, czy mam wdrożyć plan jako następny patch."
+    result["report"] = (
+        f"# Improvement apply: {improvement_id}\n\n"
+        f"Action: {action}\n\n"
+        f"## Backlog item\n\n{format_improvement(item, detailed=True)}\n\n"
+        f"## Council plan\n\n{result.get('report') or result.get('raw_output') or ''}"
+    )
+    result["raw_output"] = result["report"]
+    result["summary"] = format_telegram_summary(result, task_id or "manual")
+    return result
+
+
 def format_improvement(item: dict, detailed: bool = False) -> str:
     base = (
         f"{item.get('improvement_id')} [{item.get('status', 'open')}/{item.get('priority', 'P2')}] "
@@ -496,7 +575,7 @@ def improvements_response(prompt: str = "") -> str:
         lines = ["[Council] Improvements"]
         for index, item in enumerate(items, start=1):
             lines.append(f"{index}. {format_improvement(item)}")
-        lines.append("Użyj: /improve next, /improve show <id>, /improve done <id>, /improve dismiss <id>.")
+        lines.append("Użyj: /improve next, /improve show <id>, /improve apply <id>, /improve done <id>, /improve dismiss <id>.")
         return "\n".join(lines)
     if action == "next":
         items = open_improvements(limit=1)
@@ -506,13 +585,15 @@ def improvements_response(prompt: str = "") -> str:
     if action == "show" and len(parts) >= 2:
         item = get_latest_improvement(parts[1])
         return format_improvement(item, detailed=True) if item else f"[Council] Nie znalazłem improvement `{parts[1]}`."
+    if action in {"apply", "plan"} and len(parts) >= 2:
+        return "[Council] Improvement plan/apply działa w tle. Użyj: /improve apply <id>."
     if action in {"done", "dismiss"} and len(parts) >= 2:
         status = "done" if action == "done" else "dismissed"
         item = update_improvement_status(parts[1], status)
         if not item:
             return f"[Council] Nie znalazłem improvement `{parts[1]}`."
         return f"[Council] Improvement `{parts[1]}` -> {status}."
-    return "[Council] Improvements: /improvements, /improve next, /improve show <id>, /improve done <id>, /improve dismiss <id>."
+    return "[Council] Improvements: /improvements, /improve next, /improve show <id>, /improve apply <id>, /improve done <id>, /improve dismiss <id>."
 
 
 def latest_by_id(path: Path, id_key: str, limit: int = 10) -> list[dict]:
@@ -615,6 +696,8 @@ def route_needs_task(route: dict) -> bool:
     command = route.get("command")
     if command == "/recipe":
         return str(route.get("prompt") or "").strip().lower().startswith("run ")
+    if command == "/improve":
+        return str(route.get("prompt") or "").strip().lower().startswith(("apply ", "plan "))
     if command in MODEL_COMMANDS or command in SIDE_EFFECT_COMMANDS:
         return True
     if command == "/multi":
@@ -626,6 +709,8 @@ def route_should_background(route: dict) -> bool:
     command = route.get("command")
     if command == "/recipe":
         return str(route.get("prompt") or "").strip().lower().startswith("run ")
+    if command == "/improve":
+        return str(route.get("prompt") or "").strip().lower().startswith(("apply ", "plan "))
     if command in BACKGROUND_COMMANDS:
         return True
     if command == "/multi":
@@ -3677,6 +3762,8 @@ def execute_route_for_background(route: dict, chat_id: str, task_id: str) -> dic
         return build_structured_council_result(str(route.get("prompt", "")), task_id=task_id)
     if command == "/recipe":
         return run_recipe_background(str(route.get("prompt", "")), task_id=task_id)
+    if command == "/improve":
+        return run_improve_background(str(route.get("prompt", "")), task_id=task_id)
     response = build_response(worker_route, chat_id=chat_id)
     facts = extract_fact_lines(response, limit=3)
     direct_summary = f"{response}\n\n[AI Council]\ntask: {task_id}\nDetails: /details {task_id}"
