@@ -7,6 +7,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 logs/
+errors/
 state/
 artifacts/task-*/
 workspaces/
@@ -20,4 +21,3 @@ backups/
 *.tar
 *.tar.gz
 __MACOSX/
-

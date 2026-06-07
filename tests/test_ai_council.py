@@ -1043,6 +1043,61 @@ class RoutingTests(unittest.TestCase):
         self.assertTrue(ai_council.route_should_background(route))
         self.assertIn("research poke", route["prompt"].lower())
 
+    def test_poke_clone_goal_routes_to_grok_prepass_without_slash(self):
+        route = ai_council.route_message(
+            "Chcę sklonować Poke z OpenClaw i Hermes, ustal funkcje i integracje do wdrożenia",
+            chat_id="553",
+        )
+
+        self.assertEqual(route["command"], "/poke-research")
+        self.assertEqual(route["operators"], ["grok"])
+        self.assertEqual(route["mode"], "poke_research_prepass")
+        self.assertEqual(route["prepass_version"], ai_council.POKE_RESEARCH_PREPASS_VERSION)
+        self.assertTrue(ai_council.route_should_background(route))
+        self.assertIn("OpenClaw/Hermes", route["prompt"])
+        self.assertIn("najbliższego patcha", route["prompt"])
+
+    def test_poke_missing_features_question_routes_to_grok_prepass(self):
+        route = ai_council.route_message("sprawdź czego brakuje do Poke i co wdrożyć najpierw", chat_id="553")
+
+        self.assertEqual(route["command"], "/poke-research")
+        self.assertEqual(route["mode"], "poke_research_prepass")
+        self.assertTrue(ai_council.route_should_background(route))
+
+    def test_benign_poke_recipe_check_does_not_start_paid_prepass(self):
+        route = ai_council.route_message("sprawdź czy ten recipe poke działa", chat_id="553")
+
+        self.assertNotEqual(route["command"], "/poke-research")
+
+    def test_plain_poke_frustration_stays_short_gap_response(self):
+        route = ai_council.route_message("Ani nie odpowiada on jak poke nie ma takich możliwości, gdzie ten cel?")
+
+        self.assertEqual(route["command"], "/poke-gap")
+        self.assertEqual(route["mode"], "poke_gap")
+
+    def test_empty_agent_next_can_run_feature_evolution_loop(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "shortcut_setup_agent_item", return_value=None
+            ):
+                response = ai_council.build_response(ai_council.route_message("co dalej", chat_id="553"), chat_id="553")
+
+        self.assertIn("feature_evolution_loop", response)
+        self.assertIn("RUN: /agent run feature_evolution_loop", response)
+
     def test_status_summary_routes_to_front_not_generic_chat(self):
         route = ai_council.route_message("napisz mi krótkie podsumowanie statusu", chat_id="553")
 

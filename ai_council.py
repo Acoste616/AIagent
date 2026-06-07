@@ -240,6 +240,7 @@ PROVIDER_EXECUTOR_VERSION = "L4.41"
 POKE_FRONT_VERSION = "L4.44"
 POKE_GAP_VERSION = "L4.48"
 POKE_NEXT_FRONT_VERSION = "L4.59"
+POKE_RESEARCH_PREPASS_VERSION = "L4.60"
 AUTONOMOUS_LOOP_VERSION = "L4.55"
 SHORTCUTS_VERSION = "L4.48"
 AGENT_INBOX_VERSION = "L4.46"
@@ -7208,7 +7209,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -8752,10 +8753,10 @@ def agent_inbox_items(snapshot: dict | None = None, limit: int = 12) -> list[dic
                 "id": "feature_evolution_loop",
                 "title": "Brak pilnych pozycji; uruchom research kolejnej funkcji Poke/OpenClaw.",
                 "next_action": "/recipe run feature_evolution_loop",
-                "run_kind": "",
+                "run_kind": "recipe",
                 "recipe": "feature_evolution_loop",
                 "recipe_input": "agent inbox",
-                "reason": "goal aktywny; uruchom ręcznie, jeśli chcesz kosztowną pętlę research/planning",
+                "reason": "goal aktywny; safe R0 research/planning loop może ruszyć jednym Agent run",
             }
         )
     return sorted(items, key=lambda item: int(item.get("priority") or 0), reverse=True)[:limit]
@@ -12391,6 +12392,106 @@ def normalize_intent_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip(" \t\r\n?!.,")
 
 
+POKE_PREPASS_EXISTING_ROUTE_PREFIXES = (
+    "deep research x",
+    "głęboki research x",
+    "gleboki research x",
+    "research x",
+    "x research",
+    "sync ",
+    "zsynchronizuj ",
+    "source search",
+    "search sources",
+    "szukaj w źródłach",
+    "szukaj w zrodlach",
+    "szukaj w pamięci",
+    "szukaj w pamieci",
+    "szukaj w pamięci projektu",
+    "szukaj w pamieci projektu",
+    "ogarnij ",
+)
+POKE_PREPASS_STRONG_MARKERS = (
+    "zbadaj",
+    "przebadaj",
+    "ustal",
+    "odkryj",
+    "co brakuje",
+    "czego brakuje",
+    "jak brakuje",
+    "jak sklon",
+    "sklonuj",
+    "skopiuj",
+    "100% poke",
+    "co wdrożyć",
+    "co wdrozyc",
+    "co wdrażać",
+    "co wdrazac",
+)
+POKE_PREPASS_SOFT_MARKERS = (
+    "sprawdź",
+    "sprawdz",
+    "przejrzyj",
+    "poszukaj",
+    "porównaj",
+    "porownaj",
+    "jak działa",
+    "jak dziala",
+    "jak działać",
+    "jak dzialac",
+)
+POKE_PREPASS_CONTEXT_MARKERS = (
+    "funkcj",
+    "mechanik",
+    "możliwo",
+    "mozliwo",
+    "integrac",
+    "apple messages",
+    "imessage",
+    "iphone",
+    "openclaw",
+    "hermes",
+    "developer",
+    "npx poke",
+)
+
+
+def poke_research_prepass_requested(text: str) -> bool:
+    lower = normalize_intent_text(text)
+    if not lower:
+        return False
+    has_poke_target = (
+        re.search(r"\bpoke\b", lower)
+        or "@interaction" in lower
+        or "interaction company" in lower
+    )
+    if not has_poke_target:
+        return False
+    if lower.startswith(POKE_PREPASS_EXISTING_ROUTE_PREFIXES):
+        return False
+    has_strong_marker = any(marker in lower for marker in POKE_PREPASS_STRONG_MARKERS)
+    has_soft_context = any(marker in lower for marker in POKE_PREPASS_SOFT_MARKERS) and any(
+        marker in lower for marker in POKE_PREPASS_CONTEXT_MARKERS
+    )
+    if not (has_strong_marker or has_soft_context):
+        return False
+    # Pure frustration should stay as the short Poke Gap response; investigative wording starts Grok.
+    if poke_gap_feedback_fallback(lower) and not has_strong_marker:
+        return False
+    return True
+
+
+def poke_research_prepass_prompt(text: str) -> str:
+    clean = text.strip()
+    return (
+        f"{POKE_RESEARCH_PREPASS_VERSION} Grok pre-pass dla celu Bartka: {clean}\n\n"
+        "Zbierz publiczne fakty o Poke/@interaction oraz mechanice funkcji, stylu odpowiedzi, UX, "
+        "Recipes, integracjach, Apple Messages/iPhone, memory/proactive nudges i developer hints. "
+        "Połącz to z naszym kierunkiem: Telegram jako UI, Grok research, Claude Opus 4.8 plan, "
+        "Codex/worker implementation, lokalny Desktop/OpenClaw/Hermes execution. "
+        "Zakończ jedną listą wymagań do najbliższego patcha."
+    )
+
+
 LLM_ROUTER_ALLOWED_COMMANDS = {
     "/chat",
     "/front",
@@ -12632,6 +12733,16 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities", "jak działasz", "jak dzialasz", "jak dziś działasz", "jak dzis dzialasz")
     ):
         return {"command": "/capabilities", "operators": ["host"], "prompt": "", "mode": "capabilities", "intent": "natural"}
+
+    if poke_research_prepass_requested(stripped):
+        return {
+            "command": "/poke-research",
+            "operators": ["grok"],
+            "prompt": poke_research_prepass_prompt(stripped),
+            "mode": "poke_research_prepass",
+            "intent": "natural",
+            "prepass_version": POKE_RESEARCH_PREPASS_VERSION,
+        }
 
     if (
         "nie odpowiada" in lower and "poke" in lower
