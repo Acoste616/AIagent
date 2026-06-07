@@ -1592,6 +1592,76 @@ class ErrorStoreTests(unittest.TestCase):
         self.assertIn(error["error_id"], response)
         self.assertIn("telegram_message", response)
 
+    def test_front_quality_issues_detects_front_noise(self):
+        noisy = (
+            "[Codex]\n"
+            "Tak, działam.\n"
+            "route={\"command\":\"/chat\"}\n"
+            "audit_log=D:\\ai-council\\logs\\audit.jsonl\n"
+            "SUCCESS: The process with PID 1234 has been terminated.\n"
+            "cwd=D:\\ai-council subprocess sandbox read-only\n"
+        )
+        issues = ai_council.front_quality_issues(noisy, {"command": "/chat"})
+
+        self.assertIn("raw_operator_label", issues)
+        self.assertIn("debug_metadata", issues)
+        self.assertIn("windows_process_noise", issues)
+        self.assertIn("raw_runtime_detail", issues)
+        self.assertEqual(ai_council.front_quality_issues("[Council]\nDECYZJA: zrobię to.\nNEXT: czekam na priorytet.", {"command": "/chat"}), [])
+
+    def test_front_quality_issues_detects_length_and_command_spam(self):
+        long_response = "x" * 2501
+        command_spam = "\n".join(f"/cmd{i}" for i in range(7))
+
+        long_issues = ai_council.front_quality_issues(long_response, {"command": "/chat"})
+        spam_issues = ai_council.front_quality_issues(command_spam, {"command": "/chat"})
+
+        self.assertTrue(any(issue.startswith("too_long:") for issue in long_issues))
+        self.assertIn("command_spam:7", spam_issues)
+
+    def test_front_quality_length_allows_informational_commands_but_not_debug(self):
+        long_goal = "x" * 5000
+        debug_goal = long_goal + "\nroute={}"
+
+        self.assertEqual(ai_council.front_quality_issues(long_goal, {"command": "/goal"}), [])
+        self.assertIn("debug_metadata", ai_council.front_quality_issues(debug_goal, {"command": "/goal"}))
+
+    def test_record_front_quality_writes_only_for_user_facing_routes(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                event = {}
+                issues = ai_council.record_front_quality_if_needed(
+                    "[Codex]\nroute={}",
+                    {"command": "/chat", "route_source": "fallback"},
+                    event,
+                    chat_id="553",
+                )
+                skipped = ai_council.record_front_quality_if_needed(
+                    "[Codex]\nroute={}",
+                    {"command": "/health", "route_source": "command"},
+                    {},
+                    chat_id="553",
+                )
+                rows = ai_council.read_jsonl(root / "state" / "errors.jsonl")
+
+        self.assertIn("raw_operator_label", issues)
+        self.assertIn("debug_metadata", issues)
+        self.assertEqual(skipped, [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["context"], "front_quality")
+        self.assertEqual(rows[0]["severity"], "warning")
+        self.assertEqual(rows[0]["event"]["command"], "/chat")
+        self.assertIn("front_quality_issues", event)
+
 
 class ProactiveEventBrainTests(unittest.TestCase):
     def test_agent_inbox_prioritizes_safe_followup_and_run_starts_it(self):
@@ -4900,6 +4970,52 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn(f"facts:{task_id}", callback_data)
         self.assertIn(f"next:{task_id}", callback_data)
 
+    def test_background_final_delivery_records_front_quality_even_for_recipe_route(self):
+        bad_summary = "[Codex]\nroute={}\nOdpowiedź gotowa."
+        result = {
+            "decision": "done",
+            "facts": ["done"],
+            "dispute": "",
+            "next_actions": ["/details task"],
+            "ask_user": "sprawdź",
+            "raw_output": bad_summary,
+            "report": bad_summary,
+            "summary": bad_summary,
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "STATE_DIR", root / "state"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "BACKGROUND_JOBS_FILE", root / "state" / "background_jobs.jsonl"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "execute_route_for_background", return_value=result), patch.object(
+                ai_council, "telegram_send_message_with_markup", return_value=True
+            ) as send:
+                task = ai_council.create_task("recipe", status="running_background", command="/recipe", operators=["host"])
+                task_id = task["task_id"]
+                route = {"command": "/recipe", "operators": ["host"], "prompt": "run test", "task_id": task_id}
+                ai_council.save_background_job_spec(route, "553", task_id, send_progress=True)
+                code = ai_council.run_background_job(task_id)
+                rows = ai_council.read_jsonl(root / "state" / "errors.jsonl")
+
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(send.call_count, 1)
+        self.assertEqual(send.call_args_list[-1].args[1], bad_summary)
+        self.assertEqual(rows[0]["context"], "front_quality")
+        self.assertEqual(rows[0]["event"]["command"], "/recipe")
+        self.assertIn("raw_operator_label", rows[0]["event"]["issues"])
+        self.assertIn("debug_metadata", rows[0]["event"]["issues"])
+
     def test_background_worker_cancelled_before_run_does_not_send_running(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -5655,12 +5771,15 @@ class L25BackgroundTests(unittest.TestCase):
                 ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
             ), patch.object(ai_council, "ERRORS_DIR", root / "errors"):
                 ai_council.record_operator_usage("grok", status="completed", duration_ms=10)
+                ai_council.record_error("front_quality", message="debug_metadata", severity="warning")
                 response = ai_council.build_response({"command": "/front", "operators": ["host"], "prompt": ""})
 
         self.assertIn("Front Reliability L4.24", response)
         self.assertIn("last_telegram_update: 42 /selftest responded", response)
         self.assertIn("listener_pid: 1234", response)
         self.assertIn("grok_today: calls=1", response)
+        self.assertIn("front_quality_24h: 1", response)
+        self.assertIn("latest: debug_metadata", response)
 
     def test_front_reliability_response_reports_paused_models_and_send_failures(self):
         with temp_dir() as tmp:
@@ -6141,6 +6260,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("100% Poke-like", goal)
         self.assertIn("Grok zbiera research pack", goal)
         self.assertIn("Desktop", goal)
+        self.assertIn("front_quality=L4.50", health)
         self.assertIn("delegate_loop=L4.49:gated", health)
 
 
