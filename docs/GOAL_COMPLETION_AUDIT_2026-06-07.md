@@ -1,7 +1,7 @@
 # Goal Status Audit
 
 Date: 2026-06-07
-Updated: 2026-06-07 19:22 Europe/Warsaw
+Updated: 2026-06-07 19:31 Europe/Warsaw
 
 Goal:
 
@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.41 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, `D:\ai-council\docs\implementation\L4_41_PROVIDER_READ_BEFORE_WRITE.md`; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 19:20 | Proven |
+| Windows deployment | L4.42 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, `D:\ai-council\docs\implementation\L4_41_PROVIDER_READ_BEFORE_WRITE.md`, `D:\ai-council\docs\implementation\L4_42_DEFAULT_FRONT_HOST.md`; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 19:30 | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,18 +30,19 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.41: Mac py_compile, provider target `14/14 OK`, full `223/223 OK`; Windows Desktop py_compile, `223 passed, 111 subtests passed` | Proven |
+| Test verification | L4.42: Mac py_compile, front target `10/10 OK`, full `225/225 OK`; Windows Desktop py_compile, `225 passed, 111 subtests passed` | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | L4.41 pushed: `5dc946b..42897d5 main -> main` | Proven |
+| GitHub push to `Acoste616/AIagent` | L4.42 pushed: `e456356..b4c7905 main -> main`; L4.41 functional commit `42897d5` and audit commit `e456356` are also present | Proven |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
-- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 19:20:43`.
-- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
-- Selftest: version now includes `L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 19:30:07`.
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version now includes `L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Front smoke: the exact complaint `Ani nie odpowiada on jak poke...` routes to `/poke-gap` and returns `Poke Gap L4.42` without a long status dump.
 
 ## Completion Decision
 
@@ -87,6 +88,7 @@ Completed layers in the current implementation state:
 - L4.39 Poke Front Host Contract: `/poke-gap` and missed frustration fallback now return a shorter operator-style diagnosis with decision, facts, one next move, and no `/goal` redirect; `/chat` fallback can render the same diagnosis without writing `improvements.jsonl`, uses current task/error counts, and avoids false triggers such as `pokemon`.
 - L4.40 Drive Document Executor: `/provider execute <request_id> <confirm>` can create a Google Docs document through Drive `files.create` multipart upload only after request approval, only with `AI_COUNCIL_PROVIDER_WRITE_ENABLED=true`, `AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=true`, and Google OAuth; it validates title/body/outline/folder, stores provider result artifacts with Drive `webViewLink`, and verifies them through the existing provider result verifier.
 - L4.41 Provider Read-Before-Write: `/provider execute <request_id> <confirm>` now runs provider-specific reads before external write for GitHub issues, Gmail drafts, Calendar events, and Drive documents. Duplicate or failed preflight creates a `write_blocked` dry-run with `external_write_performed=false`; successful provider writes persist `provider_read_before_write` evidence in result artifacts.
+- L4.42 Default Front Host: Poke/parity frustration now returns `Poke Gap L4.42`, does not redirect to long `/goal` dumps, reports L4.41 as done, names front UX/proactive ownership as the current gap, and routes more short ordinary questions to the front LLM while keeping status/system phrases local.
 
 ## External Follow-up
 
