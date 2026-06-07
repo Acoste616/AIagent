@@ -1,6 +1,6 @@
 {
   "name": "feature_evolution_loop",
-  "recipe_version": "L4.43",
+  "recipe_version": "L4.55",
   "cadence": "twice_daily",
   "description": "Dwa razy dziennie robi research Poke/Hermes/OpenClaw i plan kolejnej funkcji do wdrożenia.",
   "enabled": true,

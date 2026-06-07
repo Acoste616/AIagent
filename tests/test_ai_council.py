@@ -801,9 +801,10 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertTrue(error_recipe["capture_improvement"])
         self.assertTrue(error_recipe["planner_selectable"])
         self.assertEqual(error_recipe["trigger"]["cron"], "0 9,21 * * *")
+        self.assertTrue(any(step["command"] == "@grok" for step in error_recipe["steps"]))
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in error_recipe["steps"]))
         self.assertTrue(feature_recipe["enabled"])
-        self.assertEqual(feature_recipe["recipe_version"], "L4.43")
+        self.assertEqual(feature_recipe["recipe_version"], ai_council.AUTONOMOUS_LOOP_VERSION)
         self.assertEqual(feature_recipe["cadence"], "twice_daily")
         self.assertTrue(feature_recipe["capture_improvement"])
         self.assertTrue(feature_recipe["planner_selectable"])
@@ -857,13 +858,14 @@ class OperatorOutputTests(unittest.TestCase):
                 error_migrated = ai_council.load_recipe("error_audit_twice_daily")
 
         self.assertFalse(migrated["enabled"])
-        self.assertEqual(migrated["recipe_version"], "L4.43")
+        self.assertEqual(migrated["recipe_version"], ai_council.AUTONOMOUS_LOOP_VERSION)
         self.assertEqual(migrated["cadence"], "twice_daily")
         self.assertEqual(migrated["trigger"]["cron"], "15 10,22 * * *")
         self.assertTrue(any(step["command"] == "@xresearch" for step in migrated["steps"]))
         self.assertTrue(error_migrated["enabled"])
-        self.assertEqual(error_migrated["recipe_version"], "L4.43")
+        self.assertEqual(error_migrated["recipe_version"], ai_council.AUTONOMOUS_LOOP_VERSION)
         self.assertEqual(error_migrated["trigger"]["cron"], "0 9,21 * * *")
+        self.assertTrue(any(step["command"] == "@grok" for step in error_migrated["steps"]))
 
     def test_recipe_prompt_can_use_previous_step_output(self):
         prompt = ai_council.render_recipe_step_prompt("input={input}\nprevious={previous}", "temat", "wynik groka")
@@ -1445,7 +1447,7 @@ class RoutingTests(unittest.TestCase):
                 ai_council.append_recipe_run("error_audit_twice_daily", "cron:test", "task-loop", "started")
                 response = ai_council.loops_response()
 
-        self.assertIn("Autonomous loops L4.43", response)
+        self.assertIn(f"Autonomous loops {ai_council.AUTONOMOUS_LOOP_VERSION}", response)
         self.assertIn("error_audit_twice_daily", response)
         self.assertIn("feature_evolution_loop", response)
         self.assertIn("cadence=twice_daily", response)
@@ -2318,6 +2320,40 @@ class ProactiveEventBrainTests(unittest.TestCase):
 
 
 class ImprovementBacklogTests(unittest.TestCase):
+    def test_recipe_improvement_uses_final_decision_not_research_status_title(self):
+        raw = (
+            "## Step 1: @xresearch\n\n"
+            "[Council]\nResearch gotowy.\n\n"
+            "Fakty: Poke ma Recipes i proactive nudges.\n\n"
+            "## Step 2: /flow\n\n"
+            "[Council]\nPlan workflow gotowy.\n\n"
+            "## Diagnoza\nBrakuje proactive topic ownership.\n\n"
+            "## Decyzja\n"
+            "**L4.55 - Loop Synthesis Backlog**: zapisuj w backlogu konkretny target z planu Claude.\n\n"
+            "## Testy\nDodać regresję na tytuł improvementu."
+        )
+        recipe = {
+            "capture_improvement": True,
+            "improvement_policy": {"enabled": True, "source": "feature_evolution_loop", "priority": "P2"},
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                improvement = ai_council.create_improvement_from_recipe(
+                    recipe,
+                    "feature_evolution_loop",
+                    "task-loop",
+                    raw,
+                )
+
+        self.assertIsNotNone(improvement)
+        self.assertIn("Loop Synthesis Backlog", improvement["title"])
+        self.assertNotEqual(improvement["title"], "Research gotowy.")
+        self.assertTrue(improvement["summary"].startswith(f"[Loop synthesis {ai_council.LOOP_SYNTHESIS_VERSION}]"))
+        self.assertIn("RAW OUTPUT", improvement["summary"])
+
     def test_create_show_and_close_improvement(self):
         with temp_dir() as tmp:
             root = Path(tmp)

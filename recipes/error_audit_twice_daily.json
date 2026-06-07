@@ -1,6 +1,6 @@
 {
   "name": "error_audit_twice_daily",
-  "recipe_version": "L4.43",
+  "recipe_version": "L4.55",
   "cadence": "twice_daily",
   "description": "Dwa razy dziennie audytuje folder errors i proponuje naprawy kodu.",
   "enabled": true,
@@ -25,6 +25,7 @@
   ],
   "integrations": [
     "errors",
+    "grok",
     "claude-flow",
     "improvements"
   ],
@@ -39,8 +40,12 @@
       "prompt": "recent 20"
     },
     {
+      "command": "@grok",
+      "prompt": "Zrób krótki red-team błędów AI Council na bazie kontekstu poniżej. Zgrupuj powtarzalne wzorce, wskaż najbardziej prawdopodobną root cause, wybierz jeden minimalny patch i testy. Nie proponuj external write.\n\nERROR_CONTEXT:\n{previous}"
+    },
+    {
       "command": "/flow",
-      "prompt": "Zrób audyt błędów AI Council na bazie kontekstu poniżej. Oceń prawdopodobną przyczynę, wskaż konkretne pliki/funkcje do poprawy, zaproponuj minimalny patch i testy. Nie wykonuj zmian zewnętrznych.\n\nERROR_CONTEXT:\n{previous}"
+      "prompt": "Zrób audyt błędów AI Council na bazie triage Groka poniżej. Oceń prawdopodobną przyczynę, wskaż konkretne pliki/funkcje do poprawy, zaproponuj minimalny patch i testy. Nie wykonuj zmian zewnętrznych.\n\nGROK_TRIAGE:\n{previous}"
     }
   ]
 }
