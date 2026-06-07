@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 from datetime import datetime, timezone
 import difflib
 import hmac
@@ -65,6 +66,7 @@ IMPROVEMENTS_FILE = STATE_DIR / "improvements.jsonl"
 CONVERSATIONS_FILE = STATE_DIR / "conversations.jsonl"
 TELEGRAM_LISTENER_LOCK = STATE_DIR / "telegram_listener.lock"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
+CONNECTOR_INDEX_DB = STATE_DIR / "connector_index.sqlite"
 RECIPES_DIR = PROJECT_DIR / "recipes"
 NUDGES_FILE = STATE_DIR / "nudges.jsonl"
 RECIPE_RUNS_FILE = STATE_DIR / "recipe_runs.jsonl"
@@ -274,6 +276,7 @@ def ensure_council_dirs() -> None:
         ERRORS_DIR,
         RECIPES_DIR,
         BACKGROUND_JOB_SPECS_DIR,
+        PROJECT_DIR / "sources",
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -1194,6 +1197,9 @@ def source_statuses() -> list[dict]:
     gmail_dir = configured_source_dir("AI_COUNCIL_GMAIL_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_GMAIL_EXPORT_DIR"])
     calendar_dir = configured_source_dir("AI_COUNCIL_CALENDAR_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_CALENDAR_EXPORT_DIR"])
     drive_dir = configured_source_dir("AI_COUNCIL_DRIVE_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_DRIVE_EXPORT_DIR"])
+    gmail_indexed = connector_index_count("gmail")
+    calendar_indexed = connector_index_count("calendar")
+    drive_indexed = connector_index_count("drive")
     gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
     github_repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
     sources = [
@@ -1227,24 +1233,24 @@ def source_statuses() -> list[dict]:
         },
         {
             "name": "gmail",
-            "status": "available" if gmail_dir and gmail_dir.exists() else "auth_required",
+            "status": "available" if gmail_dir and gmail_dir.exists() else ("indexed" if gmail_indexed else "auth_required"),
             "mode": "read-only",
-            "detail": str(gmail_dir or "set AI_COUNCIL_GMAIL_EXPORT_DIR or Gmail OAuth bridge"),
-            "search": bool(gmail_dir and gmail_dir.exists()),
+            "detail": f"{gmail_dir or 'set AI_COUNCIL_GMAIL_EXPORT_DIR or Gmail OAuth bridge'}; indexed={gmail_indexed}",
+            "search": bool(gmail_dir and gmail_dir.exists()) or gmail_indexed > 0,
         },
         {
             "name": "calendar",
-            "status": "available" if calendar_dir and calendar_dir.exists() else "auth_required",
+            "status": "available" if calendar_dir and calendar_dir.exists() else ("indexed" if calendar_indexed else "auth_required"),
             "mode": "read-only",
-            "detail": str(calendar_dir or "set AI_COUNCIL_CALENDAR_EXPORT_DIR or Calendar OAuth bridge"),
-            "search": bool(calendar_dir and calendar_dir.exists()),
+            "detail": f"{calendar_dir or 'set AI_COUNCIL_CALENDAR_EXPORT_DIR or Calendar OAuth bridge'}; indexed={calendar_indexed}",
+            "search": bool(calendar_dir and calendar_dir.exists()) or calendar_indexed > 0,
         },
         {
             "name": "drive",
-            "status": "available" if drive_dir and drive_dir.exists() else "auth_required",
+            "status": "available" if drive_dir and drive_dir.exists() else ("indexed" if drive_indexed else "auth_required"),
             "mode": "read-only",
-            "detail": str(drive_dir or "set AI_COUNCIL_DRIVE_EXPORT_DIR or Drive OAuth bridge"),
-            "search": bool(drive_dir and drive_dir.exists()),
+            "detail": f"{drive_dir or 'set AI_COUNCIL_DRIVE_EXPORT_DIR or Drive OAuth bridge'}; indexed={drive_indexed}",
+            "search": bool(drive_dir and drive_dir.exists()) or drive_indexed > 0,
         },
     ]
     return sources
@@ -1311,10 +1317,244 @@ def search_text_source(paths: list[Path], query: str, limit: int = 5) -> list[di
     return results
 
 
+def init_connector_index_db() -> None:
+    ensure_council_dirs()
+    with sqlite3.connect(CONNECTOR_INDEX_DB) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS connector_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connector TEXT NOT NULL,
+                doc_id TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL,
+                text TEXT NOT NULL,
+                metadata TEXT NOT NULL,
+                indexed_at TEXT NOT NULL
+            )
+            """
+        )
+        try:
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS connector_documents_fts
+                USING fts5(doc_id, connector, title, source, text)
+                """
+            )
+        except sqlite3.OperationalError:
+            pass
+
+
+def connector_index_upsert(connector: str, title: str, source: str, text: str, metadata: dict | None = None) -> None:
+    init_connector_index_db()
+    doc_id = f"{connector}:{short_hash(source)}"
+    clean_text = text.strip()
+    with sqlite3.connect(CONNECTOR_INDEX_DB) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO connector_documents
+            (connector, doc_id, title, source, text, metadata, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                connector,
+                doc_id,
+                title.strip() or source,
+                source,
+                clean_text,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                utc_now(),
+            ),
+        )
+        try:
+            conn.execute("DELETE FROM connector_documents_fts WHERE doc_id = ?", (doc_id,))
+            conn.execute(
+                """
+                INSERT INTO connector_documents_fts (doc_id, connector, title, source, text)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (doc_id, connector, title.strip() or source, source, clean_text),
+            )
+        except sqlite3.OperationalError:
+            pass
+
+
+def connector_index_count(connector: str) -> int:
+    init_connector_index_db()
+    with sqlite3.connect(CONNECTOR_INDEX_DB) as conn:
+        row = conn.execute("SELECT COUNT(*) FROM connector_documents WHERE connector = ?", (connector,)).fetchone()
+    return int(row[0] if row else 0)
+
+
+def connector_index_search(connector: str, query: str, limit: int = 5) -> list[dict]:
+    init_connector_index_db()
+    clean_query = query.strip()
+    with sqlite3.connect(CONNECTOR_INDEX_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        if clean_query:
+            try:
+                phrase = '"' + clean_query.replace('"', '""') + '"'
+                rows = conn.execute(
+                    """
+                    SELECT d.title, d.source, d.text, d.indexed_at
+                    FROM connector_documents_fts f
+                    JOIN connector_documents d ON d.doc_id = f.doc_id
+                    WHERE connector_documents_fts MATCH ? AND d.connector = ?
+                    ORDER BY d.id DESC
+                    LIMIT ?
+                    """,
+                    (phrase, connector, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                like = f"%{clean_query}%"
+                rows = conn.execute(
+                    """
+                    SELECT title, source, text, indexed_at
+                    FROM connector_documents
+                    WHERE connector = ? AND (title LIKE ? OR source LIKE ? OR text LIKE ?)
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (connector, like, like, like, limit),
+                ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT title, source, text, indexed_at
+                FROM connector_documents
+                WHERE connector = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (connector, limit),
+            ).fetchall()
+    results = []
+    for row in rows:
+        text = str(row["text"] or "")
+        snippet = text[:320]
+        if clean_query:
+            index = text.lower().find(clean_query.lower())
+            if index >= 0:
+                start = max(0, index - 140)
+                snippet = text[start : start + 320]
+        results.append(
+            {
+                "source": str(row["source"]),
+                "title": str(row["title"]),
+                "snippet": compact_line(snippet, 260),
+            }
+        )
+    return results
+
+
+def merge_source_results(*groups: list[dict], limit: int = 5) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            source = str(item.get("source") or "")
+            key = source or f"{item.get('title', '')}:{item.get('snippet', '')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+def extract_connector_file_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".csv":
+            csv_rows = int_cfg("AI_COUNCIL_CONNECTOR_INDEX_CSV_ROWS", 40)
+            rows = []
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+                reader = csv.reader(handle)
+                for index, row in enumerate(reader):
+                    if index >= csv_rows:
+                        break
+                    rows.append(" | ".join(cell.strip() for cell in row if cell.strip()))
+            return "\n".join(row for row in rows if row)
+        if suffix in SOURCE_TEXT_SUFFIXES:
+            return path.read_text(encoding="utf-8", errors="replace")[: int_cfg("AI_COUNCIL_CONNECTOR_INDEX_FILE_CHARS", 30000)]
+    except OSError:
+        return ""
+    return ""
+
+
+def connector_ingest_source(connector: str, limit: int | None = None) -> tuple[str, int, Path | None]:
+    normalized = normalize_connector_name(connector)
+    env_map = {
+        "gmail": "AI_COUNCIL_GMAIL_EXPORT_DIR",
+        "calendar": "AI_COUNCIL_CALENDAR_EXPORT_DIR",
+        "drive": "AI_COUNCIL_DRIVE_EXPORT_DIR",
+    }
+    if normalized not in env_map:
+        return "unsupported", 0, None
+    root = configured_source_dir(env_map[normalized], SOURCE_EXPORT_DEFAULTS.get(env_map[normalized]))
+    if not root or not root.exists():
+        return "auth_required", 0, root
+    max_files = limit if limit is not None else int_cfg("AI_COUNCIL_CONNECTOR_INGEST_MAX_FILES", 500)
+    max_visited = int_cfg("AI_COUNCIL_CONNECTOR_INGEST_MAX_VISITED", max_files * 20)
+    indexed = 0
+    visited = 0
+    files = [root] if root.is_file() else root.rglob("*")
+    for path in files:
+        visited += 1
+        if visited > max_visited:
+            break
+        if indexed >= max_files:
+            break
+        if not path.is_file() or path.suffix.lower() not in SOURCE_TEXT_SUFFIXES:
+            continue
+        text = extract_connector_file_text(path)
+        if not text.strip():
+            continue
+        stat = path.stat()
+        connector_index_upsert(
+            normalized,
+            path.name,
+            str(path),
+            text,
+            {"size": stat.st_size, "mtime": stat.st_mtime},
+        )
+        indexed += 1
+    return "available", indexed, root
+
+
+def github_public_search(query: str, limit: int = 5) -> tuple[str, list[dict]]:
+    if not bool_cfg("AI_COUNCIL_GITHUB_PUBLIC_FALLBACK", True):
+        return "public_fallback_disabled", []
+    repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
+    q = f"{query or 'AI Council'} repo:{repo}"
+    url = "https://api.github.com/search/issues?" + urlencode({"q": q, "per_page": str(limit)})
+    data = request_json(url, headers={"User-Agent": "ai-council-readonly"})
+    if data.get("ok") is False:
+        return f"public_fallback_error: {data.get('error')}", []
+    results = []
+    for item in data.get("items", [])[:limit]:
+        labels = ", ".join(label.get("name", "") for label in item.get("labels", []) if isinstance(label, dict))
+        snippet = compact_line(str(item.get("body") or item.get("title") or ""), 260)
+        if labels:
+            snippet = compact_line(f"{snippet} labels={labels}", 260)
+        results.append(
+            {
+                "source": str(item.get("html_url") or repo),
+                "title": f"#{item.get('number')} {item.get('title')}",
+                "snippet": snippet,
+            }
+        )
+    return "public_fallback", results
+
+
 def github_source_search(query: str, limit: int = 5) -> tuple[str, list[dict]]:
     gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
     if not gh_ok:
-        return f"auth_required: {gh_detail}", []
+        public_status, public_results = github_public_search(query, limit=limit)
+        if public_results:
+            return f"auth_required: {gh_detail}; {public_status}", public_results
+        return f"auth_required: {gh_detail}; {public_status}", []
     repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
     found = shutil.which("gh")
     if not found:
@@ -1387,9 +1627,14 @@ def source_search(name: str, query: str, limit: int = 5) -> tuple[str, list[dict
     }
     if normalized in env_map:
         root = configured_source_dir(env_map[normalized], SOURCE_EXPORT_DEFAULTS.get(env_map[normalized]))
+        indexed_results = connector_index_search(normalized, query, limit=limit)
         if not root or not root.exists():
-            return "auth_required", []
-        return "available", search_text_source([root], query, limit=limit)
+            return ("available_index", indexed_results) if indexed_results else ("auth_required", [])
+        file_results = search_text_source([root], query, limit=limit)
+        combined = merge_source_results(indexed_results, file_results, limit=limit)
+        if combined:
+            return ("available_index" if indexed_results else "available"), combined
+        return "available", []
     return "unknown_source", []
 
 
@@ -1466,7 +1711,7 @@ def connector_statuses() -> list[dict]:
     for item in source_statuses():
         name = str(item.get("name") or "")
         status = str(item.get("status") or "unknown")
-        ready = status == "available"
+        ready = status in {"available", "indexed"}
         if name in {"memory", "artifacts", "openclaw"}:
             tier = "local"
         elif name == "github":
@@ -1490,7 +1735,7 @@ def connector_status(name: str) -> dict | None:
 
 
 def connectors_response() -> str:
-    lines = ["[Council] Connectors L4.11 read-only bridge"]
+    lines = ["[Council] Connectors L4.12 read-only bridge + cache"]
     ready = 0
     needs_auth = 0
     for item in connector_statuses():
@@ -1502,7 +1747,7 @@ def connectors_response() -> str:
             f"- {item['name']} | {item['status']} | {item['tier']} | search={'yes' if item.get('search') else 'no'} | {compact_line(str(item.get('detail') or ''), 110)}"
         )
     lines.append(f"Ready: {ready}. Needs auth/config: {needs_auth}.")
-    lines.append("Użyj: /connector check <name>, /connector auth <name>, /connector brief <name> <query>.")
+    lines.append("Użyj: /connector check <name>, /connector auth <name>, /connector ingest <name>, /connector brief <name> <query>.")
     return "\n".join(lines)
 
 
@@ -1589,6 +1834,25 @@ def connector_brief_response(name: str, query: str) -> str:
     return "\n".join(response)
 
 
+def connector_ingest_response(name: str) -> str:
+    normalized = normalize_connector_name(name)
+    status, indexed, root = connector_ingest_source(normalized)
+    lines = [
+        f"[Council] Connector ingest `{normalized}`",
+        f"status: {status}",
+        f"root: {root or '(none)'}",
+        f"indexed_now: {indexed}",
+        f"indexed_total: {connector_index_count(normalized) if status != 'unsupported' else 0}",
+    ]
+    if status == "unsupported":
+        lines.append("Obsługiwane cache ingest: gmail, calendar, drive.")
+    elif status == "auth_required":
+        lines.append(f"Next: /connector auth {normalized}")
+    else:
+        lines.append(f"Next: /connector brief {normalized} <query>")
+    return "\n".join(lines)
+
+
 def connector_response(prompt: str) -> str:
     parts = prompt.strip().split(maxsplit=2)
     if not parts or parts[0].lower() in {"list", "status", "show"}:
@@ -1614,6 +1878,10 @@ def connector_response(prompt: str) -> str:
         name = parts[1]
         query = parts[2] if len(parts) >= 3 else ""
         return connector_brief_response(name, query)
+    if action in {"ingest", "index", "cache"}:
+        if len(parts) < 2:
+            return connectors_response()
+        return connector_ingest_response(parts[1])
     name = parts[0]
     return connector_check_response(name)
 
@@ -3132,7 +3400,7 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny fallback GitHub search, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
@@ -3147,10 +3415,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0.\n"
-        "Brakuje do Poke-level: real OAuth bridge dla Gmail/Calendar/Drive/GitHub na samym desktop runtime, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback.\n"
+        "Brakuje do Poke-level: real OAuth bridge dla Gmail/Calendar/Drive na samym desktop runtime, naprawiony GitHub CLI auth dla prywatnych zasobów, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Następny sprint: L4.12 Real OAuth Bridge: GitHub auth fix + Gmail/Calendar/Drive read przez OAuth/cache, z artifactami i approval przed write."
+        "Następny sprint: L4.13 Real OAuth Bridge: Gmail/Calendar/Drive read przez OAuth/cache sync, z artifactami i approval przed write."
     )
 
 
@@ -3163,10 +3431,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.11 Connector Bridge read-only: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.12 Connector Cache + GitHub fallback: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache ingest, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.11: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.12: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 

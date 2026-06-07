@@ -947,11 +947,35 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("Gmail Calendar", results[0]["snippet"])
 
     def test_source_search_github_requires_auth_when_gh_invalid(self):
-        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")):
+        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+            ai_council, "request_json", return_value={"ok": False, "error": "url_error"}
+        ):
             status, results = ai_council.source_search("github", "issue", limit=3)
 
         self.assertIn("auth_required", status)
         self.assertEqual(results, [])
+
+    def test_source_search_github_uses_public_fallback_when_gh_invalid(self):
+        payload = {
+            "items": [
+                {
+                    "number": 7,
+                    "title": "Connector bridge",
+                    "html_url": "https://github.com/Acoste616/AIagent/issues/7",
+                    "body": "Poke parity connector work",
+                    "labels": [{"name": "l4"}],
+                }
+            ]
+        }
+        with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
+            ai_council, "request_json", return_value=payload
+        ):
+            status, results = ai_council.source_search("github", "connector", limit=3)
+
+        self.assertIn("auth_required", status)
+        self.assertIn("public_fallback", status)
+        self.assertEqual(len(results), 1)
+        self.assertIn("Connector bridge", results[0]["title"])
 
     def test_connectors_response_reports_readiness_and_auth(self):
         with temp_dir() as tmp:
@@ -968,12 +992,14 @@ class L2LedgerTests(unittest.TestCase):
                     "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
                     "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
                 },
+            ), patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
             ), patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
                 ai_council, "cfg", side_effect=lambda key, default="": default
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.11", response)
+        self.assertIn("Connectors L4.12", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
@@ -998,6 +1024,35 @@ class L2LedgerTests(unittest.TestCase):
 
         self.assertIn("wymaga query", response)
         self.assertIn("/connector check artifacts", response)
+
+    def test_connector_ingest_indexes_export_cache(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            gmail_dir = root / "sources" / "gmail"
+            gmail_dir.mkdir(parents=True)
+            (gmail_dir / "mail.md").write_text("Poke parity email cache about recipes.", encoding="utf-8")
+            with patch.object(
+                ai_council,
+                "SOURCE_EXPORT_DEFAULTS",
+                {
+                    "AI_COUNCIL_GMAIL_EXPORT_DIR": gmail_dir,
+                    "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
+                    "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
+                },
+            ), patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(
+                ai_council, "cfg", side_effect=lambda key, default="": default
+            ):
+                response = ai_council.connector_response("ingest gmail")
+                (gmail_dir / "fresh.md").write_text("Fresh recipes file after ingest.", encoding="utf-8")
+                status, results = ai_council.source_search("gmail", "recipes", limit=3)
+
+        self.assertIn("indexed_now: 1", response)
+        self.assertEqual(status, "available_index")
+        self.assertEqual(len(results), 2)
+        self.assertIn("email cache", results[0]["snippet"])
+        self.assertTrue(any("Fresh recipes" in item["snippet"] for item in results))
 
     def test_connector_brief_writes_source_backed_report(self):
         with temp_dir() as tmp:
