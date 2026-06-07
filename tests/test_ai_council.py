@@ -1623,7 +1623,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
                 response = ai_council.agent_response(f"run {action['action_id']}", chat_id="553")
                 latest = ai_council.get_latest_action(action["action_id"])
 
-        self.assertIn("Agent Inbox L4.27", inbox)
+        self.assertIn("Agent Inbox L4.46", inbox)
         self.assertIn(f"RUN: /agent run {action['action_id']}", inbox)
         self.assertIn("follow-up started", response)
         self.assertEqual(latest["status"], "executed")
@@ -1675,8 +1675,53 @@ class ProactiveEventBrainTests(unittest.TestCase):
             ), patch.object(ai_council, "start_background_job", return_value="should not start") as start:
                 response = ai_council.agent_response("runtime status", chat_id="553")
 
-        self.assertIn("Agent Inbox L4.27", response)
+        self.assertIn("Agent Inbox L4.46", response)
         self.assertEqual(start.call_count, 0)
+
+    def test_agent_inbox_surfaces_shortcuts_setup_when_token_missing(self):
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_SHORTCUT_TOKEN":
+                return ""
+            return str(default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                inbox = ai_council.agent_response()
+
+        self.assertIn("Agent Inbox L4.46", inbox)
+        self.assertIn("[iphone_setup/101]", inbox)
+        self.assertIn("shortcuts-token", inbox)
+        self.assertIn("AI_COUNCIL_SHORTCUT_TOKEN", inbox)
+        self.assertIn("NEXT: /shortcuts", inbox)
+        self.assertIn("RUN: brak bezpiecznego auto-run", inbox)
+
+    def test_agent_inbox_survives_shortcuts_status_failure(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
+                ai_council, "shortcut_runtime_status", side_effect=RuntimeError("shortcut boom")
+            ):
+                inbox = ai_council.agent_response()
+                errors = ai_council.read_jsonl(root / "state" / "errors.jsonl")
+
+        self.assertIn("Agent Inbox L4.46", inbox)
+        self.assertNotIn("shortcut boom", inbox)
+        self.assertEqual(errors[0]["context"], "shortcut_setup_agent_item")
 
     def test_proactive_scan_creates_improvement_nudge(self):
         with temp_dir() as tmp:
@@ -1687,7 +1732,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
                 ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
             ), patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
                 ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
-            ):
+            ), patch.dict(os.environ, {"AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false"}, clear=False):
                 improvement = ai_council.create_improvement(
                     source="feature_evolution_loop",
                     title="Następna funkcja",
@@ -1700,6 +1745,29 @@ class ProactiveEventBrainTests(unittest.TestCase):
         self.assertEqual(created, 1)
         self.assertEqual(rows[0]["kind"], "improvement")
         self.assertIn(improvement["improvement_id"], rows[0]["next_action"])
+
+    def test_proactive_scan_creates_shortcuts_setup_nudge(self):
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_SHORTCUT_TOKEN":
+                return ""
+            return str(default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                created = ai_council.run_proactive_scan(send=False)
+                rows = ai_council.read_jsonl(root / "state" / "nudges.jsonl")
+
+        self.assertEqual(created, 1)
+        self.assertEqual(rows[0]["kind"], "iphone_setup")
+        self.assertEqual(rows[0]["next_action"], "/shortcuts")
+        self.assertIn("Shortcuts", rows[0]["title"])
 
     def test_proactive_scan_creates_deduped_error_nudge(self):
         with temp_dir() as tmp:
@@ -1723,7 +1791,9 @@ class ProactiveEventBrainTests(unittest.TestCase):
             ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
                 ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
             ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
-            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"):
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.dict(
+                os.environ, {"AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false"}, clear=False
+            ):
                 first = ai_council.run_proactive_scan(send=False)
                 second = ai_council.run_proactive_scan(send=False)
                 rows = ai_council.read_jsonl(nudges_file)
@@ -1758,7 +1828,9 @@ class ProactiveEventBrainTests(unittest.TestCase):
             ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
                 ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
             ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
-            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"):
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.dict(
+                os.environ, {"AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false"}, clear=False
+            ):
                 created = ai_council.run_proactive_scan(send=False)
                 rows = ai_council.read_jsonl(nudges_file)
 
@@ -4430,7 +4502,7 @@ class L2LedgerTests(unittest.TestCase):
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
                 ai_council, "LOG_DIR", root / "logs"
             ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.dict(
-                os.environ, {"AI_COUNCIL_PROACTIVE_EVENT_BRAIN": "true"}, clear=False
+                os.environ, {"AI_COUNCIL_PROACTIVE_EVENT_BRAIN": "true", "AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false"}, clear=False
             ):
                 ai_council.record_error("test", message="boom", severity="warning")
                 ai_council.control_response("pause proactive test")
@@ -5107,7 +5179,7 @@ class L25BackgroundTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["command"], "/agent")
-        self.assertIn("Agent Inbox L4.27", result["response"])
+        self.assertIn("Agent Inbox L4.46", result["response"])
 
     def test_shortcut_mutating_action_is_blocked(self):
         with temp_dir() as tmp:
@@ -5144,7 +5216,7 @@ class L25BackgroundTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["command"], "/chat")
             self.assertNotIn("Goal: Bartek Agent OS", result["response"])
-            self.assertNotIn("Agent Inbox L4.27", result["response"])
+            self.assertNotIn("Agent Inbox L4.46", result["response"])
 
     def test_shortcut_chat_payload_persists_text_for_agent_inbox(self):
         with temp_dir() as tmp:

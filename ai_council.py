@@ -238,6 +238,7 @@ PROVIDER_EXECUTOR_VERSION = "L4.41"
 POKE_FRONT_VERSION = "L4.44"
 AUTONOMOUS_LOOP_VERSION = "L4.43"
 SHORTCUTS_VERSION = "L4.45"
+AGENT_INBOX_VERSION = "L4.46"
 AUTONOMOUS_LOOP_NAMES = ("error_audit_twice_daily", "feature_evolution_loop")
 POKE_CHAT_FOLLOWUP_PREFIXES = (
     "a teraz",
@@ -5473,7 +5474,7 @@ def system_status_response() -> str:
         f"[Council] Online na Desktopie 24/7. {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, /poke-gap for Poke parity feedback, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; bezpieczne R0 research/recipe/flow/council startują od razu w tle; kalendarz/mail/GitHub/Drive external write -> draft/approval; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.44: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        f"Komendy {AGENT_INBOX_VERSION}: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5501,7 +5502,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: {POKE_FRONT_VERSION} memory_front=on loop_cadence=on default_front=on shortcuts_service_pack={SHORTCUTS_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: {POKE_FRONT_VERSION} memory_front=on loop_cadence=on default_front=on shortcuts_service_pack={SHORTCUTS_VERSION} agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5533,7 +5534,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        f"version: {SHORTCUTS_VERSION} iPhone Shortcuts Service Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        f"version: {AGENT_INBOX_VERSION} Mobile Activation Advisor + {SHORTCUTS_VERSION} iPhone Shortcuts Service Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -6894,6 +6895,28 @@ def followup_action_can_run(action: dict) -> tuple[bool, str]:
     return True, f"{effective_risk}: safe follow-up route"
 
 
+def shortcut_setup_agent_item() -> dict | None:
+    if not bool_cfg("AI_COUNCIL_AGENT_SHORTCUT_SETUP_ADVISOR", True):
+        return None
+    try:
+        status = shortcut_runtime_status()
+    except Exception as exc:
+        record_error("shortcut_setup_agent_item", exc=exc, severity="warning")
+        return None
+    if status["token_ready"]:
+        return None
+    return {
+        # Below stuck tasks (105), above P0 improvements (100): mobile activation is a parity blocker, not an auto-run task.
+        "priority": 101,
+        "kind": "iphone_setup",
+        "id": "shortcuts-token",
+        "title": "iPhone Shortcuts nie ma tokena; mobile Poke-like capture nie jest jeszcze aktywny.",
+        "next_action": "/shortcuts",
+        "run_kind": "",
+        "reason": "wymaga ustawienia AI_COUNCIL_SHORTCUT_TOKEN i osobnej zgody na start daemonu",
+    }
+
+
 def agent_inbox_snapshot() -> dict:
     running = [task for task in latest_tasks(limit=50) if task.get("status") in {"running", "running_background"}]
     stuck = stuck_tasks(limit=5)
@@ -6918,6 +6941,9 @@ def agent_inbox_snapshot() -> dict:
 def agent_inbox_items(snapshot: dict | None = None, limit: int = 12) -> list[dict]:
     snap = snapshot or agent_inbox_snapshot()
     items: list[dict] = []
+    shortcut_item = shortcut_setup_agent_item()
+    if shortcut_item:
+        items.append(shortcut_item)
     for task in snap["stuck"]:
         task_id = str(task.get("task_id") or "")
         if not task_id:
@@ -7102,9 +7128,11 @@ def agent_response(prompt: str = "", chat_id: str = "") -> str:
     snapshot = agent_inbox_snapshot()
     items = agent_inbox_items(snapshot, limit=8)
     top = items[0] if items else {}
+    # Advisory items can be highest priority but intentionally non-runnable; still surface the first safe runnable action.
+    first_runnable = next((item for item in items if item.get("run_kind")), None)
     pending_runnable = sum(1 for item in items if item.get("run_kind"))
     lines = [
-        "[Council] Agent Inbox L4.27",
+        f"[Council] Agent Inbox {AGENT_INBOX_VERSION}",
         f"DECYZJA: {compact_line(str(top.get('title') or 'Brak pilnych spraw.'), 180)}",
         "FAKTY:",
         f"1. running={len(snapshot['running'])} stuck={len(snapshot['stuck'])} errors_24h={len(snapshot['errors'])}",
@@ -7115,8 +7143,8 @@ def agent_response(prompt: str = "", chat_id: str = "") -> str:
     for index, item in enumerate(items[:5], start=1):
         lines.append(format_agent_item(item, index=index))
     lines.append(f"NEXT: {top.get('next_action', '/agent')}")
-    if top.get("run_kind"):
-        lines.append(f"RUN: /agent run {top.get('id')}")
+    if first_runnable:
+        lines.append(f"RUN: /agent run {first_runnable.get('id')}")
     else:
         lines.append("RUN: brak bezpiecznego auto-run dla top item; wymagany status/cancel/approval.")
     lines.append("DO CIEBIE: jeśli chcesz, wyślij `/agent run`; R3/R4 i external write nadal wymagają jawnego approval.")
@@ -7154,6 +7182,18 @@ def proactive_event(
 
 def detect_proactive_events() -> list[dict]:
     events: list[dict] = []
+    if bool_cfg("AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP", True) and not cfg("AI_COUNCIL_SHORTCUT_TOKEN"):
+        events.append(
+            proactive_event(
+                "iphone_setup",
+                "shortcuts-token",
+                "iPhone Shortcuts czeka na token",
+                "Mobile capture jest gotowy w kodzie, ale AI_COUNCIL_SHORTCUT_TOKEN nie jest ustawiony; listener nie startuje automatycznie.",
+                "/shortcuts",
+                severity="warning",
+            )
+        )
+
     recent_errors = error_rows(days=1)
     error_threshold = int_cfg("AI_COUNCIL_PROACTIVE_ERROR_THRESHOLD", 1)
     if len(recent_errors) >= error_threshold and recent_errors:
