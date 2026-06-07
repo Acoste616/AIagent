@@ -1,6 +1,7 @@
 # Goal Status Audit
 
 Date: 2026-06-07
+Updated: 2026-06-07
 
 Goal:
 
@@ -50,12 +51,16 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.14 Google OAuth read-sync for Gmail/Calendar/Drive.
-2. L4.15 Poke Action Planner: one natural message -> plan/recipe/task/status without slash.
-3. Live recipes powered by indexed connectors.
-4. Stronger verifier/rollback for broader local execution.
-5. iPhone Shortcuts as primary capture layer.
-6. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+1. L4.16 Live Recipes powered by indexed connectors.
+2. Automatic best-recipe selection for planned tasks.
+3. Stronger verifier/rollback for broader local execution.
+4. iPhone Shortcuts as primary capture layer.
+5. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+
+Completed layers in the current implementation state:
+
+- L4.14 Google OAuth read-sync for Gmail/Calendar/Drive.
+- L4.15 Poke Action Planner: one natural message -> planned task/preview/risk/cost/start path without slash.
 
 ## External Follow-up
 

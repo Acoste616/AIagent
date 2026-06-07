@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -137,6 +138,7 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "approve:act-20260606-120000-abcdef")
         self.assertEqual(markup["inline_keyboard"][0][1]["callback_data"], "deny:act-20260606-120000-abcdef")
+        self.assertEqual(markup["inline_keyboard"][1][0]["callback_data"], "edit:act-20260606-120000-abcdef")
 
     def test_response_reply_markup_for_task(self):
         markup = ai_council.response_reply_markup("[AI Council] task-20260606-120000-abcdef\nSTART")
@@ -178,6 +180,12 @@ class OperatorOutputTests(unittest.TestCase):
         approve.assert_called_once_with("act-1")
         self.assertEqual(status, "approved")
         self.assertIn("Approved", response)
+
+    def test_callback_edit_returns_safe_edit_instruction(self):
+        response, status = ai_council.handle_callback_query({"data": "edit:act-1"})
+
+        self.assertEqual(status, "edit")
+        self.assertIn("poprawioną intencję", response.lower())
 
     def test_callback_facts_and_next_route_to_artifact_responses(self):
         with patch.object(ai_council, "facts_response", return_value="[Council] Facts task-1") as facts, patch.object(
@@ -394,6 +402,8 @@ class RoutingTests(unittest.TestCase):
             "/append shared/test.txt = ok": ("/append", ["host"]),
             "/patch shared/test.txt :: ok => better": ("/patch", ["host"]),
             "/chat test": ("/chat", ["host"]),
+            "/plan-action ogarnij temat": ("/plan-action", ["host"]),
+            "/start-task task-1": ("/start-task", ["host"]),
             "/errors": ("/errors", ["host"]),
             "/nudges": ("/nudges", ["host"]),
             "/sources": ("/sources", ["host"]),
@@ -426,6 +436,10 @@ class RoutingTests(unittest.TestCase):
             "sprawdź connector github": "/connector",
             "podłącz github": "/connector",
             "sync gmail Poke": "/connector",
+            "ogarnij mi research Poke": "/plan-action",
+            "przygotuj mi plan wdrożenia": "/plan-action",
+            "przygotuj mi raport z gmail": "/plan-action",
+            "start task-20260606-120000-abcdef": "/start-task",
             "pokaż ulepszenia": "/improvements",
             "health": "/health",
             "anuluj task-1": "/cancel",
@@ -464,6 +478,186 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(route["mode"], "connector_sync")
         self.assertEqual(route["prompt"], "sync drive Poke recipes")
         self.assertEqual(benign["command"], "/chat")
+
+    def test_action_planner_builds_planned_research_task_without_auto_execute(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                response = ai_council.action_planner_response("ogarnij mi research Poke funkcje", chat_id="553")
+                tasks = ai_council.latest_tasks(limit=1)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertIn("Action Planner L4.15", response)
+        self.assertIn("TRYB: research", response)
+        self.assertIn("NEXT:", response)
+        self.assertEqual(tasks[0]["status"], "planned")
+        self.assertEqual(tasks[0]["planner_mode"], "research")
+        self.assertEqual(tasks[0]["recommended_command"], "@research")
+        self.assertEqual(actions, [])
+
+    def test_action_planner_side_effect_creates_pending_approval(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                response = ai_council.action_planner_response("wyślij maila do klienta z ofertą", chat_id="553")
+                actions = ai_council.latest_by_id(root / "state" / "actions.jsonl", "action_id", limit=1)
+                markup = ai_council.response_reply_markup(response)
+
+        self.assertIn("Pending action utworzona", response)
+        self.assertEqual(actions[0]["status"], "pending")
+        self.assertEqual(actions[0]["type"], "planner_proposal")
+        self.assertEqual(actions[0]["risk"], "R4")
+        self.assertIn("task_id", actions[0]["payload"])
+        callback_data = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
+        self.assertIn(f"approve:{actions[0]['action_id']}", callback_data)
+        self.assertIn(f"edit:{actions[0]['action_id']}", callback_data)
+
+    def test_action_planner_read_only_connector_does_not_create_pending_approval(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                response = ai_council.action_planner_response("przygotuj mi raport z gmail o Poke", chat_id="553")
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+                task = ai_council.latest_tasks(limit=1)[0]
+
+        self.assertIn("TRYB: connector", response)
+        self.assertNotIn("Pending action", response)
+        self.assertEqual(actions, [])
+        self.assertEqual(task["recommended_command"], "/connector")
+
+    def test_action_planner_does_not_overclassify_send_me_link_as_r4(self):
+        plan = ai_council.action_planner_mode("wyślij mi link do dokumentu")
+
+        self.assertEqual(plan["risk"], "R0")
+        self.assertFalse(plan["approval_required"])
+
+    def test_action_planner_r3_schedule_meeting_requires_approval(self):
+        plan = ai_council.action_planner_mode("schedule meeting with customer tomorrow")
+
+        self.assertEqual(plan["risk"], "R3")
+        self.assertEqual(plan["mode"], "approval")
+        self.assertTrue(plan["approval_required"])
+
+    def test_risk_auth_docs_is_not_broad_auth_approval(self):
+        risk, _ = ai_council.risk_level_for_text("sprawdź dokumentację auth")
+
+        self.assertEqual(risk, "R0")
+
+    def test_approve_planner_proposal_reports_checkpoint_next_step(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                planner = ai_council.action_planner_response("wyślij maila do klienta z ofertą", chat_id="553")
+                action_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", planner).group(1)
+                approved = ai_council.approve_response(action_id)
+                action = ai_council.get_latest_action(action_id)
+
+        self.assertEqual(action["status"], "approved")
+        self.assertIn("Approved planner checkpoint", approved)
+        self.assertIn("Nie wykonałem external write", approved)
+        self.assertIn("Next: status task-", approved)
+
+    def test_edit_callback_marks_pending_action_as_editing(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_action("Planner proposal: test", action_type="planner_proposal", risk="R4")
+                response, status = ai_council.handle_callback_query({"data": f"edit:{action['action_id']}"})
+                edited = ai_council.get_latest_action(action["action_id"])
+
+        self.assertEqual(status, "edit")
+        self.assertEqual(edited["status"], "editing")
+        self.assertIn("stara akcja", response)
+
+    def test_start_planned_task_uses_recommended_background_route(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "start_background_job", return_value="[AI Council] task-started") as start:
+                planner = ai_council.action_planner_response("ogarnij mi research Poke funkcje", chat_id="553")
+                task_id = re.search(r"task_id: (task-[A-Za-z0-9_.-]+)", planner).group(1)
+                response = ai_council.start_planned_task_response(task_id, chat_id="553")
+                latest = ai_council.get_latest_task(task_id)
+
+        self.assertIn("task-started", response)
+        self.assertEqual(latest["status"], "running")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["task_id"], task_id)
+
+    def test_start_planned_task_foreground_error_marks_failed(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "build_response", return_value="[Council] Error: connector failed"):
+                task = ai_council.create_planned_task(
+                    "przygotuj mi raport z gmail",
+                    ai_council.action_planner_mode("przygotuj mi raport z gmail"),
+                )
+                response = ai_council.start_planned_task_response(task["task_id"], chat_id="553")
+                latest = ai_council.get_latest_task(task["task_id"])
+
+        self.assertIn("connector failed", response)
+        self.assertEqual(latest["status"], "failed")
 
     def test_multiline_command_block_routes_line_by_line(self):
         route = ai_council.route_text("status\n@claude-flow test\n/flow plan")

@@ -1061,6 +1061,10 @@ def task_status_response(task_id: str) -> str:
             lines.append(f"worker_pid: {task.get('worker_pid')}")
         if task.get("report_path"):
             lines.append(f"report: {task.get('report_path')}")
+        if task.get("planner_mode"):
+            lines.append(f"planner_mode: {task.get('planner_mode')}")
+        if task.get("recommended_command"):
+            lines.append(f"recommended: {task.get('recommended_command')} {compact_line(str(task.get('recommended_prompt') or ''), 140)}")
         artifact = get_latest_task_artifact(task_id)
         if artifact:
             lines.append(f"details: /details {task_id}")
@@ -3646,10 +3650,10 @@ def capabilities_response() -> str:
     ensure_council_dirs()
     return (
         "[Council] Poke-like core online.\n"
-        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `ogarnij mi ...`, `przygotuj mi ...`, `załatw ...`, `start task-...`, `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -3662,10 +3666,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: pełny osobisty action planner, stałe recipes na żywych danych, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v0, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: live recipes na żywych danych, automatyczne dopasowanie recipe do taska, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.15 Poke Action Planner - jedna wiadomość ma zamienić się w konkretny plan/recipe/task z jasnym statusem, bez proszenia Cię o slash."
+        "Najbliższy cel wdrożeniowy: L4.16 Live Recipes - Action Planner ma automatycznie wybierać i uruchamiać recipes na źródłach Gmail/Calendar/Drive/memory."
     )
 
 
@@ -3678,10 +3682,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.14 Google OAuth Read Sync + Connector Cache: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.15 Poke Action Planner + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.14: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.15: /plan-action, /start-task, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -3738,7 +3742,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.14 Google OAuth read-sync + Poke core",
+        "version: L4.15 Poke Action Planner + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -3951,7 +3955,35 @@ def memory_response(prompt: str) -> str:
 
 def risk_level_for_text(text: str) -> tuple[str, str]:
     lower = (text or "").lower()
-    if any(token in lower for token in ["billing", "płat", "payment", "money", "stripe", "dns", "auth", "delete", "usuń", "publish", "opublikuj", "contact", "wyślij do klienta"]):
+    if any(
+        token in lower
+        for token in [
+            "billing",
+            "płat",
+            "payment",
+            "money",
+            "stripe",
+            "dns",
+            "delete",
+            "usuń",
+            "usun",
+            "auth token",
+            "oauth secret",
+            "login credentials",
+            "zaloguj",
+            "publish",
+            "opublikuj",
+            "contact customer",
+            "kontakt do klienta",
+            "skontaktuj",
+            "wyślij do klienta",
+            "wyslij do klienta",
+            "wyślij mail",
+            "wyslij mail",
+            "wyślij email",
+            "wyslij email",
+        ]
+    ):
         return "R4", "money/publish/contact/delete/DNS/auth/billing risk"
     if any(token in lower for token in ["gmail", "calendar", "drive", "github", "external api", "api write", "email", "send mail", "schedule meeting"]):
         return "R3", "external write/API/contact integration risk"
@@ -4032,6 +4064,258 @@ def create_action(description: str, *, action_type: str = "manual", risk: str = 
         }
     )
     return action
+
+
+def action_planner_trigger(text: str) -> bool:
+    lower = normalize_intent_text(text)
+    if not lower or lower.startswith(("/", "@")):
+        return False
+    prefixes = (
+        "ogarnij",
+        "załatw",
+        "zalatw",
+        "pomóż mi",
+        "pomoz mi",
+        "przygotuj mi",
+        "stwórz mi",
+        "stworz mi",
+        "zrób dla mnie",
+        "zrob dla mnie",
+        "zorganizuj",
+        "dopilnuj",
+        "przypilnuj",
+        "ustaw",
+        "umów",
+        "umow",
+        "wyślij",
+        "wyslij",
+        "napisz mail",
+        "napisz email",
+        "napisz odpowiedź",
+        "napisz odpowiedz",
+    )
+    return lower.startswith(prefixes)
+
+
+def action_planner_mode(prompt: str) -> dict:
+    lower = normalize_intent_text(prompt)
+    risk, reason = risk_level_for_text(prompt)
+    has_side_effect_verb = any(
+        token in lower
+        for token in (
+            "wyślij mail",
+            "wyslij mail",
+            "wyślij email",
+            "wyslij email",
+            "wyślij wiadomość",
+            "wyslij wiadomość",
+            "wyślij do ",
+            "wyslij do ",
+            "napisz mail do",
+            "napisz email do",
+            "opublikuj",
+            "usuń",
+            "usun",
+            "skasuj",
+            "kup",
+            "zapłać",
+            "zaplac",
+            "umów",
+            "umow",
+            "schedule meeting",
+            "zadzwoń",
+            "zadzwon",
+            "contact customer",
+            "skontaktuj",
+            "dns",
+            "billing",
+            "auth token",
+            "oauth secret",
+            "zaloguj",
+        )
+    )
+    mode = "flow"
+    command = "/flow"
+    route_prompt = prompt.strip()
+    decision = "Przygotować plan wykonania i zostawić wykonanie po decyzji użytkownika."
+    source_requested = any(token in lower for token in ("gmail", "calendar", "kalendarz", "drive", "docs", "źródł", "zrodl"))
+
+    if source_requested and not has_side_effect_verb:
+        mode = "connector"
+        command = "/connector"
+        decision = "Najpierw odczytać źródła read-only albo zrobić connector brief."
+        if "drive" in lower or "docs" in lower:
+            route_prompt = f"brief drive {prompt.strip()}"
+        elif "calendar" in lower or "kalendarz" in lower:
+            route_prompt = f"brief calendar {prompt.strip()}"
+        else:
+            route_prompt = f"brief gmail {prompt.strip()}"
+    elif has_side_effect_verb or risk in {"R2", "R3", "R4"}:
+        mode = "approval"
+        command = "/propose"
+        decision = "To wygląda na akcję z ryzykiem, więc najpierw powstaje pending action z approval."
+    elif any(token in lower for token in ("council", "claude i grok", "claude i grokiem", "rada ai", "ai council")):
+        mode = "council"
+        command = "/council"
+        decision = "Skonsultować temat przez Council i zapisać decyzję/fakty/next."
+    elif any(token in lower for token in ("research", "zbadaj", "poszukaj", "sprawdź internet", "sprawdz internet", "x.com", "twitter", "poke")):
+        mode = "research"
+        command = "@research"
+        decision = "Zrobić research brief i potem wybrać następny krok."
+    elif any(token in lower for token in ("recipe", "recept", "codzienny digest", "daily digest")):
+        mode = "recipe"
+        command = "/recipe"
+        route_prompt = f"run project_next_action {prompt.strip()}".strip()
+        decision = "Uruchomić istniejącą recipe jako powtarzalny workflow."
+    elif any(token in lower for token in ("task", "zadanie", "zapisz do kolejki")):
+        mode = "task"
+        command = "/task"
+        decision = "Zapisać temat jako task i dopiero potem wybrać operatora."
+
+    return {
+        "mode": mode,
+        "command": command,
+        "prompt": route_prompt,
+        "risk": risk,
+        "risk_reason": reason,
+        "decision": decision,
+        "approval_required": mode == "approval",
+    }
+
+
+def action_planner_estimated_cost(plan: dict) -> float:
+    mode = str(plan.get("mode") or "")
+    if mode == "research":
+        return estimated_operator_cost("grok")
+    if mode in {"flow", "recipe"}:
+        return estimated_operator_cost("claude-flow")
+    if mode == "council":
+        return estimated_operator_cost("grok") + estimated_operator_cost("claude") + estimated_operator_cost("codex")
+    return 0.0
+
+
+def create_planned_task(prompt: str, plan: dict) -> dict:
+    task = create_task(
+        prompt,
+        source="action_planner",
+        status="planned",
+        command="/plan-action",
+        operators=["host"],
+    )
+    updated = update_task_status(
+        task["task_id"],
+        "planned",
+        "action planner prepared next route",
+        planner_mode=plan.get("mode", ""),
+        recommended_command=plan.get("command", ""),
+        recommended_prompt=plan.get("prompt", ""),
+        recommended_route={
+            "command": plan.get("command", ""),
+            "operators": operators_for_command(str(plan.get("command") or "")),
+            "prompt": plan.get("prompt", ""),
+            "mode": plan.get("mode", ""),
+            "intent": "planner",
+        },
+        risk=plan.get("risk", ""),
+        risk_reason=plan.get("risk_reason", ""),
+    )
+    return updated or task
+
+
+def operators_for_command(command: str) -> list[str]:
+    if command in {"@research", "@xresearch", "/xresearch", "/poke-research"}:
+        return ["grok"]
+    if command in {"/flow", "@claude-flow"}:
+        return ["claude-flow"]
+    if command == "/council":
+        return ["codex", "claude", "grok"]
+    return ["host"]
+
+
+def action_planner_response(prompt: str, chat_id: str = "") -> str:
+    clean = prompt.strip()
+    if not clean:
+        return "[Council] Action Planner: napisz, co mam ogarnąć."
+    plan = action_planner_mode(clean)
+    task = create_planned_task(clean, plan)
+    cost = action_planner_estimated_cost(plan)
+    action = None
+    if plan.get("approval_required"):
+        action = create_action(
+            f"Planner proposal: {clean}",
+            action_type="planner_proposal",
+            risk=plan["risk"],
+            payload={
+                "task_id": task.get("task_id"),
+                "intent": clean,
+                "planner_mode": plan["mode"],
+                "recommended_command": plan["command"],
+                "recommended_prompt": plan["prompt"],
+                "estimated_cost_usd": cost,
+            },
+        )
+    lines = [
+        "[Council] Action Planner L4.15",
+        f"task_id: {task.get('task_id')}",
+        f"DECYZJA: {plan['decision']}",
+        f"TRYB: {plan['mode']}",
+        f"RYZYKO: {plan['risk']} - {plan['risk_reason']}",
+        f"KOSZT_PREVIEW: ${cost:.4f} est.",
+        "PREVIEW:",
+        f"- intent: {compact_line(clean, 220)}",
+        f"- next_route: {plan['command']} {compact_line(str(plan['prompt']), 180)}",
+    ]
+    if action:
+        lines.extend(
+            [
+                "Pending action utworzona.",
+                f"id: {action['action_id']}",
+                f"approve: /approve {action['action_id']}",
+                f"deny: /deny {action['action_id']}",
+                "DO CIEBIE: zatwierdź, edytuj intencję nową wiadomością albo anuluj.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "NEXT:",
+                f"1. start {task.get('task_id')}",
+                f"2. status {task.get('task_id')}",
+                "DO CIEBIE: napisz `start task-...`, jeśli mam uruchomić rekomendowany tryb.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def start_planned_task_response(prompt: str, chat_id: str = "") -> str:
+    target_id = prompt.strip().split()[0] if prompt.strip() else ""
+    if not target_id:
+        return "[Council] Użyj: start task-..."
+    task = get_latest_task(target_id)
+    if not task:
+        return f"[Council] Nie znalazłem task `{target_id}`."
+    if task.get("status") not in {"planned", "queued"}:
+        return task_status_response(target_id)
+    route = task.get("recommended_route")
+    if not isinstance(route, dict) or not route.get("command"):
+        return f"[Council] Task `{target_id}` nie ma recommended route.\n{task_status_response(target_id)}"
+    route = {**route, "task_id": target_id}
+    chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    if route_should_background(route):
+        update_task_status(target_id, "running", "planner start requested")
+        return start_background_job(route, chat_id=chat_id, task_id=target_id, send_progress=True)
+    try:
+        response = build_response(route, chat_id=chat_id)
+    except Exception as exc:
+        response = f"[Council] Error: {compact_line(redact_secrets(str(exc)), 500)}"
+        update_task_status(target_id, "failed", redact_secrets(str(exc))[:300])
+        return response
+    response_lower = response.lower()
+    if response.startswith("[Council] Error") or "failed" in response_lower or "nie znalazłem" in response_lower:
+        update_task_status(target_id, "failed", "planner route returned error")
+    else:
+        update_task_status(target_id, "completed", "planner route completed")
+    return response
 
 
 def get_latest_action(action_id: str) -> dict | None:
@@ -4639,6 +4923,22 @@ def approve_response(prompt: str) -> str:
         if executed.get("status") == "executed":
             return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
+    if updated.get("type") == "planner_proposal":
+        payload = updated.get("payload") or {}
+        task_id = str(payload.get("task_id") or "")
+        route_preview = compact_line(
+            f"{payload.get('recommended_command', '')} {payload.get('recommended_prompt', '')}".strip(),
+            220,
+        )
+        next_line = f"Next: status {task_id}" if task_id else "Next: /actions"
+        if task_id and updated.get("risk") in {"R0", "R1"}:
+            next_line = f"Next: start {task_id}"
+        return (
+            f"[Council] Approved planner checkpoint: {updated['action_id']}.\n"
+            "Nie wykonałem external write/send/publish. Approval zapisał decyzję i utrzymał audit trail.\n"
+            f"route: {route_preview or '(none)'}\n"
+            f"{next_line}"
+        )
     return (
         f"[Council] Approved: {updated['action_id']}.\n"
         "Ta akcja nie ma automatycznego wykonania w L3.0."
@@ -5658,7 +5958,7 @@ def action_reply_markup(action_id: str) -> dict:
     return inline_keyboard(
         [
             [("Zatwierdź", f"approve:{action_id}"), ("Anuluj", f"deny:{action_id}")],
-            [("Actions", "actions:latest")],
+            [("Popraw", f"edit:{action_id}"), ("Actions", "actions:latest")],
         ]
     )
 
@@ -5751,6 +6051,7 @@ def normalize_intent_text(text: str) -> str:
 
 LLM_ROUTER_ALLOWED_COMMANDS = {
     "/chat",
+    "/plan-action",
     "@research",
     "/xresearch",
     "/flow",
@@ -5810,7 +6111,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -6004,6 +6305,21 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż ulepszenia", "pokaz ulepszenia", "pokaż backlog", "pokaz backlog", "następne wdrożenie", "nastepne wdrozenie")
     ):
         return {"command": "/improvements", "operators": ["host"], "prompt": "", "mode": "improvements", "intent": "natural"}
+
+    start_task_prefixes = ["start task-", "uruchom task-", "odpal task-"]
+    if any(lower.startswith(prefix) for prefix in start_task_prefixes):
+        prompt = stripped
+        for prefix in start_task_prefixes:
+            if lower.startswith(prefix):
+                prompt = "task-" + stripped[len(prefix) :].strip(" :,-")
+                break
+        return {
+            "command": "/start-task",
+            "operators": ["host"],
+            "prompt": prompt,
+            "mode": "start_task",
+            "intent": "natural",
+        }
 
     status_id_prefixes = ["status "]
     if any(lower.startswith(prefix) for prefix in status_id_prefixes):
@@ -6247,6 +6563,15 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    if action_planner_trigger(stripped):
+        return {
+            "command": "/plan-action",
+            "operators": ["host"],
+            "prompt": stripped,
+            "mode": "action_planner",
+            "intent": "natural",
+        }
+
     return None
 
 
@@ -6331,6 +6656,8 @@ def route_text(text: str) -> dict:
         return {"command": "@xresearch", "operators": ["grok"], "prompt": stripped[10:].strip(), "mode": "xresearch"}
     if lower.startswith("@all"):
         return {"command": "@all", "operators": ["codex", "claude", "grok"], "prompt": stripped[4:].strip()}
+    if lower.startswith("/plan-action"):
+        return {"command": "/plan-action", "operators": ["host"], "prompt": stripped[12:].strip(), "mode": "action_planner"}
     if lower.startswith("/plan"):
         return {"command": "/plan", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "plan_only"}
     if lower.startswith("/dryrun"):
@@ -6353,6 +6680,8 @@ def route_text(text: str) -> dict:
         return {"command": "/goal", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "goal"}
     if lower.startswith("/chat"):
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
+    if lower.startswith("/start-task"):
+        return {"command": "/start-task", "operators": ["host"], "prompt": stripped[11:].strip(), "mode": "start_task"}
     if lower.startswith("/cost"):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
     if lower.startswith("/errors"):
@@ -6862,6 +7191,10 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return goal_response()
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
+    if command == "/plan-action":
+        return action_planner_response(prompt, chat_id=chat_id)
+    if command == "/start-task":
+        return start_planned_task_response(prompt, chat_id=chat_id)
     if command == "/cost":
         return cost_response()
     if command == "/errors":
@@ -7095,6 +7428,14 @@ def handle_callback_query(callback: dict) -> tuple[str, str]:
         return approve_response(target), "approved"
     if action == "deny":
         return deny_response(target), "denied"
+    if action == "edit":
+        current = get_latest_action(target)
+        if current and current.get("status") == "pending":
+            update_action_status(target, "editing", "edit requested by Bartek")
+        return (
+            f"[Council] Popraw `{target}`: stara akcja nie będzie już traktowana jako pending. Napisz poprawioną intencję jako nową wiadomość.",
+            "edit",
+        )
     if action == "cancel":
         return cancel_response(target), "cancelled"
     if action == "status":
