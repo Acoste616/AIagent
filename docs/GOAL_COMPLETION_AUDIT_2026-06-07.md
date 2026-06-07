@@ -1,4 +1,4 @@
-# Goal Completion Audit
+# Goal Status Audit
 
 Date: 2026-06-07
 
@@ -44,7 +44,18 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 
 ## Completion Decision
 
-The Windows Desktop AI Council goal is complete: research, Claude planning, tournament, audited implementation, desktop deployment, Telegram live inbound/outbound, status, and tests are all proven by current evidence.
+The Windows Desktop baseline is proven: research, Claude planning, tournament, audited implementation, desktop deployment, Telegram live inbound/outbound, status, and tests are all evidenced.
+
+The broader user goal is not complete. Poke parity requires the assistant to feel like one capable personal operator with live integrations, recipes, proactive follow-up, iPhone capture, and safe execution. Current status is a working baseline plus partial Poke-like layers, not final parity.
+
+Next required layers:
+
+1. L4.14 Google OAuth read-sync for Gmail/Calendar/Drive.
+2. L4.15 Poke Action Planner: one natural message -> plan/recipe/task/status without slash.
+3. Live recipes powered by indexed connectors.
+4. Stronger verifier/rollback for broader local execution.
+5. iPhone Shortcuts as primary capture layer.
+6. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
 
 ## External Follow-up
 

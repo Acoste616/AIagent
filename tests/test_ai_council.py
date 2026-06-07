@@ -425,6 +425,7 @@ class RoutingTests(unittest.TestCase):
             "pokaż konektory": "/connectors",
             "sprawdź connector github": "/connector",
             "podłącz github": "/connector",
+            "sync gmail Poke": "/connector",
             "pokaż ulepszenia": "/improvements",
             "health": "/health",
             "anuluj task-1": "/cancel",
@@ -454,6 +455,15 @@ class RoutingTests(unittest.TestCase):
                 self.assertEqual(ai_council.route_text(text)["command"], command)
 
         self.assertEqual(ai_council.route_text("normalne pytanie do codexa")["command"], "/chat")
+
+    def test_natural_connector_sync_builds_connector_prompt(self):
+        route = ai_council.route_text("sync google drive Poke recipes")
+        benign = ai_council.route_text("musisz sync gmail recipes z firmą")
+
+        self.assertEqual(route["command"], "/connector")
+        self.assertEqual(route["mode"], "connector_sync")
+        self.assertEqual(route["prompt"], "sync drive Poke recipes")
+        self.assertEqual(benign["command"], "/chat")
 
     def test_multiline_command_block_routes_line_by_line(self):
         route = ai_council.route_text("status\n@claude-flow test\n/flow plan")
@@ -1083,10 +1093,11 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.13", response)
+        self.assertIn("Connectors L4.14", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
+        self.assertIn("/connector sync", response)
 
     def test_connector_auth_github_returns_nonsecret_setup_steps(self):
         with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
@@ -1137,6 +1148,211 @@ class L2LedgerTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertIn("email cache", results[0]["snippet"])
         self.assertTrue(any("Fresh recipes" in item["snippet"] for item in results))
+
+    def test_connector_sync_gmail_requires_google_oauth_config(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "cfg", side_effect=lambda key, default="": default):
+                response = ai_council.connector_response("sync gmail recipes")
+
+        self.assertIn("Connector sync `gmail`", response)
+        self.assertIn("status: oauth_required", response)
+        self.assertIn("/connector auth gmail", response)
+
+    def test_connector_sync_error_points_to_auth_not_brief(self):
+        with patch.object(ai_council, "google_sync_connector", return_value=("oauth_error: http_400 invalid_scope", 0)), patch.object(
+            ai_council, "connector_index_count", return_value=0
+        ):
+            response = ai_council.connector_response("sync gmail recipes")
+
+        self.assertIn("status: oauth_error: http_400 invalid_scope", response)
+        self.assertIn("/connector auth gmail", response)
+        self.assertIn("/errors recent 10", response)
+        self.assertNotIn("/connector brief gmail recipes", response)
+
+    def test_connector_sync_preserves_multi_word_query(self):
+        with patch.object(ai_council, "google_sync_connector", return_value=("available", 0)) as sync, patch.object(
+            ai_council, "connector_index_count", return_value=0
+        ):
+            response = ai_council.connector_response("sync drive Poke recipes")
+
+        sync.assert_called_once_with("drive", query="Poke recipes")
+        self.assertIn("Connector sync `drive`", response)
+
+    def test_connector_sync_unsupported_does_not_suggest_brief(self):
+        response = ai_council.connector_response("sync unknown Poke")
+
+        self.assertIn("status: unsupported", response)
+        self.assertIn("Obsługiwane OAuth sync", response)
+        self.assertNotIn("/connector brief unknown", response)
+
+    def test_google_sync_limit_is_capped(self):
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_GOOGLE_SYNC_LIMIT":
+                return "1000"
+            if key == "AI_COUNCIL_GOOGLE_SYNC_LIMIT_MAX":
+                return "50"
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "google_sync_gmail", return_value=("available", 0)
+        ) as sync:
+            ai_council.google_sync_connector("gmail", query="Poke")
+
+        sync.assert_called_once_with("Poke", limit=50)
+
+    def test_connector_sync_gmail_indexes_oauth_results(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "GOOGLE_CLIENT_ID": "client-id",
+                "GOOGLE_CLIENT_SECRET": "client-secret",
+                "GOOGLE_REFRESH_TOKEN": "refresh-token",
+            }
+            return values.get(key, default)
+
+        request_calls = []
+
+        def fake_request(url, **kwargs):
+            request_calls.append((url, kwargs))
+            if "gmail.googleapis.com/gmail/v1/users/me/messages?" in url:
+                return {"messages": [{"id": "m1"}]}
+            return {
+                "id": "m1",
+                "threadId": "t1",
+                "snippet": "Poke recipes in email",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Poke Recipes"},
+                        {"name": "From", "value": "bartek@example.com"},
+                        {"name": "To", "value": "council@example.com"},
+                        {"name": "Date", "value": "today"},
+                    ]
+                },
+            }
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "SOURCE_EXPORT_DEFAULTS", {
+                "AI_COUNCIL_GMAIL_EXPORT_DIR": root / "sources" / "gmail",
+                "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
+                "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
+            }), patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+                ai_council, "request_form_json", return_value={"access_token": "ya29-test"}
+            ) as form_request, patch.object(ai_council, "request_json", side_effect=fake_request):
+                response = ai_council.connector_response("sync gmail recipes")
+                status, results = ai_council.source_search("gmail", "recipes", limit=3)
+
+        form_request.assert_called_once()
+        self.assertIn("synced_now: 1", response)
+        self.assertNotIn("ya29-test", response)
+        self.assertEqual(status, "available_index")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source"], "gmail:m1")
+        self.assertIn("Poke Recipes", results[0]["title"])
+        self.assertTrue(any(call[1]["headers"]["Authorization"] == "Bearer ya29-test" for call in request_calls))
+
+    def test_connector_sync_calendar_indexes_oauth_results(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "GOOGLE_CLIENT_ID": "client-id",
+                "GOOGLE_CLIENT_SECRET": "client-secret",
+                "GOOGLE_REFRESH_TOKEN": "refresh-token",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "SOURCE_EXPORT_DEFAULTS", {
+                "AI_COUNCIL_GMAIL_EXPORT_DIR": root / "sources" / "gmail",
+                "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
+                "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
+            }), patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+                ai_council, "request_form_json", return_value={"access_token": "ya29-test"}
+            ), patch.object(
+                ai_council,
+                "request_json",
+                return_value={
+                    "items": [
+                        {
+                            "id": "evt1",
+                            "summary": "Poke planning meeting",
+                            "start": {"dateTime": "2026-06-07T09:00:00Z"},
+                            "end": {"dateTime": "2026-06-07T10:00:00Z"},
+                            "location": "Telegram",
+                            "description": "Discuss recipes",
+                            "htmlLink": "https://calendar.google.com/event",
+                        }
+                    ]
+                },
+            ):
+                response = ai_council.connector_response("sync calendar Poke")
+                status, results = ai_council.source_search("calendar", "recipes", limit=3)
+
+        self.assertIn("synced_now: 1", response)
+        self.assertEqual(status, "available_index")
+        self.assertEqual(results[0]["source"], "calendar:evt1")
+        self.assertIn("Poke planning meeting", results[0]["title"])
+
+    def test_connector_sync_drive_indexes_oauth_results(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "GOOGLE_CLIENT_ID": "client-id",
+                "GOOGLE_CLIENT_SECRET": "client-secret",
+                "GOOGLE_REFRESH_TOKEN": "refresh-token",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONNECTOR_INDEX_DB", root / "state" / "connector_index.sqlite"), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "SOURCE_EXPORT_DEFAULTS", {
+                "AI_COUNCIL_GMAIL_EXPORT_DIR": root / "sources" / "gmail",
+                "AI_COUNCIL_CALENDAR_EXPORT_DIR": root / "sources" / "calendar",
+                "AI_COUNCIL_DRIVE_EXPORT_DIR": root / "sources" / "drive",
+            }), patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+                ai_council, "request_form_json", return_value={"access_token": "ya29-test"}
+            ), patch.object(
+                ai_council,
+                "request_json",
+                return_value={
+                    "files": [
+                        {
+                            "id": "file1",
+                            "name": "Poke recipes doc",
+                            "mimeType": "application/vnd.google-apps.document",
+                            "webViewLink": "https://drive.google.com/file1",
+                            "modifiedTime": "2026-06-07T10:00:00Z",
+                            "description": "recipes and action planner",
+                        }
+                    ]
+                },
+            ):
+                response = ai_council.connector_response("sync drive Poke")
+                status, results = ai_council.source_search("drive", "action planner", limit=3)
+
+        self.assertIn("synced_now: 1", response)
+        self.assertEqual(status, "available_index")
+        self.assertEqual(results[0]["source"], "drive:file1")
+        self.assertIn("Poke recipes doc", results[0]["title"])
+
+    def test_drive_query_escapes_backslash_and_single_quote(self):
+        query = ai_council.drive_query(r"Poke\docs O'Brien")
+
+        self.assertEqual(query, r"name contains 'Poke\\docs O\'Brien' and trashed = false")
+
+    def test_utc_now_rfc3339_z_is_calendar_safe(self):
+        value = ai_council.utc_now_rfc3339_z()
+
+        self.assertTrue(value.endswith("Z"))
+        self.assertNotIn("+00:00", value)
+        self.assertNotIn(".", value)
 
     def test_connector_brief_writes_source_backed_report(self):
         with temp_dir() as tmp:

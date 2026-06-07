@@ -143,7 +143,7 @@ def load_env(path: Path = ENV_PATH) -> dict[str, str]:
             value = value.strip().strip('"').strip("'")
             values[key] = value
     for key, value in os.environ.items():
-        if key.startswith(("TELEGRAM_", "XAI_", "AI_COUNCIL_", "GROK_")):
+        if key.startswith(("TELEGRAM_", "XAI_", "AI_COUNCIL_", "GROK_", "GITHUB_", "GH_", "GOOGLE_")):
             values[key] = value
     return values
 
@@ -241,6 +241,10 @@ def short_hash(value: str) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def utc_now_rfc3339_z() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_utc(value: str) -> datetime | None:
@@ -1151,6 +1155,8 @@ SOURCE_EXPORT_DEFAULTS = {
     "AI_COUNCIL_DRIVE_EXPORT_DIR": PROJECT_DIR / "sources" / "drive",
 }
 
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
 
 CONNECTOR_AUTH_GUIDES = {
     "github": [
@@ -1207,6 +1213,37 @@ def github_headers(token: str = "") -> dict[str, str]:
     return headers
 
 
+def google_oauth_configured() -> bool:
+    return bool(cfg("GOOGLE_CLIENT_ID") and cfg("GOOGLE_CLIENT_SECRET") and cfg("GOOGLE_REFRESH_TOKEN"))
+
+
+def google_access_token() -> tuple[str, str]:
+    if not google_oauth_configured():
+        return "oauth_required", ""
+    data = request_form_json(
+        GOOGLE_OAUTH_TOKEN_URL,
+        {
+            "client_id": cfg("GOOGLE_CLIENT_ID"),
+            "client_secret": cfg("GOOGLE_CLIENT_SECRET"),
+            "refresh_token": cfg("GOOGLE_REFRESH_TOKEN"),
+            "grant_type": "refresh_token",
+        },
+        timeout=30,
+    )
+    if data.get("ok") is False:
+        detail = compact_line(str(data.get("body_preview") or data.get("reason") or ""), 180)
+        suffix = f" {detail}" if detail else ""
+        return f"oauth_error: {data.get('error')}{suffix}", ""
+    token = str(data.get("access_token") or "")
+    if not token:
+        return "oauth_error: missing_access_token", ""
+    return "available", token
+
+
+def google_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+
 def source_statuses() -> list[dict]:
     openclaw_dir = configured_source_dir("OPENCLAW_EXPORT", OPENCLAW_EXPORT)
     gmail_dir = configured_source_dir("AI_COUNCIL_GMAIL_EXPORT_DIR", SOURCE_EXPORT_DEFAULTS["AI_COUNCIL_GMAIL_EXPORT_DIR"])
@@ -1215,6 +1252,7 @@ def source_statuses() -> list[dict]:
     gmail_indexed = connector_index_count("gmail")
     calendar_indexed = connector_index_count("calendar")
     drive_indexed = connector_index_count("drive")
+    google_oauth = google_oauth_configured()
     gh_ok, gh_detail = command_status("gh", ["auth", "status"], timeout=12)
     gh_token_present = bool(github_token())
     github_repo = cfg("AI_COUNCIL_GITHUB_REPO", "Acoste616/AIagent")
@@ -1249,23 +1287,23 @@ def source_statuses() -> list[dict]:
         },
         {
             "name": "gmail",
-            "status": "available" if gmail_dir and gmail_dir.exists() else ("indexed" if gmail_indexed else "auth_required"),
+            "status": "available" if gmail_dir and gmail_dir.exists() else ("indexed" if gmail_indexed else ("oauth_present" if google_oauth else "auth_required")),
             "mode": "read-only",
-            "detail": f"{gmail_dir or 'set AI_COUNCIL_GMAIL_EXPORT_DIR or Gmail OAuth bridge'}; indexed={gmail_indexed}",
+            "detail": f"{gmail_dir or 'set AI_COUNCIL_GMAIL_EXPORT_DIR or Gmail OAuth bridge'}; indexed={gmail_indexed}; oauth={'yes' if google_oauth else 'no'}",
             "search": bool(gmail_dir and gmail_dir.exists()) or gmail_indexed > 0,
         },
         {
             "name": "calendar",
-            "status": "available" if calendar_dir and calendar_dir.exists() else ("indexed" if calendar_indexed else "auth_required"),
+            "status": "available" if calendar_dir and calendar_dir.exists() else ("indexed" if calendar_indexed else ("oauth_present" if google_oauth else "auth_required")),
             "mode": "read-only",
-            "detail": f"{calendar_dir or 'set AI_COUNCIL_CALENDAR_EXPORT_DIR or Calendar OAuth bridge'}; indexed={calendar_indexed}",
+            "detail": f"{calendar_dir or 'set AI_COUNCIL_CALENDAR_EXPORT_DIR or Calendar OAuth bridge'}; indexed={calendar_indexed}; oauth={'yes' if google_oauth else 'no'}",
             "search": bool(calendar_dir and calendar_dir.exists()) or calendar_indexed > 0,
         },
         {
             "name": "drive",
-            "status": "available" if drive_dir and drive_dir.exists() else ("indexed" if drive_indexed else "auth_required"),
+            "status": "available" if drive_dir and drive_dir.exists() else ("indexed" if drive_indexed else ("oauth_present" if google_oauth else "auth_required")),
             "mode": "read-only",
-            "detail": f"{drive_dir or 'set AI_COUNCIL_DRIVE_EXPORT_DIR or Drive OAuth bridge'}; indexed={drive_indexed}",
+            "detail": f"{drive_dir or 'set AI_COUNCIL_DRIVE_EXPORT_DIR or Drive OAuth bridge'}; indexed={drive_indexed}; oauth={'yes' if google_oauth else 'no'}",
             "search": bool(drive_dir and drive_dir.exists()) or drive_indexed > 0,
         },
     ]
@@ -1283,7 +1321,7 @@ def sources_response() -> str:
         lines.append(
             f"- {item['name']} | {item['status']} | {item['mode']} | search={'yes' if item.get('search') else 'no'} | {compact_line(str(item.get('detail') or ''), 120)}"
         )
-    lines.append("Użyj: /source search <name> <query>. Write/send/schedule wymagają Risk Officer i approval.")
+    lines.append("Użyj: /source search <name> <query>. Google: /connector sync gmail|calendar|drive <query>. Write/send/schedule wymagają Risk Officer i approval.")
     return "\n".join(lines)
 
 
@@ -1722,27 +1760,31 @@ def connector_auth_steps(name: str) -> list[str]:
     if normalized == "gmail":
         return [
             f"Tryb read-only v0: wyeksportuj/search cache maili do {SOURCE_EXPORT_DEFAULTS['AI_COUNCIL_GMAIL_EXPORT_DIR']} albo ustaw AI_COUNCIL_GMAIL_EXPORT_DIR.",
-            "OAuth bridge będzie kolejnym krokiem: read/search najpierw, send dopiero po approval.",
+            "OAuth read-sync: ustaw GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET i GOOGLE_REFRESH_TOKEN w .env/system env.",
+            "Potem użyj: /connector sync gmail <query>. Wysyłka maili zostaje R3 i wymaga approval.",
         ]
     if normalized == "calendar":
         return [
             f"Tryb read-only v0: zapisz .ics/.json/.md do {SOURCE_EXPORT_DEFAULTS['AI_COUNCIL_CALENDAR_EXPORT_DIR']} albo ustaw AI_COUNCIL_CALENDAR_EXPORT_DIR.",
-            "Tworzenie wydarzeń zostaje R3 i wymaga approval.",
+            "OAuth read-sync: ustaw GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET i GOOGLE_REFRESH_TOKEN w .env/system env.",
+            "Potem użyj: /connector sync calendar <query>. Tworzenie wydarzeń zostaje R3 i wymaga approval.",
         ]
     if normalized == "drive":
         return [
             f"Tryb read-only v0: zsynchronizuj/wyeksportuj Docs/Drive do {SOURCE_EXPORT_DEFAULTS['AI_COUNCIL_DRIVE_EXPORT_DIR']} albo ustaw AI_COUNCIL_DRIVE_EXPORT_DIR.",
-            "Edycja Drive/Docs zostaje R3 i wymaga approval.",
+            "OAuth read-sync: ustaw GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET i GOOGLE_REFRESH_TOKEN w .env/system env.",
+            "Potem użyj: /connector sync drive <query>. Edycja Drive/Docs zostaje R3 i wymaga approval.",
         ]
     return CONNECTOR_AUTH_GUIDES.get(normalized, [])
 
 
 def connector_statuses() -> list[dict]:
     statuses = []
+    google_sync_ready = google_oauth_configured()
     for item in source_statuses():
         name = str(item.get("name") or "")
         status = str(item.get("status") or "unknown")
-        ready = status in {"available", "indexed"}
+        ready = status in {"available", "indexed", "oauth_present", "token_present"}
         if name in {"memory", "artifacts", "openclaw"}:
             tier = "local"
         elif name == "github":
@@ -1754,6 +1796,7 @@ def connector_statuses() -> list[dict]:
                 **item,
                 "tier": tier,
                 "ready": ready,
+                "sync": name in {"gmail", "calendar", "drive"} and google_sync_ready,
                 "auth_steps": connector_auth_steps(name),
             }
         )
@@ -1766,7 +1809,7 @@ def connector_status(name: str) -> dict | None:
 
 
 def connectors_response() -> str:
-    lines = ["[Council] Connectors L4.13 read-only bridge + cache"]
+    lines = ["[Council] Connectors L4.14 Google OAuth read-sync + cache"]
     ready = 0
     needs_auth = 0
     for item in connector_statuses():
@@ -1775,10 +1818,10 @@ def connectors_response() -> str:
         elif item.get("status") in {"auth_required", "unavailable"}:
             needs_auth += 1
         lines.append(
-            f"- {item['name']} | {item['status']} | {item['tier']} | search={'yes' if item.get('search') else 'no'} | {compact_line(str(item.get('detail') or ''), 110)}"
+            f"- {item['name']} | {item['status']} | {item['tier']} | search={'yes' if item.get('search') else 'no'} | sync={'yes' if item.get('sync') else 'no'} | {compact_line(str(item.get('detail') or ''), 110)}"
         )
     lines.append(f"Ready: {ready}. Needs auth/config: {needs_auth}.")
-    lines.append("Użyj: /connector check <name>, /connector auth <name>, /connector ingest <name>, /connector brief <name> <query>.")
+    lines.append("Użyj: /connector check <name>, /connector auth <name>, /connector ingest <name>, /connector sync <name> <query>, /connector brief <name> <query>.")
     return "\n".join(lines)
 
 
@@ -1865,6 +1908,173 @@ def connector_brief_response(name: str, query: str) -> str:
     return "\n".join(response)
 
 
+def gmail_header(headers: list[dict], name: str) -> str:
+    target = name.lower()
+    for header in headers or []:
+        if str(header.get("name", "")).lower() == target:
+            return str(header.get("value") or "")
+    return ""
+
+
+def google_sync_gmail(query: str = "", limit: int = 10) -> tuple[str, int]:
+    status, token = google_access_token()
+    if not token:
+        return status, 0
+    params = {"maxResults": str(limit)}
+    if query.strip():
+        params["q"] = query.strip()
+    list_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?" + urlencode(params)
+    data = request_json(list_url, headers=google_headers(token), timeout=30)
+    if data.get("ok") is False:
+        return f"gmail_error: {data.get('error')}", 0
+    indexed = 0
+    for item in (data.get("messages") or [])[:limit]:
+        message_id = str(item.get("id") or "")
+        if not message_id:
+            continue
+        get_params = [
+            ("format", "metadata"),
+            ("metadataHeaders", "Subject"),
+            ("metadataHeaders", "From"),
+            ("metadataHeaders", "To"),
+            ("metadataHeaders", "Date"),
+        ]
+        msg_url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?" + urlencode(get_params)
+        message = request_json(msg_url, headers=google_headers(token), timeout=30)
+        if message.get("ok") is False:
+            continue
+        headers = ((message.get("payload") or {}).get("headers") or [])
+        subject = gmail_header(headers, "Subject") or "(no subject)"
+        sender = gmail_header(headers, "From")
+        to = gmail_header(headers, "To")
+        date = gmail_header(headers, "Date")
+        snippet = str(message.get("snippet") or "")
+        text = f"Subject: {subject}\nFrom: {sender}\nTo: {to}\nDate: {date}\nSnippet: {snippet}"
+        connector_index_upsert(
+            "gmail",
+            subject,
+            f"gmail:{message_id}",
+            text,
+            {"id": message_id, "thread_id": message.get("threadId", ""), "query": query},
+        )
+        indexed += 1
+    return "available", indexed
+
+
+def google_sync_calendar(query: str = "", limit: int = 10) -> tuple[str, int]:
+    status, token = google_access_token()
+    if not token:
+        return status, 0
+    params = {
+        "maxResults": str(limit),
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "timeMin": utc_now_rfc3339_z(),
+    }
+    if query.strip():
+        params["q"] = query.strip()
+    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events?" + urlencode(params)
+    data = request_json(url, headers=google_headers(token), timeout=30)
+    if data.get("ok") is False:
+        return f"calendar_error: {data.get('error')}", 0
+    indexed = 0
+    for event in (data.get("items") or [])[:limit]:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            continue
+        title = str(event.get("summary") or "(untitled event)")
+        start = (event.get("start") or {}).get("dateTime") or (event.get("start") or {}).get("date") or ""
+        end = (event.get("end") or {}).get("dateTime") or (event.get("end") or {}).get("date") or ""
+        location = str(event.get("location") or "")
+        description = str(event.get("description") or "")
+        text = f"Event: {title}\nStart: {start}\nEnd: {end}\nLocation: {location}\nDescription: {description}"
+        connector_index_upsert(
+            "calendar",
+            title,
+            f"calendar:{event_id}",
+            text,
+            {"id": event_id, "html_link": event.get("htmlLink", ""), "query": query},
+        )
+        indexed += 1
+    return "available", indexed
+
+
+def drive_query(query: str) -> str:
+    clean = query.strip().replace("\\", "\\\\").replace("'", "\\'")
+    if clean:
+        return f"name contains '{clean}' and trashed = false"
+    return "trashed = false"
+
+
+def google_sync_drive(query: str = "", limit: int = 10) -> tuple[str, int]:
+    status, token = google_access_token()
+    if not token:
+        return status, 0
+    params = {
+        "pageSize": str(limit),
+        "q": drive_query(query),
+        "fields": "files(id,name,mimeType,webViewLink,modifiedTime,description)",
+    }
+    url = "https://www.googleapis.com/drive/v3/files?" + urlencode(params)
+    data = request_json(url, headers=google_headers(token), timeout=30)
+    if data.get("ok") is False:
+        return f"drive_error: {data.get('error')}", 0
+    indexed = 0
+    for item in (data.get("files") or [])[:limit]:
+        file_id = str(item.get("id") or "")
+        if not file_id:
+            continue
+        name = str(item.get("name") or "(untitled file)")
+        text = (
+            f"File: {name}\n"
+            f"MimeType: {item.get('mimeType', '')}\n"
+            f"Modified: {item.get('modifiedTime', '')}\n"
+            f"Link: {item.get('webViewLink', '')}\n"
+            f"Description: {item.get('description', '')}"
+        )
+        connector_index_upsert(
+            "drive",
+            name,
+            f"drive:{file_id}",
+            text,
+            {"id": file_id, "web_view_link": item.get("webViewLink", ""), "query": query},
+        )
+        indexed += 1
+    return "available", indexed
+
+
+def google_sync_connector(name: str, query: str = "") -> tuple[str, int]:
+    normalized = normalize_connector_name(name)
+    limit = max(1, min(int_cfg("AI_COUNCIL_GOOGLE_SYNC_LIMIT", 10), int_cfg("AI_COUNCIL_GOOGLE_SYNC_LIMIT_MAX", 50)))
+    if normalized == "gmail":
+        return google_sync_gmail(query, limit=limit)
+    if normalized == "calendar":
+        return google_sync_calendar(query, limit=limit)
+    if normalized == "drive":
+        return google_sync_drive(query, limit=limit)
+    return "unsupported", 0
+
+
+def connector_sync_response(name: str, query: str = "") -> str:
+    normalized = normalize_connector_name(name)
+    status, synced = google_sync_connector(normalized, query=query)
+    lines = [
+        f"[Council] Connector sync `{normalized}`",
+        f"status: {status}",
+        f"synced_now: {synced}",
+        f"indexed_total: {connector_index_count(normalized) if normalized in {'gmail', 'calendar', 'drive'} else 0}",
+    ]
+    if status == "oauth_required":
+        lines.append(f"Next: /connector auth {normalized}")
+    elif status == "unsupported":
+        lines.append("Obsługiwane OAuth sync: gmail, calendar, drive.")
+    elif "error" in status:
+        lines.append(f"Next: sprawdź konfigurację/scopes: /connector auth {normalized}; błędy: /errors recent 10")
+    else:
+        lines.append(f"Next: /connector brief {normalized} {query or '<query>'}".strip())
+    return "\n".join(lines)
+
+
 def connector_ingest_response(name: str) -> str:
     normalized = normalize_connector_name(name)
     status, indexed, root = connector_ingest_source(normalized)
@@ -1913,6 +2123,12 @@ def connector_response(prompt: str) -> str:
         if len(parts) < 2:
             return connectors_response()
         return connector_ingest_response(parts[1])
+    if action in {"sync", "oauth-sync"}:
+        if len(parts) < 2:
+            return connectors_response()
+        name = parts[1]
+        query = parts[2] if len(parts) >= 3 else ""
+        return connector_sync_response(name, query=query)
     name = parts[0]
     return connector_check_response(name)
 
@@ -3431,9 +3647,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje są automatycznie kierowane do research, planu, Council albo bezpiecznej akcji.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -3445,11 +3661,11 @@ def goal_response() -> str:
     nudges_open = [row for row in latest_nudges(limit=50) if row.get("status") in {"open", "sent"}]
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
-        "Status: NIE jest ukończony. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge.\n"
-        "Brakuje do Poke-level: real OAuth bridge dla Gmail/Calendar/Drive na samym desktop runtime, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: pełny osobisty action planner, stałe recipes na żywych danych, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Następny sprint: L4.14 Google OAuth Bridge: Gmail/Calendar/Drive read przez OAuth/cache sync, z artifactami i approval przed write."
+        "Najbliższy cel wdrożeniowy: L4.15 Poke Action Planner - jedna wiadomość ma zamienić się w konkretny plan/recipe/task z jasnym statusem, bez proszenia Cię o slash."
     )
 
 
@@ -3462,10 +3678,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.13 GitHub Token Bridge + Connector Cache: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache ingest, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.14 Google OAuth Read Sync + Connector Cache: Telegram media capture + text/image/STT analysis + media-to-intent routing, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.13: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.14: /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -3522,7 +3738,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L3.5 active + L4.0 Shortcuts-ready",
+        "version: L4.14 Google OAuth read-sync + Poke core",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -5236,6 +5452,32 @@ def request_json(
         return {"ok": False, "error": "timeout"}
 
 
+def request_form_json(url: str, fields: dict[str, str], *, timeout: int = 20) -> dict:
+    body = urlencode(fields).encode("utf-8")
+    req = Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=timeout) as res:
+            data = json.loads(res.read().decode("utf-8", errors="replace"))
+            if isinstance(data, dict):
+                data.setdefault("ok", True)
+                return data
+            return {"ok": False, "error": "invalid_json_shape"}
+    except HTTPError as exc:
+        body_preview = redact_secrets(exc.read().decode("utf-8", errors="replace"))[:500]
+        return {"ok": False, "error": f"http_{exc.code}", "body_preview": body_preview}
+    except URLError as exc:
+        return {"ok": False, "error": "url_error", "reason": str(exc.reason)}
+    except TimeoutError:
+        return {"ok": False, "error": "timeout"}
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "invalid_json"}
+
+
 def request_multipart_json(
     url: str,
     *,
@@ -5722,6 +5964,31 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "mode": "connector_auth",
             "intent": "natural",
         }
+
+    connector_sync_prefixes = [
+        ("sync gmail", "gmail"),
+        ("sync mail", "gmail"),
+        ("zsynchronizuj gmail", "gmail"),
+        ("zsynchronizuj mail", "gmail"),
+        ("sync calendar", "calendar"),
+        ("sync kalendarz", "calendar"),
+        ("zsynchronizuj calendar", "calendar"),
+        ("zsynchronizuj kalendarz", "calendar"),
+        ("sync drive", "drive"),
+        ("sync google drive", "drive"),
+        ("zsynchronizuj drive", "drive"),
+        ("zsynchronizuj google drive", "drive"),
+    ]
+    for prefix, name in connector_sync_prefixes:
+        if lower.startswith(prefix):
+            query = stripped[len(prefix) :].strip(" :,-")
+            return {
+                "command": "/connector",
+                "operators": ["host"],
+                "prompt": f"sync {name} {query}".strip(),
+                "mode": "connector_sync",
+                "intent": "natural",
+            }
 
     source_search_prefixes = ["szukaj w źródłach", "szukaj w zrodlach", "source search", "search sources"]
     if any(lower.startswith(prefix) for prefix in source_search_prefixes):
