@@ -978,6 +978,18 @@ class RoutingTests(unittest.TestCase):
         self.assertIsNone(route)
         request_json.assert_not_called()
 
+    def test_llm_route_defaults_off_even_with_xai_key(self):
+        def fake_cfg(key, default=""):
+            if key == "XAI_API_KEY":
+                return "xai-test"
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(ai_council, "request_json") as request_json:
+            route = ai_council.llm_route("sprawdź internet", chat_id="553")
+
+        self.assertIsNone(route)
+        request_json.assert_not_called()
+
     def test_route_message_prefers_explicit_then_keyword_then_llm(self):
         with patch.object(ai_council, "llm_route", return_value={"command": "@research", "operators": ["grok"], "prompt": "x", "route_source": "llm", "confidence": 0.9}) as llm:
             explicit = ai_council.route_message("@codex ping", chat_id="553")
@@ -2085,6 +2097,68 @@ class L2LedgerTests(unittest.TestCase):
 
         self.assertFalse(allowed)
         self.assertIn("call limit", reason)
+        self.assertIn("grok: calls=1", cost)
+
+    def test_operator_reservation_counts_against_daily_limit(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "COST_LOCK_FILE", root / "state" / "costs.lock"), patch.dict(
+                os.environ,
+                {"GROK_DAILY_CALL_LIMIT": "1", "GROK_DAILY_BUDGET_USD": "10"},
+                clear=False,
+            ):
+                allowed, _, reservation = ai_council.reserve_operator_call("grok", task_id="task-1")
+                second_allowed, second_reason, second_reservation = ai_council.reserve_operator_call("grok", task_id="task-2")
+                cost = ai_council.cost_response()
+
+        self.assertTrue(allowed)
+        self.assertIsNotNone(reservation)
+        self.assertFalse(second_allowed)
+        self.assertIsNone(second_reservation)
+        self.assertIn("call limit", second_reason)
+        self.assertIn("grok: calls=1", cost)
+
+    def test_operator_reservation_block_detail_keeps_reason(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "COST_LOCK_FILE", root / "state" / "costs.lock"), patch.dict(
+                os.environ,
+                {"GROK_DAILY_CALL_LIMIT": "0", "GROK_DAILY_BUDGET_USD": "0"},
+                clear=False,
+            ):
+                ai_council.control_response("pause models test pause")
+                allowed, reason, reservation = ai_council.reserve_operator_call("grok", detail="poke_chat")
+                rows = ai_council.usage_today("grok")
+
+        self.assertFalse(allowed)
+        self.assertIsNone(reservation)
+        self.assertIn("model calls paused", reason)
+        self.assertIn("poke_chat: model calls paused", rows[0]["detail"])
+
+    def test_operator_reservation_finalization_is_not_double_counted(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "COST_LOCK_FILE", root / "state" / "costs.lock"), patch.dict(
+                os.environ,
+                {"GROK_DAILY_CALL_LIMIT": "10", "GROK_DAILY_BUDGET_USD": "10"},
+                clear=False,
+            ):
+                allowed, _, reservation = ai_council.reserve_operator_call("grok", task_id="task-1")
+                ai_council.finalize_operator_call(reservation, status="completed", duration_ms=123, detail="done")
+                collapsed = ai_council.usage_today("grok")
+                raw = ai_council.usage_today("grok", collapsed=False)
+                cost = ai_council.cost_response()
+
+        self.assertTrue(allowed)
+        self.assertEqual(len(raw), 2)
+        self.assertEqual(len(collapsed), 1)
+        self.assertEqual(collapsed[0]["status"], "completed")
         self.assertIn("grok: calls=1", cost)
 
     def test_control_kill_switch_blocks_model_calls(self):

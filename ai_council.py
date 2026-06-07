@@ -61,6 +61,7 @@ BACKGROUND_JOBS_FILE = STATE_DIR / "background_jobs.jsonl"
 ARTIFACT_INDEX_FILE = STATE_DIR / "artifact_index.jsonl"
 BACKGROUND_JOB_SPECS_DIR = STATE_DIR / "background_job_specs"
 COSTS_FILE = STATE_DIR / "costs.jsonl"
+COST_LOCK_FILE = STATE_DIR / "costs.lock"
 CONTROL_FILE = STATE_DIR / "control.json"
 ERRORS_FILE = STATE_DIR / "errors.jsonl"
 IMPROVEMENTS_FILE = STATE_DIR / "improvements.jsonl"
@@ -426,6 +427,27 @@ class SingleInstanceLock:
                 self.handle.close()
             finally:
                 self.handle = None
+
+
+class BlockingFileLock:
+    def __init__(self, path: Path, timeout: float = 5.0, sleep_seconds: float = 0.05):
+        self.path = path
+        self.timeout = timeout
+        self.sleep_seconds = sleep_seconds
+        self.lock = SingleInstanceLock(path)
+
+    def __enter__(self):
+        deadline = time.time() + self.timeout
+        while True:
+            if self.lock.acquire():
+                return self
+            if time.time() >= deadline:
+                raise TimeoutError(f"lock timeout: {self.path}")
+            time.sleep(self.sleep_seconds)
+
+    def __exit__(self, exc_type, exc, tb):
+        self.lock.release()
+        return False
 
 
 def record_error(
@@ -2398,21 +2420,20 @@ def xai_chat_text(data: dict) -> str:
 
 def grok_image_analysis(local_path: Path, caption: str = "", task_id: str = "") -> str:
     started = time.time()
-    allowed, reason = operator_call_allowed("grok")
+    allowed, reason, reservation = reserve_operator_call("grok", task_id=task_id, detail="vision")
     if not allowed:
-        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, detail=reason)
         return f"[Grok Vision] blocked: {reason}"
     key = cfg("XAI_API_KEY")
     if not key:
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, detail="missing XAI_API_KEY")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail="missing XAI_API_KEY")
         return "[Grok Vision] error: missing XAI_API_KEY"
     if not local_path.exists():
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, detail="media file missing")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail="media file missing")
         return "[Grok Vision] error: media file missing"
     max_bytes = int_cfg("AI_COUNCIL_MEDIA_ANALYSIS_MAX_BYTES", 5_000_000)
     file_size = local_path.stat().st_size
     if file_size > max_bytes:
-        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, detail="media too large")
+        finalize_operator_call(reservation, status="blocked", duration_ms=0, estimated_usd=0.0, detail="media too large")
         return f"[Grok Vision] blocked: media too large ({file_size} bytes > {max_bytes})."
     mime_type = mimetypes.guess_type(str(local_path))[0] or "image/jpeg"
     data_url = f"data:{mime_type};base64,{base64.b64encode(local_path.read_bytes()).decode('ascii')}"
@@ -2448,10 +2469,10 @@ def grok_image_analysis(local_path: Path, caption: str = "", task_id: str = "") 
     duration_ms = int((time.time() - started) * 1000)
     if data.get("ok") is False:
         detail = redact_secrets(str(data.get("body_preview", "")))[:500]
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=detail[:240])
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=detail[:240])
         return f"[Grok Vision] error: {data.get('error')} {detail}".strip()
     text = xai_chat_text(data)
-    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms)
     return f"[Grok Vision]\n{text[: int_cfg('AI_COUNCIL_MEDIA_ANALYSIS_MAX_CHARS', 2400)]}"
 
 
@@ -2465,21 +2486,20 @@ def xai_stt_text(data: dict) -> str:
 
 def xai_stt_transcribe(local_path: Path, mime_type: str = "", task_id: str = "") -> dict:
     started = time.time()
-    allowed, reason = operator_call_allowed("grok")
+    allowed, reason, reservation = reserve_operator_call("grok", task_id=task_id, detail="stt")
     if not allowed:
-        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail=reason)
         return {"status": "transcription_blocked", "provider": "xai_stt", "text": "", "summary": reason}
     key = cfg("XAI_API_KEY")
     if not key:
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, estimated_usd=0.0, detail="missing XAI_API_KEY")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail="missing XAI_API_KEY")
         return {"status": "transcription_unavailable", "provider": "xai_stt", "text": "", "summary": "missing XAI_API_KEY"}
     if not local_path.exists():
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, estimated_usd=0.0, detail="media file missing")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail="media file missing")
         return {"status": "transcription_failed", "provider": "xai_stt", "text": "", "summary": "media file missing"}
     max_bytes = int_cfg("AI_COUNCIL_STT_MAX_BYTES", 25_000_000)
     file_size = local_path.stat().st_size
     if file_size > max_bytes:
-        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail="audio too large")
+        finalize_operator_call(reservation, status="blocked", duration_ms=0, estimated_usd=0.0, detail="audio too large")
         return {
             "status": "transcription_blocked",
             "provider": "xai_stt",
@@ -2508,13 +2528,13 @@ def xai_stt_transcribe(local_path: Path, mime_type: str = "", task_id: str = "")
     duration_ms = int((time.time() - started) * 1000)
     if data.get("ok") is False:
         detail = redact_secrets(str(data.get("body_preview") or data.get("reason") or data.get("error") or ""))[:500]
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=f"stt: {detail}"[:240])
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"stt: {detail}"[:240])
         return {"status": "transcription_failed", "provider": "xai_stt", "text": "", "summary": detail or "xAI STT failed"}
     text = xai_stt_text(data)
     if not text:
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail="stt empty response")
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="stt empty response")
         return {"status": "transcription_failed", "provider": "xai_stt", "text": "", "summary": "empty STT response"}
-    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms)
     return {
         "status": "transcribed",
         "provider": "xai_stt",
@@ -3402,14 +3422,16 @@ def estimated_operator_cost(operator: str) -> float:
 def record_operator_usage(
     operator: str,
     *,
+    usage_id: str = "",
     task_id: str = "",
     status: str = "completed",
     duration_ms: int = 0,
     estimated_usd: float | None = None,
     detail: str = "",
 ) -> dict:
+    operator = operator_key(operator)
     event = {
-        "usage_id": f"use-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{operator}:{task_id}:{time.time()}')[:6]}",
+        "usage_id": usage_id or f"use-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{operator}:{task_id}:{time.time()}')[:6]}",
         "created_at": utc_now(),
         "day": today_utc(),
         "operator": operator,
@@ -3423,11 +3445,98 @@ def record_operator_usage(
     return event
 
 
-def usage_today(operator: str | None = None) -> list[dict]:
+def collapse_usage_events(rows: list[dict]) -> list[dict]:
+    latest: dict[str, dict] = {}
+    no_id: list[dict] = []
+    for row in rows:
+        usage_id = str(row.get("usage_id") or "").strip()
+        if not usage_id:
+            no_id.append(row)
+            continue
+        latest[usage_id] = row
+    return [*no_id, *latest.values()]
+
+
+def usage_today(operator: str | None = None, *, collapsed: bool = True) -> list[dict]:
     rows = [row for row in read_jsonl(COSTS_FILE) if row.get("day") == today_utc()]
     if operator:
+        operator = operator_key(operator)
         rows = [row for row in rows if row.get("operator") == operator]
-    return rows
+    return collapse_usage_events(rows) if collapsed else rows
+
+
+def operator_block_detail(detail: str, reason: str) -> str:
+    detail = compact_line(detail, 120)
+    reason = compact_line(reason, 220)
+    if detail and reason:
+        return f"{detail}: {reason}"
+    return detail or reason
+
+
+def reserve_operator_call(operator: str, *, task_id: str = "", detail: str = "") -> tuple[bool, str, dict | None]:
+    operator = operator_key(operator)
+    try:
+        with BlockingFileLock(COST_LOCK_FILE, timeout=float_cfg("AI_COUNCIL_COST_LOCK_TIMEOUT", 5.0)):
+            allowed, reason = operator_call_allowed(operator)
+            if not allowed:
+                record_operator_usage(
+                    operator,
+                    task_id=task_id,
+                    status="blocked",
+                    duration_ms=0,
+                    estimated_usd=0.0,
+                    detail=operator_block_detail(detail, reason),
+                )
+                return False, reason, None
+            event = record_operator_usage(
+                operator,
+                task_id=task_id,
+                status="reserved",
+                duration_ms=0,
+                estimated_usd=estimated_operator_cost(operator),
+                detail=detail or "reserved",
+            )
+            return True, "", event
+    except TimeoutError as exc:
+        reason = str(exc)
+        record_operator_usage(
+            operator,
+            task_id=task_id,
+            status="blocked",
+            duration_ms=0,
+            estimated_usd=0.0,
+            detail=operator_block_detail(detail, reason),
+        )
+        return False, reason, None
+
+
+def finalize_operator_call(
+    reservation: dict | None,
+    *,
+    status: str,
+    duration_ms: int = 0,
+    estimated_usd: float | None = None,
+    detail: str = "",
+) -> dict | None:
+    if not reservation:
+        return None
+    usage_id = str(reservation.get("usage_id") or "")
+    if not usage_id:
+        return None
+    final_estimate = reservation.get("estimated_usd") if estimated_usd is None else estimated_usd
+    try:
+        final_estimate = float(final_estimate or 0.0)
+    except (TypeError, ValueError):
+        final_estimate = estimated_operator_cost(str(reservation.get("operator") or ""))
+    return record_operator_usage(
+        str(reservation.get("operator") or ""),
+        usage_id=usage_id,
+        task_id=str(reservation.get("task_id") or ""),
+        status=status,
+        duration_ms=duration_ms,
+        estimated_usd=final_estimate,
+        detail=detail,
+    )
 
 
 def default_control_state() -> dict:
@@ -4443,7 +4552,8 @@ def capabilities_response() -> str:
         "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "To nadal nie jest pełny Poke: brakuje pełnego token-level streamingu, iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge, mocniejszego cost-ledger reservation i głębszych write-capable integrations.\n"
+        "L4.23: model calle mają cost-ledger reservation, a LLM router nie przepala Groka domyślnie na zwykły chat.\n"
+        "To nadal nie jest pełny Poke: brakuje pełnego token-level streamingu, iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge i głębszych write-capable integrations.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4457,10 +4567,10 @@ def goal_response() -> str:
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: pełny token-level streaming, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval, mocniejszy cost-ledger reservation oraz natywna ścieżka GitHub CLI auth.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: pełny token-level streaming, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval oraz natywna ścieżka GitHub CLI auth.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.23 Cost Ledger Reservation - serializacja kosztów i rezerwacja budżetu przed drogimi równoległymi wywołaniami."
+        "Najbliższy cel wdrożeniowy: L4.24 Poke Front Reliability - front bez ciszy, lepsze degraded-mode, richer progress i mniej zależności od jednego modelu."
     )
 
 
@@ -4473,10 +4583,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.22 Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, source-backed project memory, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.23 Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.22: /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.23: /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4535,7 +4645,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.22 Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.23 Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -7257,7 +7367,43 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
 
 
 def llm_router_enabled() -> bool:
-    return bool_cfg("AI_COUNCIL_LLM_ROUTER", bool(cfg("XAI_API_KEY")))
+    return bool_cfg("AI_COUNCIL_LLM_ROUTER", False)
+
+
+def llm_router_should_try(text: str) -> bool:
+    if not llm_router_enabled() or not cfg("XAI_API_KEY"):
+        return False
+    clean = normalize_intent_text(text)
+    if not clean:
+        return False
+    triggers = [
+        "z tego",
+        "teraz",
+        "kontynuuj",
+        "co dalej",
+        "ogarnij",
+        "sprawdz",
+        "sprawdź",
+        "poszukaj",
+        "zbadaj",
+        "research",
+        "plan",
+        "zaplanuj",
+        "przygotuj",
+        "podsumuj",
+        "znajdz",
+        "znajdź",
+        "kalendarz",
+        "gmail",
+        "drive",
+        "github",
+        "źródł",
+        "zrodl",
+        "pamięć",
+        "pamiec",
+        "poke",
+    ]
+    return any(marker in clean for marker in triggers)
 
 
 def extract_json_object(text: str) -> dict | None:
@@ -7279,14 +7425,11 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def llm_route(text: str, chat_id: str = "") -> dict | None:
-    if not llm_router_enabled() or not cfg("XAI_API_KEY"):
-        return None
-    allowed, reason = operator_call_allowed("grok")
-    if not allowed:
-        record_operator_usage("grok", status="blocked", duration_ms=0, estimated_usd=0.0, detail=f"llm_router: {reason}")
-        return None
     clean_text = text.strip()
-    if not clean_text:
+    if not clean_text or not llm_router_should_try(clean_text):
+        return None
+    allowed, reason, reservation = reserve_operator_call("grok", detail="llm_router")
+    if not allowed:
         return None
     history = recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_LLM_ROUTER_HISTORY_TURNS", 6)) if chat_id else []
     history_lines = [
@@ -7327,15 +7470,15 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         timeout=int_cfg("AI_COUNCIL_LLM_ROUTER_TIMEOUT", 20),
     )
     if data.get("ok") is False:
-        record_operator_usage("grok", status="failed", duration_ms=0, detail="llm_router failed")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, detail="llm_router failed")
         record_error("llm_router", message=str(data.get("error") or data.get("body_preview") or "router failed"), severity="warning")
         return None
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        record_operator_usage("grok", status="failed", duration_ms=0, detail="llm_router invalid response")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, detail="llm_router invalid response")
         return None
-    record_operator_usage("grok", status="completed", duration_ms=0, detail="llm_router")
+    finalize_operator_call(reservation, status="completed", duration_ms=0, detail="llm_router")
     parsed = extract_json_object(str(content))
     if not parsed:
         return None
@@ -8007,9 +8150,8 @@ def call_subprocess_operator(
 ) -> str:
     started = time.time()
     key = operator_key(name)
-    allowed, reason = operator_call_allowed(key)
+    allowed, reason, reservation = reserve_operator_call(key, task_id=task_id, detail="subprocess")
     if not allowed:
-        record_operator_usage(key, task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail=reason)
         return f"[{name}] blocked: {reason}"
     try:
         proc = subprocess.run(
@@ -8025,11 +8167,11 @@ def call_subprocess_operator(
         )
     except subprocess.TimeoutExpired:
         duration_ms = int((time.time() - started) * 1000)
-        record_operator_usage(key, task_id=task_id, status="timeout", duration_ms=duration_ms)
+        finalize_operator_call(reservation, status="timeout", duration_ms=duration_ms)
         return f"[{name}] unavailable: timeout after {timeout}s"
     except FileNotFoundError:
         duration_ms = int((time.time() - started) * 1000)
-        record_operator_usage(key, task_id=task_id, status="missing", duration_ms=duration_ms, estimated_usd=0.0)
+        finalize_operator_call(reservation, status="missing", duration_ms=duration_ms, estimated_usd=0.0)
         return f"[{name}] unavailable: command not found"
 
     elapsed = int((time.time() - started) * 1000)
@@ -8037,10 +8179,10 @@ def call_subprocess_operator(
         raw_output = "\n".join(part for part in [proc.stdout, proc.stderr] if part)
         output = clean_operator_output(redact_secrets(raw_output))
         detail = output[:1200] or "no output"
-        record_operator_usage(key, task_id=task_id, status="failed", duration_ms=elapsed, detail=detail[:240])
+        finalize_operator_call(reservation, status="failed", duration_ms=elapsed, detail=detail[:240])
         return f"[{name}] unavailable: exit {proc.returncode}: {detail}"
     output = clean_operator_output(redact_secrets(proc.stdout or proc.stderr or ""))
-    record_operator_usage(key, task_id=task_id, status="completed", duration_ms=elapsed)
+    finalize_operator_call(reservation, status="completed", duration_ms=elapsed)
     limit = max_chars if max_chars is not None else int_cfg("AI_COUNCIL_MAX_CHARS", 900)
     return f"[{name}] ({elapsed}ms)\n{output[:limit] or 'OK'}"
 
@@ -8135,9 +8277,8 @@ def claude_flow_response(prompt: str, task_id: str = "") -> str:
 
 def grok_response(prompt: str, max_chars: int | None = None, task_id: str = "") -> str:
     started = time.time()
-    allowed, reason = operator_call_allowed("grok")
+    allowed, reason, reservation = reserve_operator_call("grok", task_id=task_id, detail="chat")
     if not allowed:
-        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail=reason)
         return f"[Grok] blocked: {reason}"
     if not prompt:
         prompt = "Odpowiedz krótko: AI Council Grok online."
@@ -8166,13 +8307,13 @@ def grok_response(prompt: str, max_chars: int | None = None, task_id: str = "") 
     duration_ms = int((time.time() - started) * 1000)
     if data.get("ok") is False:
         detail = redact_secrets(str(data.get("body_preview", "")))[:500]
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=detail[:240])
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=detail[:240])
         return f"[Grok] error: {data.get('error')} {detail}".strip()
     try:
         text = data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError):
         text = redact_secrets(json.dumps(data, ensure_ascii=False))[:1200]
-    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms)
     limit = max_chars if max_chars is not None else int_cfg("AI_COUNCIL_MAX_CHARS", 900)
     return f"[Grok]\n{text[:limit]}"
 
@@ -8224,13 +8365,12 @@ def build_poke_research_prompt(prompt: str) -> str:
 
 def grok_x_research_response(prompt: str, max_chars: int | None = None, task_id: str = "") -> str:
     started = time.time()
-    allowed, reason = operator_call_allowed("grok")
+    allowed, reason, reservation = reserve_operator_call("grok", task_id=task_id, detail="x_research")
     if not allowed:
-        record_operator_usage("grok", task_id=task_id, status="blocked", duration_ms=0, estimated_usd=0.0, detail=reason)
         return f"[Grok X Research] blocked: {reason}"
     key = cfg("XAI_API_KEY")
     if not key:
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=0, detail="missing XAI_API_KEY")
+        finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail="missing XAI_API_KEY")
         return "[Grok X Research] error: missing XAI_API_KEY"
     research_prompt = build_x_research_prompt(prompt)
     memory_context = memory_context_for_prompt(research_prompt)
@@ -8269,12 +8409,12 @@ def grok_x_research_response(prompt: str, max_chars: int | None = None, task_id:
     duration_ms = int((time.time() - started) * 1000)
     if data.get("ok") is False:
         detail = redact_secrets(str(data.get("body_preview", "")))[:800]
-        record_operator_usage("grok", task_id=task_id, status="failed", duration_ms=duration_ms, detail=detail[:240])
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=detail[:240])
         return f"[Grok X Research] error: {data.get('error')} {detail}".strip()
     text = xai_response_text(data)
     if not text:
         text = redact_secrets(json.dumps(data, ensure_ascii=False))[:1600]
-    record_operator_usage("grok", task_id=task_id, status="completed", duration_ms=duration_ms)
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms)
     limit = max_chars if max_chars is not None else int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000)
     return f"[Grok X Research] ({duration_ms}ms)\n{text[:limit]}"
 
@@ -8314,6 +8454,11 @@ def poke_chat_fallback(prompt: str) -> str:
             "[Council] Masz rację: cel Poke-like oznacza szybki osobisty operator, nie wolny task dla każdej wiadomości.\n"
             "Obecna poprawka: zwykłe wiadomości wracają jako /chat, a research/plan/Council eskalują tylko wtedy, gdy wykryję taką intencję."
         )
+    if lower in {"co dalej", "co teraz", "jaki nastepny krok", "jaki następny krok"}:
+        return (
+            "[Council] Następny krok: domknąć Poke-like front, czyli szybka odpowiedź, proaktywne nudges, recipes i integracje bez potrzeby komend.\n"
+            "Jeśli chodzi o obecny build: sprawdź `/goal` dla luki do Poke parity albo napisz konkretny cel, a zrobię plan/task."
+        )
     return (
         "[Council] Rozpoznaję to jako rozmowę, nie zadanie w tle.\n"
         "Mogę od razu przełączyć to w research, plan, Council, task, source search albo bezpieczną akcję po approval.\n"
@@ -8325,9 +8470,8 @@ def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
     if not bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) or not cfg("XAI_API_KEY"):
         return None
     started = time.time()
-    allowed, reason = operator_call_allowed("grok")
+    allowed, reason, reservation = reserve_operator_call("grok", detail="poke_chat")
     if not allowed:
-        record_operator_usage("grok", status="blocked", duration_ms=0, detail=f"poke_chat: {reason}")
         return None
     text = prompt.strip()
     memory_context = memory_context_for_prompt(text)
@@ -8367,16 +8511,16 @@ def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
     duration_ms = int((time.time() - started) * 1000)
     if data.get("ok") is False:
         detail = redact_secrets(str(data.get("body_preview", "")))[:500]
-        record_operator_usage("grok", status="failed", duration_ms=duration_ms, detail=f"poke_chat: {detail[:220]}")
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"poke_chat: {detail[:220]}")
         return None
     try:
         answer = data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError):
         answer = ""
     if not answer:
-        record_operator_usage("grok", status="failed", duration_ms=duration_ms, detail="poke_chat: empty response")
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="poke_chat: empty response")
         return None
-    record_operator_usage("grok", status="completed", duration_ms=duration_ms, detail="poke_chat")
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="poke_chat")
     return "[Council]\n" + answer[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)]
 
 
