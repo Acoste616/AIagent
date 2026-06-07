@@ -1004,6 +1004,67 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("/goal", response)
         self.assertNotIn("Odbieram to jako rozmowę", response)
 
+    def test_co_dalej_routes_to_compact_agent_next(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                ai_council.create_improvement(
+                    source="poke_gap",
+                    title="Poke Host gap: domyślna odpowiedź Telegrama musi działać jak operator",
+                    summary="Fix default UX.",
+                    priority="P0",
+                )
+                route = ai_council.route_message("co dalej", chat_id="553")
+                response = ai_council.build_response(route, chat_id="553")
+
+        self.assertEqual(route["command"], "/agent")
+        self.assertEqual(route["prompt"], "next")
+        self.assertIn(f"Agent Next {ai_council.POKE_NEXT_FRONT_VERSION}", response)
+        self.assertIn("Poke Host gap", response)
+        self.assertNotIn("PRIORYTET:", response)
+        self.assertLess(len(response), 700)
+
+    def test_research_question_about_poke_routes_to_poke_research_background(self):
+        route = ai_council.route_message("czy możesz zrobić research poke i powiedzieć co wdrożyć", chat_id="553")
+
+        self.assertEqual(route["command"], "/poke-research")
+        self.assertTrue(ai_council.route_should_background(route))
+        self.assertIn("research poke", route["prompt"].lower())
+
+    def test_status_summary_routes_to_front_not_generic_chat(self):
+        route = ai_council.route_message("napisz mi krótkie podsumowanie statusu", chat_id="553")
+
+        self.assertEqual(route["command"], "/front")
+        self.assertEqual(route["mode"], "front")
+
+    def test_status_summary_front_response_is_compact(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"):
+                response = ai_council.front_reliability_response("napisz mi krótkie podsumowanie statusu")
+
+        self.assertIn(f"Status {ai_council.POKE_NEXT_FRONT_VERSION}", response)
+        self.assertIn("DECYZJA:", response)
+        self.assertIn("FAKTY:", response)
+        self.assertNotIn("last_telegram_update", response)
+        self.assertLess(len(response), 500)
+
     def test_poke_chat_fallback_gap_is_pure_and_precise(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -1876,9 +1937,9 @@ class ConversationThreadTests(unittest.TestCase):
                 ai_council.append_conversation_turn("553", "assistant", "Ustaliliśmy iPhone capture jako następny layer.")
                 response = ai_council.poke_chat_response("co dalej", chat_id="553")
 
-        self.assertIn("OSTATNI WĄTEK: Ja: Ustaliliśmy iPhone capture", response)
-        self.assertIn("L4.44 używa pamięci rozmowy", response)
-        self.assertIn("iPhone capture hardening", response)
+        self.assertIn(f"Agent Next {ai_council.POKE_NEXT_FRONT_VERSION}", response)
+        self.assertIn("NEXT:", response)
+        self.assertNotIn("PRIORYTET:", response)
 
     def test_poke_chat_includes_recent_conversation_context(self):
         def fake_cfg(key, default=""):

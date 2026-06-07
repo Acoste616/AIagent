@@ -239,6 +239,7 @@ PROVIDER_EXECUTOR_OPERATIONS = {
 PROVIDER_EXECUTOR_VERSION = "L4.41"
 POKE_FRONT_VERSION = "L4.44"
 POKE_GAP_VERSION = "L4.48"
+POKE_NEXT_FRONT_VERSION = "L4.59"
 AUTONOMOUS_LOOP_VERSION = "L4.55"
 SHORTCUTS_VERSION = "L4.48"
 AGENT_INBOX_VERSION = "L4.46"
@@ -4824,7 +4825,35 @@ def front_runtime_snapshot() -> dict:
     }
 
 
+def front_compact_summary_requested(prompt: str = "") -> bool:
+    lower = normalize_intent_text(prompt)
+    return "podsumowanie statusu" in lower or "krótkie podsumowanie status" in lower or "krotkie podsumowanie status" in lower
+
+
+def front_compact_summary_response(prompt: str = "") -> str:
+    snap = front_runtime_snapshot()
+    latest = snap["latest"]
+    failures = int(latest.get("failed_count") or 0)
+    if snap["kill"] or snap["models_paused"]:
+        decision = "System odpowiada lokalnie, ale modele są zatrzymane przez /control."
+    elif failures:
+        decision = "Bot odbiera wiadomości, ale ostatnio były błędy wysyłki Telegram."
+    elif snap["front_quality_24h"]:
+        decision = "Bot odpowiada, ale front quality ma ostrzeżenia do poprawy."
+    else:
+        decision = "Bot działa; brak stuck tasków i brak błędów wysyłki Telegram w ostatnim oknie."
+    return (
+        f"[Council] Status {POKE_NEXT_FRONT_VERSION}\n"
+        f"DECYZJA: {decision}\n"
+        f"FAKTY: running={len([task for task in latest_tasks(limit=50) if task.get('status') in {'running', 'running_background'}])}, "
+        f"stuck={len(stuck_tasks(limit=5))}, errors_24h={snap['errors_24h']}, grok_calls={snap['grok_calls']}, grok_est=${snap['grok_estimated_usd']:.4f}\n"
+        "NEXT: jeśli chcesz pełną diagnostykę, użyj `/front`; jeśli mam działać, napisz cel jednym zdaniem."
+    )
+
+
 def front_reliability_response(prompt: str = "") -> str:
+    if front_compact_summary_requested(prompt):
+        return front_compact_summary_response(prompt)
     snap = front_runtime_snapshot()
     latest = snap["latest"]
     last = latest.get("last") or {}
@@ -7179,7 +7208,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -8797,6 +8826,27 @@ def agent_run_response(prompt: str = "", chat_id: str = "") -> str:
     return f"[Council] Agent run: nieobsługiwany run_kind `{runnable.get('run_kind')}`. NEXT: {runnable.get('next_action')}"
 
 
+def agent_next_response_from_snapshot(snapshot: dict, items: list[dict]) -> str:
+    top = items[0] if items else {}
+    first_runnable = next((item for item in items if item.get("run_kind")), None)
+    facts = (
+        f"running={len(snapshot['running'])}, stuck={len(snapshot['stuck'])}, "
+        f"errors_24h={len(snapshot['errors'])}, improvements={len(snapshot['improvements'])}"
+    )
+    lines = [
+        f"[Council] Agent Next {POKE_NEXT_FRONT_VERSION}",
+        f"DECYZJA: {compact_line(str(top.get('title') or 'Brak pilnych spraw.'), 180)}",
+        f"FAKTY: {facts}",
+        f"NEXT: {top.get('next_action', '/agent')}",
+    ]
+    if first_runnable:
+        if str(first_runnable.get("id") or "") != str(top.get("id") or ""):
+            lines.append(f"SAFE RUN: {compact_line(str(first_runnable.get('title') or ''), 160)}")
+        lines.append(f"RUN: /agent run {first_runnable.get('id')}")
+    lines.append("DO CIEBIE: jeśli chcesz, wykonam tylko bezpieczny następny krok; R3/R4 zostają do approval.")
+    return "\n".join(lines)
+
+
 def agent_response(prompt: str = "", chat_id: str = "") -> str:
     parts = prompt.strip().split(maxsplit=1)
     first = parts[0].lower() if parts else ""
@@ -8809,6 +8859,8 @@ def agent_response(prompt: str = "", chat_id: str = "") -> str:
     # Advisory items can be highest priority but intentionally non-runnable; still surface the first safe runnable action.
     first_runnable = next((item for item in items if item.get("run_kind")), None)
     pending_runnable = sum(1 for item in items if item.get("run_kind"))
+    if first in {"next", "co-dalej", "priority", "priorytet", "compact"}:
+        return agent_next_response_from_snapshot(snapshot, items)
     lines = [
         f"[Council] Agent Inbox {AGENT_INBOX_VERSION}",
         f"DECYZJA: {compact_line(str(top.get('title') or 'Brak pilnych spraw.'), 180)}",
@@ -12525,6 +12577,9 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     if lower in status_phrases or lower.startswith(("pokaż status", "pokaz status", "sprawdź status", "sprawdz status")):
         return {"command": "/status", "operators": ["host"], "prompt": "", "mode": "status", "intent": "natural"}
 
+    if front_compact_summary_requested(stripped):
+        return {"command": "/front", "operators": ["host"], "prompt": stripped, "mode": "front", "intent": "natural"}
+
     progress_prefixes = ["progress ", "postęp ", "postep ", "pokaż progress ", "pokaz progress ", "pokaż postęp ", "pokaz postep ", "gdzie jest "]
     if lower in {"progress", "postęp", "postep"}:
         return {"command": "/progress", "operators": ["host"], "prompt": "", "mode": "progress", "intent": "natural"}
@@ -12642,7 +12697,7 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     } or lower.startswith(
         ("pokaż agent", "pokaz agent", "pokaż inbox", "pokaz inbox", "agent status", "agent next", "operator status")
     ):
-        return {"command": "/agent", "operators": ["host"], "prompt": "", "mode": "agent", "intent": "natural"}
+        return {"command": "/agent", "operators": ["host"], "prompt": "next", "mode": "agent_next", "intent": "natural"}
 
     if lower in SHORTCUT_RECIPE_NATURAL_ALIASES or lower.startswith(SHORTCUT_RECIPE_NATURAL_PREFIXES):
         return {"command": "/shortcuts", "operators": ["host"], "prompt": "recipes", "mode": "shortcuts_recipes", "intent": "natural"}
@@ -13017,6 +13072,24 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "operators": ["grok"],
             "prompt": strip_intent_prefix(stripped, poke_prefixes),
             "mode": "poke_research",
+            "intent": "natural",
+        }
+
+    research_question_prefixes = ("czy możesz", "czy mozesz", "możesz", "mozesz", "poproszę", "poprosze")
+    if "research" in lower and lower.startswith(research_question_prefixes):
+        if "poke" in lower:
+            return {
+                "command": "/poke-research",
+                "operators": ["grok"],
+                "prompt": stripped,
+                "mode": "poke_research",
+                "intent": "natural",
+            }
+        return {
+            "command": "@research",
+            "operators": ["grok"],
+            "prompt": stripped,
+            "mode": "research",
             "intent": "natural",
         }
 
@@ -13725,12 +13798,8 @@ def poke_chat_fallback(prompt: str, chat_id: str = "") -> str:
             "NEXT: wklej fragment albo nazwij task."
         )
     if lower in {"co dalej", "co teraz", "jaki nastepny krok", "jaki następny krok"}:
-        return (
-            "[Council] Następny krok: wybieram jeden ruch z aktualnego kontekstu, nie listę komend.\n"
-            f"{context_line}"
-            f"TERAZ: {POKE_FRONT_VERSION} używa pamięci rozmowy; {AUTONOMOUS_LOOP_VERSION} pilnuje dwóch pętli error/evolution dziennie i syntetyzuje backlog.\n"
-            "NEXT: najpierw iPhone capture hardening, potem prywatny iMessage/Messages bridge."
-        )
+        snapshot = agent_inbox_snapshot()
+        return agent_next_response_from_snapshot(snapshot, agent_inbox_items(snapshot, limit=8))
     return (
         "[Council] Przyjąłem.\n"
         f"{context_line}"
