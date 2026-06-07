@@ -485,6 +485,7 @@ class RoutingTests(unittest.TestCase):
             "/agent": ("/agent", ["host"]),
             "/inbox": ("/agent", ["host"]),
             "/shortcuts": ("/shortcuts", ["host"]),
+            "/drafts": ("/drafts", ["host"]),
             "/status task-1": ("/status", ["host"]),
             "/progress task-1": ("/progress", ["host"]),
             "/details task-1": ("/details", ["host"]),
@@ -556,6 +557,8 @@ class RoutingTests(unittest.TestCase):
             "czym się zająć": "/agent",
             "iphone shortcuts": "/shortcuts",
             "pokaż skróty": "/shortcuts",
+            "pokaż drafty": "/drafts",
+            "draft gmail odpowiedz klientowi": "/connector",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
             "postęp task-1": "/progress",
@@ -626,7 +629,7 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("run research_brief", tasks[0]["recommended_prompt"])
         self.assertEqual(actions, [])
 
-    def test_action_planner_side_effect_creates_pending_approval(self):
+    def test_action_planner_side_effect_creates_integration_draft(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
@@ -646,8 +649,11 @@ class RoutingTests(unittest.TestCase):
 
         self.assertIn("Pending action utworzona", response)
         self.assertEqual(actions[0]["status"], "pending")
-        self.assertEqual(actions[0]["type"], "planner_proposal")
+        self.assertEqual(actions[0]["type"], "integration_draft")
         self.assertEqual(actions[0]["risk"], "R4")
+        self.assertEqual(actions[0]["payload"]["connector"], "gmail")
+        self.assertEqual(actions[0]["payload"]["draft_kind"], "email_draft")
+        self.assertFalse(actions[0]["payload"]["external_write"])
         self.assertIn("task_id", actions[0]["payload"])
         callback_data = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
         self.assertIn(f"approve:{actions[0]['action_id']}", callback_data)
@@ -744,7 +750,7 @@ class RoutingTests(unittest.TestCase):
             ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
                 ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
             ):
-                planner = ai_council.action_planner_response("wyślij maila do klienta z ofertą", chat_id="553")
+                planner = ai_council.action_planner_response("opublikuj wpis na stronie", chat_id="553")
                 action_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", planner).group(1)
                 approved = ai_council.approve_response(action_id)
                 action = ai_council.get_latest_action(action_id)
@@ -753,6 +759,7 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("Approved planner checkpoint", approved)
         self.assertIn("Nie wykonałem external write", approved)
         self.assertIn("Next: status task-", approved)
+        self.assertEqual(action["type"], "planner_proposal")
 
     def test_approve_followup_starts_safe_background_route(self):
         with temp_dir() as tmp:
@@ -1903,11 +1910,12 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.14", response)
+        self.assertIn("Connectors L4.28", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
         self.assertIn("/connector sync", response)
+        self.assertIn("/connector draft", response)
 
     def test_connector_auth_github_returns_nonsecret_setup_steps(self):
         with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
@@ -2182,6 +2190,73 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("Connector brief `artifacts`", response)
         self.assertIn("results: 1", response)
         self.assertIn("source-backed", report_text)
+
+    def test_connector_draft_creates_pending_integration_action(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                response = ai_council.connector_response("draft gmail odpowiedz klientowi o statusie wdrożenia")
+                action = ai_council.latest_by_id(root / "state" / "actions.jsonl", "action_id", limit=1)[0]
+                drafts = ai_council.integration_drafts_response()
+                detail = ai_council.integration_drafts_response(f"show {action['action_id']}")
+
+        self.assertIn("Integration draft utworzony L4.28", response)
+        self.assertEqual(action["type"], "integration_draft")
+        self.assertEqual(action["status"], "pending")
+        self.assertEqual(action["payload"]["connector"], "gmail")
+        self.assertEqual(action["payload"]["draft_kind"], "email_draft")
+        self.assertFalse(action["payload"]["external_write"])
+        self.assertIn(action["action_id"], drafts)
+        self.assertIn("Integration Draft", detail)
+        self.assertIn("missing_fields:", detail)
+        self.assertIn("policy: draft-only", detail)
+
+    def test_connector_draft_risk_floors_at_r3_and_show_requires_id(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_integration_draft_action("gmail", "hello", risk="")
+                missing = ai_council.integration_drafts_response("show")
+
+        self.assertEqual(action["risk"], "R3")
+        self.assertEqual(action["payload"]["risk_reason"], "external write/API/contact integration risk")
+        self.assertIn("/drafts show <action_id>", missing)
+
+    def test_approve_integration_draft_is_checkpoint_only(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                approved = ai_council.approve_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+                execute = ai_council.execute_response(action["action_id"])
+
+        self.assertEqual(latest["status"], "approved")
+        self.assertIn("Approved integration draft checkpoint", approved)
+        self.assertIn("Nie wykonałem external write", approved)
+        self.assertIn("Execute zablokowane przez Risk Officer: R3", execute)
+
+    def test_agent_inbox_surfaces_integration_draft_approval(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_integration_draft_action("github", "otwórz issue o L4.28 draftach", risk="R3")
+                inbox = ai_council.agent_response()
+
+        self.assertIn(action["action_id"], inbox)
+        self.assertIn("requires explicit approval", inbox)
 
     def test_action_create_approve_and_deny(self):
         with tempfile.TemporaryDirectory() as tmp:

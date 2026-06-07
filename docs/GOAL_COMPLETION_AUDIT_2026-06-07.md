@@ -30,10 +30,10 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.27: Mac `174/174 OK` + py_compile; Windows Desktop `174 passed, 104 subtests passed` + py_compile | Proven |
+| Test verification | L4.28: Mac `178/178 OK` + py_compile; Windows Desktop `178 passed, 107 subtests passed` + py_compile | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | Push works; latest observed L4.27 output: `a10f9b6..5dbc482 main -> main` | Proven |
+| GitHub push to `Acoste616/AIagent` | Push works; latest observed L4.27 output: `a10f9b6..5dbc482 main -> main`; L4.28 pending push | In progress |
 
 ## Current Desktop State
 
@@ -51,7 +51,7 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.28 Integration Action Drafts: Gmail/Calendar/Drive/GitHub write drafts after Risk Officer and approval, without automatic external write.
+1. L4.29 Integration Execution Adapters: still no auto-write; add explicit execute/verify/dry-run adapters after approval.
 2. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
 3. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
 4. Deeper source-backed integrations and proactive topic ownership.
@@ -73,7 +73,8 @@ Completed layers in the current implementation state:
 - L4.25 Rich Progress Streaming: long background tasks write durable progress events, expose `/progress <task_id>`, include progress timeline in `/status`, send heartbeat for long work, and avoid extra Telegram spam on short jobs.
 - L4.26 Agent Inbox: `/agent` aggregates tasks, approvals, follow-ups, improvements, errors, and nudges into one prioritized next action; `/agent run` starts only safe local next steps and keeps R3/R4 behind explicit approval.
 - L4.27 iPhone Primary Capture: `/shortcuts` exposes private iPhone ingress status, Share Sheet URLs route to `research_brief`, read-only Shortcut control actions open `/agent/status/progress/details/facts/next`, mutating `approve/deny/cancel` is blocked back to Telegram approval, and recent Shortcut inputs appear in `/agent`.
+- L4.28 Integration Action Drafts: `/connector draft gmail|calendar|drive|github <intent>` creates local `integration_draft` pending actions; Action Planner converts integration side-effect requests into structured drafts; approval records a checkpoint only and `/execute` remains blocked for R3/R4.
 
 ## External Follow-up
 
-No current GitHub publishing blocker. The broader Poke parity goal remains active because iPhone/iMessage, deeper integration-backed autonomy, and write-capable integrations are not yet complete.
+No current GitHub publishing blocker. The broader Poke parity goal remains active because iPhone/iMessage, execution adapters for approved integrations, deeper integration-backed autonomy, and write-capable integrations are not yet complete.
