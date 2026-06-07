@@ -51,12 +51,12 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.19 Stronger verifier/rollback for broader local execution.
-2. Streaming/progress UX for long jobs and recipe steps.
-3. iPhone Shortcuts as primary capture layer.
-4. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
-5. Longer-term project memory and source-grounded operator recall.
-6. Stronger cost-ledger serialization/reservation before high-concurrency execution.
+1. L4.20 Streaming/progress UX for long jobs and recipe steps.
+2. Stronger cost-ledger serialization/reservation before high-concurrency execution.
+3. Longer-term project memory and source-grounded operator recall.
+4. iPhone Shortcuts as primary capture layer.
+5. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+6. Broader execution verifier coverage beyond workspace write/append/patch.
 
 Completed layers in the current implementation state:
 
@@ -65,6 +65,7 @@ Completed layers in the current implementation state:
 - L4.16 Live Recipes: Action Planner selects deterministic recipes for research/Gmail/Calendar/Drive/error-audit/evolution and exposes `/loops`.
 - L4.17 Follow-up Runner: completed recipes create follow-up proposals; approved safe follow-ups can start the next task, while R3/R4 stay checkpoint-only.
 - L4.18 Budget Guard/Kill Switch: `/control` can pause/kill model calls, scheduled recipes, and proactive scan; daily total and per-operator limits guard expensive calls.
+- L4.19 Verifier Evidence: `/verify` persists `verified` or `verify_failed` evidence with concrete checks; `/rollback` works after `executed`, `verified`, and `verify_failed`.
 
 ## External Follow-up
 

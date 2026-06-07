@@ -2137,6 +2137,7 @@ class L2LedgerTests(unittest.TestCase):
                 action = ai_council.create_workspace_write_action("shared/hello.txt = hello L3")
                 executed = ai_council.execute_response(action["action_id"])
                 verified = ai_council.verify_response(action["action_id"])
+                verified_action = ai_council.latest_by_id(root / "actions.jsonl", "action_id", limit=1)[0]
                 rolled_back = ai_council.rollback_response(action["action_id"])
                 rollback_verified = ai_council.verify_response(action["action_id"])
                 latest = ai_council.latest_by_id(root / "actions.jsonl", "action_id", limit=1)[0]
@@ -2144,10 +2145,65 @@ class L2LedgerTests(unittest.TestCase):
         self.assertEqual(action["risk"], "R1")
         self.assertIn("Approved + executed", executed)
         self.assertIn("OK", verified)
+        self.assertIn("write content", verified)
+        self.assertEqual(verified_action["status"], "verified")
+        self.assertEqual(verified_action["verification_status"], "verified")
         self.assertIn("Rollback executed", rolled_back)
         self.assertIn("OK", rollback_verified)
         self.assertFalse(target.exists())
         self.assertEqual(latest["status"], "rolled_back")
+        self.assertEqual(latest["verification_status"], "verified")
+
+    def test_verify_failure_persists_and_rollback_still_works(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            workspaces = root / "workspaces"
+            target = workspaces / "shared" / "hello.txt"
+            with patch.object(ai_council, "WORKSPACES_DIR", workspaces), patch.object(
+                ai_council, "ACTIONS_FILE", root / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_workspace_write_action("shared/hello.txt = expected")
+                ai_council.execute_response(action["action_id"])
+                target.write_text("tampered", encoding="utf-8")
+                failed = ai_council.verify_response(action["action_id"])
+                failed_action = ai_council.latest_by_id(root / "actions.jsonl", "action_id", limit=1)[0]
+                rolled_back = ai_council.rollback_response(action["action_id"])
+                latest = ai_council.latest_by_id(root / "actions.jsonl", "action_id", limit=1)[0]
+
+        self.assertIn("FAILED", failed)
+        self.assertNotIn("[Verifier] OK", failed)
+        self.assertEqual(failed_action["status"], "verify_failed")
+        self.assertEqual(failed_action["verification_status"], "failed")
+        self.assertIn("Rollback executed", rolled_back)
+        self.assertFalse(target.exists())
+        self.assertEqual(latest["status"], "rolled_back")
+
+    def test_verify_pending_action_does_not_unlock_rollback(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            workspaces = root / "workspaces"
+            target = workspaces / "shared" / "hello.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("original", encoding="utf-8")
+            with patch.object(ai_council, "WORKSPACES_DIR", workspaces), patch.object(
+                ai_council, "ACTIONS_FILE", root / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                action = ai_council.create_workspace_write_action("shared/hello.txt = expected")
+                target.write_text("legit later change", encoding="utf-8")
+                failed = ai_council.verify_response(action["action_id"])
+                after_verify = ai_council.latest_by_id(root / "actions.jsonl", "action_id", limit=1)[0]
+                rollback = ai_council.rollback_response(action["action_id"])
+                final_content = target.read_text(encoding="utf-8")
+
+        self.assertIn("FAILED", failed)
+        self.assertIn("not executed", failed)
+        self.assertEqual(after_verify["status"], "pending")
+        self.assertIn("Rollback wymaga executed/verified/verify_failed", rollback)
+        self.assertEqual(final_content, "legit later change")
 
     def test_workspace_append_requires_approval_and_stays_in_workspace(self):
         with temp_dir() as tmp:
@@ -2740,7 +2796,9 @@ class L25BackgroundTests(unittest.TestCase):
 
         self.assertIn("Goal: Bartek Agent OS", response)
         self.assertIn("NIE jest ukończony", response)
+        self.assertIn("Dlaczego nie czuje się jak Poke", response)
         self.assertIn("Brakuje do Poke-level", response)
+        self.assertIn("L4.20 Streaming/Progress UX", response)
 
     def test_selftest_response_is_available_without_model_calls(self):
         with temp_dir() as tmp:

@@ -4383,9 +4383,10 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "To nadal nie jest pełny Poke: brakuje szybszego streaming/progress UX, mocniejszej pamięci projektowej, iPhone Shortcuts jako głównego wejścia i prywatnego iMessage bridge.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4398,10 +4399,11 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge.\n"
+        "Dlaczego nie czuje się jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale UX/proaktywność/integracje nie są jeszcze na tym poziomie.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: streaming/progress UX dla długich zadań, długoterminowa pamięć projektowa, lepszy frontowy orchestrator zamiast wielu widocznych operatorów, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations oraz natywna ścieżka GitHub CLI auth.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.19 Execution Verifier v2 - mocniejsze acceptance criteria i rollback dla szerszych lokalnych akcji."
+        "Najbliższy cel wdrożeniowy: L4.20 Streaming/Progress UX - długie zadania mają od razu pokazywać start, etap, timeout, rezultat i następny krok jak jeden sprawny operator."
     )
 
 
@@ -4414,10 +4416,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.18 Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.19 Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.18: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.19: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4476,7 +4478,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.18 Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.19 Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -5810,35 +5812,91 @@ def execute_response(prompt: str) -> str:
     return approve_response(target_id)
 
 
-def verify_action(action: dict) -> tuple[bool, str]:
+def format_verification_checks(checks: list[dict]) -> str:
+    lines = []
+    for check in checks:
+        marker = "OK" if check.get("ok") else "FAILED"
+        lines.append(f"- {marker}: {check.get('label')} - {check.get('detail')}")
+    return "\n".join(lines)
+
+
+def verify_action_result(action: dict) -> dict:
     payload = action.get("payload") or {}
     action_type = action.get("type")
+    checks: list[dict] = []
+
+    def add(label: str, ok: bool, detail: str) -> None:
+        checks.append({"label": label, "ok": bool(ok), "detail": compact_line(detail, 220)})
+
     target, error = resolve_workspace_path(str(payload.get("path", "")))
     if error or target is None:
-        return False, f"blocked: {error}"
+        add("workspace path", False, f"blocked: {error}")
+        return {"ok": False, "detail": f"blocked: {error}", "checks": checks}
+    add("workspace path", True, str(target))
     if action.get("status") == "rolled_back":
         before_exists = bool(payload.get("before_exists", False))
         before_content = str(payload.get("before_content", ""))
         if not before_exists:
-            return (not target.exists()), "rollback verified: file removed"
+            ok = not target.exists()
+            add("rollback target removed", ok, "file removed" if ok else "file still exists")
+            return {"ok": ok, "detail": "rollback verified: file removed" if ok else "rollback failed: file still exists", "checks": checks}
         if not target.exists():
-            return False, "rollback failed: file missing"
+            add("rollback target exists", False, "file missing")
+            return {"ok": False, "detail": "rollback failed: file missing", "checks": checks}
         restored = target.read_text(encoding="utf-8", errors="replace") == before_content
-        return restored, "rollback verified: before snapshot restored"
-    if action.get("status") != "executed":
-        return False, f"not executed: {action.get('status')}"
+        add("rollback content restored", restored, "before snapshot restored" if restored else "content differs from before snapshot")
+        return {"ok": restored, "detail": "rollback verified: before snapshot restored" if restored else "rollback failed: content differs", "checks": checks}
+    if action.get("status") not in {"executed", "verified", "verify_failed"}:
+        add("action executed", False, f"status={action.get('status')}")
+        return {"ok": False, "detail": f"not executed: {action.get('status')}", "checks": checks}
+    add("action executed", True, f"status={action.get('status')}")
     if not target.exists():
-        return False, "target file missing"
+        add("target exists", False, "target file missing")
+        return {"ok": False, "detail": "target file missing", "checks": checks}
+    add("target exists", True, str(target))
     current = target.read_text(encoding="utf-8", errors="replace")
     if action_type == "workspace_write":
-        return current == str(payload.get("content", "")), "write content matches expected payload"
+        ok = current == str(payload.get("content", ""))
+        add("write content", ok, "matches expected payload" if ok else "differs from expected payload")
+        return {"ok": ok, "detail": "write content matches expected payload" if ok else "write content differs from expected payload", "checks": checks}
     if action_type == "workspace_append":
         expected = str(payload.get("before_content", "")) + str(payload.get("append_content", ""))
-        return current == expected, "append content matches before snapshot + appended text"
+        ok = current == expected
+        add("append content", ok, "matches before snapshot + appended text" if ok else "differs from expected append result")
+        return {"ok": ok, "detail": "append content matches before snapshot + appended text" if ok else "append content differs from expected result", "checks": checks}
     if action_type == "workspace_patch":
         expected = str(payload.get("before_content", "")).replace(str(payload.get("old", "")), str(payload.get("new", "")), 1)
-        return current == expected, "patch content matches expected replacement"
-    return False, f"unsupported action type: {action_type}"
+        ok = current == expected
+        add("patch content", ok, "matches expected replacement" if ok else "differs from expected replacement")
+        return {"ok": ok, "detail": "patch content matches expected replacement" if ok else "patch content differs from expected replacement", "checks": checks}
+    add("action type", False, f"unsupported action type: {action_type}")
+    return {"ok": False, "detail": f"unsupported action type: {action_type}", "checks": checks}
+
+
+def verify_action(action: dict) -> tuple[bool, str]:
+    result = verify_action_result(action)
+    return bool(result.get("ok")), str(result.get("detail") or "")
+
+
+def append_verification_event(action: dict, result: dict) -> dict:
+    if action.get("status") not in {"executed", "verified", "verify_failed", "rolled_back"}:
+        return action
+    ok = bool(result.get("ok"))
+    if action.get("status") == "rolled_back":
+        status = "rolled_back"
+    else:
+        status = "verified" if ok else "verify_failed"
+    verified = {
+        **action,
+        "status": status,
+        "updated_at": utc_now(),
+        "verified_at": utc_now(),
+        "verification_status": "verified" if ok else "failed",
+        "verification_result": str(result.get("detail") or ""),
+        "verification_checks": result.get("checks") or [],
+    }
+    append_jsonl(ACTIONS_FILE, verified)
+    return verified
 
 
 def verify_response(prompt: str) -> str:
@@ -5847,9 +5905,13 @@ def verify_response(prompt: str) -> str:
         return "[Council] Użyj: /verify <action_id|task_id>."
     action = get_latest_action(target_id)
     if action:
-        ok, detail = verify_action(action)
+        result = verify_action_result(action)
+        ok = bool(result.get("ok"))
+        detail = str(result.get("detail") or "")
+        append_verification_event(action, result)
         status = "OK" if ok else "FAILED"
-        return f"[Verifier] {status}: {target_id}\n{detail}"
+        checks = format_verification_checks(result.get("checks") or [])
+        return f"[Verifier] {status}: {target_id}\n{detail}" + (f"\n{checks}" if checks else "")
     task = get_latest_task(target_id)
     if task:
         report_path = str(task.get("report_path") or "")
@@ -5869,8 +5931,8 @@ def rollback_response(prompt: str) -> str:
         return f"[Council] Nie znalazłem action `{target_id}`."
     if action.get("status") == "rolled_back":
         return f"[Council] Rollback pominięty: `{target_id}` już ma status rolled_back."
-    if action.get("status") != "executed":
-        return f"[Council] Rollback wymaga executed action, teraz: `{action.get('status')}`."
+    if action.get("status") not in {"executed", "verified", "verify_failed"}:
+        return f"[Council] Rollback wymaga executed/verified/verify_failed action, teraz: `{action.get('status')}`."
     if action.get("type") not in {"workspace_write", "workspace_append", "workspace_patch"}:
         return f"[Council] Rollback nieobsługiwany dla `{action.get('type')}`."
     payload = action.get("payload") or {}
