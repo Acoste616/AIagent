@@ -281,6 +281,46 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         start.assert_called_once()
 
+    def test_control_pause_blocks_due_recipes_without_marking_window(self):
+        recipe = {
+            "scheduled_digest": {
+                "name": "scheduled_digest",
+                "description": "test",
+                "enabled": True,
+                "trigger": {"type": "schedule", "interval_seconds": 60},
+                "risk": "R0",
+                "approval_policy": "auto",
+                "steps": [{"command": "/health", "prompt": ""}],
+            }
+        }
+
+        def fake_cfg(key, default=""):
+            if key == "AI_COUNCIL_RECIPE_SCHEDULER":
+                return "true"
+            if key == "TELEGRAM_ALLOWED_CHAT_ID":
+                return "553"
+            return default
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "RECIPE_RUNS_FILE", root / "state" / "recipe_runs.jsonl"
+            ), patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "CONTROL_FILE", root / "state" / "control.json"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "default_recipes", return_value=recipe), patch.object(
+                ai_council, "cfg", side_effect=fake_cfg
+            ), patch.object(ai_council, "start_background_job", return_value="[AI Council] task-test") as start:
+                ai_council.control_response("pause scheduler test")
+                now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+                started = ai_council.run_due_recipes(send=False, now=now)
+                runs = ai_council.read_jsonl(root / "state" / "recipe_runs.jsonl")
+
+        self.assertEqual(started, 0)
+        self.assertEqual(runs, [])
+        self.assertEqual(start.call_count, 0)
+
     def test_default_autonomous_loop_recipes_exist(self):
         recipes = ai_council.default_recipes()
 
@@ -396,6 +436,7 @@ class RoutingTests(unittest.TestCase):
     def test_l2_commands_route_to_host_or_council(self):
         cases = {
             "/cost": ("/cost", ["host"]),
+            "/control": ("/control", ["host"]),
             "/health": ("/health", ["host"]),
             "/cancel task-1": ("/cancel", ["host"]),
             "/status task-1": ("/status", ["host"]),
@@ -444,6 +485,7 @@ class RoutingTests(unittest.TestCase):
         cases = {
             "status": "/status",
             "koszty": "/cost",
+            "pokaż kontrolę": "/control",
             "pokaż błędy": "/errors",
             "pokaż nudges": "/nudges",
             "pokaż źródła": "/sources",
@@ -625,7 +667,7 @@ class RoutingTests(unittest.TestCase):
                 ai_council.append_recipe_run("error_audit_twice_daily", "cron:test", "task-loop", "started")
                 response = ai_council.loops_response()
 
-        self.assertIn("Autonomous loops L4.16", response)
+        self.assertIn("Autonomous loops L4.18", response)
         self.assertIn("error_audit_twice_daily", response)
         self.assertIn("feature_evolution_loop", response)
         self.assertIn("task-loop", response)
@@ -1923,6 +1965,124 @@ class L2LedgerTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("call limit", reason)
         self.assertIn("grok: calls=1", cost)
+
+    def test_control_kill_switch_blocks_model_calls(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ):
+                killed = ai_council.control_response("kill test stop")
+                allowed, reason = ai_council.operator_call_allowed("codex")
+                resumed = ai_council.control_response("resume all")
+                allowed_after, _ = ai_council.operator_call_allowed("codex")
+
+        self.assertIn("global_kill_switch: True", killed)
+        self.assertFalse(allowed)
+        self.assertIn("kill switch", reason)
+        self.assertIn("global_kill_switch: False", resumed)
+        self.assertTrue(allowed_after)
+
+    def test_control_total_daily_call_limit_blocks_all_operators(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ):
+                ai_council.control_response("set total-calls 1")
+                ai_council.record_operator_usage("codex", task_id="task-1", duration_ms=10)
+                allowed, reason = ai_council.operator_call_allowed("claude")
+                cost = ai_council.cost_response()
+
+        self.assertFalse(allowed)
+        self.assertIn("Global daily call limit", reason)
+        self.assertIn("total_call_limit=1", cost)
+
+    def test_control_total_budget_limit_blocks_next_estimated_call(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.dict(os.environ, {"AI_COUNCIL_CODEX_ESTIMATED_COST_USD": "0.25"}, clear=False):
+                ai_council.control_response("set total-budget 0.10")
+                allowed, reason = ai_council.operator_call_allowed("codex")
+
+        self.assertFalse(allowed)
+        self.assertIn("Global estimated budget", reason)
+
+    def test_control_per_operator_limit_blocks_matching_operator_only(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ):
+                ai_council.control_response("set operator codex calls 1")
+                ai_council.record_operator_usage("codex", task_id="task-1", duration_ms=10)
+                codex_allowed, codex_reason = ai_council.operator_call_allowed("codex")
+                claude_allowed, _ = ai_council.operator_call_allowed("claude")
+
+        self.assertFalse(codex_allowed)
+        self.assertIn("codex daily call limit", codex_reason)
+        self.assertTrue(claude_allowed)
+
+    def test_control_write_requires_allowed_chat_when_chat_id_present(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.dict(
+                os.environ, {"TELEGRAM_ALLOWED_CHAT_ID": "553"}, clear=False
+            ):
+                denied = ai_council.control_response("kill nope", chat_id="999")
+                status = ai_council.control_response("status", chat_id="999")
+
+        self.assertIn("unauthorized", denied)
+        self.assertIn("global_kill_switch: False", status)
+
+    def test_control_invalid_file_fails_closed_for_model_calls(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            control_file = root / "state" / "control.json"
+            control_file.parent.mkdir(parents=True, exist_ok=True)
+            control_file.write_text("{bad json", encoding="utf-8")
+            with patch.object(ai_council, "CONTROL_FILE", control_file), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ):
+                allowed, reason = ai_council.operator_call_allowed("codex")
+                status = ai_council.control_response("status")
+
+        self.assertFalse(allowed)
+        self.assertIn("invalid control file", reason)
+        self.assertIn("control_file_error", status)
+
+    def test_control_pause_blocks_proactive_scan(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONTROL_FILE", root / "state" / "control.json"), patch.object(
+                ai_council, "NUDGES_FILE", root / "state" / "nudges.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.dict(
+                os.environ, {"AI_COUNCIL_PROACTIVE_EVENT_BRAIN": "true"}, clear=False
+            ):
+                ai_council.record_error("test", message="boom", severity="warning")
+                ai_council.control_response("pause proactive test")
+                blocked = ai_council.run_proactive_scan(send=False)
+                ai_council.control_response("resume proactive")
+                created = ai_council.run_proactive_scan(send=False)
+
+        self.assertEqual(blocked, 0)
+        self.assertEqual(created, 1)
 
     def test_workspace_write_requires_approval_and_stays_in_workspace(self):
         with temp_dir() as tmp:

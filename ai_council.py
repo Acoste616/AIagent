@@ -61,6 +61,7 @@ BACKGROUND_JOBS_FILE = STATE_DIR / "background_jobs.jsonl"
 ARTIFACT_INDEX_FILE = STATE_DIR / "artifact_index.jsonl"
 BACKGROUND_JOB_SPECS_DIR = STATE_DIR / "background_job_specs"
 COSTS_FILE = STATE_DIR / "costs.jsonl"
+CONTROL_FILE = STATE_DIR / "control.json"
 ERRORS_FILE = STATE_DIR / "errors.jsonl"
 IMPROVEMENTS_FILE = STATE_DIR / "improvements.jsonl"
 CONVERSATIONS_FILE = STATE_DIR / "conversations.jsonl"
@@ -134,6 +135,7 @@ READONLY_RECIPE_COMMANDS = {
     "/selftest",
     "/status",
     "/cost",
+    "/control",
     "/queue",
     "/artifacts",
     "/errors",
@@ -160,6 +162,7 @@ READONLY_RECIPE_COMMANDS = {
 RECIPE_CONNECTOR_READ_ACTIONS = {"check", "status", "auth", "setup", "connect", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
+RECIPE_CONTROL_READ_ACTIONS = {"", "status"}
 FOLLOWUP_EXECUTABLE_COMMANDS = {
     "/plan-action",
     "/improve",
@@ -3372,6 +3375,141 @@ def usage_today(operator: str | None = None) -> list[dict]:
     return rows
 
 
+def default_control_state() -> dict:
+    return {
+        "global_kill_switch": False,
+        "model_calls_paused": False,
+        "scheduled_recipes_paused": False,
+        "proactive_scan_paused": False,
+        "daily_total_call_limit": 0,
+        "daily_total_estimated_usd_limit": 0.0,
+        "per_operator": {},
+        "reason": "",
+        "updated_at": "",
+        "updated_by": "system",
+    }
+
+
+def _control_int(value, field: str) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be an integer") from None
+    if parsed < 0:
+        raise ValueError(f"{field} must be >= 0")
+    return parsed
+
+
+def _control_float(value, field: str) -> float:
+    try:
+        parsed = float(value or 0.0)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be a number") from None
+    if parsed < 0:
+        raise ValueError(f"{field} must be >= 0")
+    return parsed
+
+
+def validate_control_state(state: dict) -> None:
+    for key in ["global_kill_switch", "model_calls_paused", "scheduled_recipes_paused", "proactive_scan_paused"]:
+        if key in state and not isinstance(state.get(key), bool):
+            raise ValueError(f"{key} must be boolean")
+    _control_int(state.get("daily_total_call_limit", 0), "daily_total_call_limit")
+    _control_float(state.get("daily_total_estimated_usd_limit", 0.0), "daily_total_estimated_usd_limit")
+    per_operator = state.get("per_operator", {})
+    if per_operator and not isinstance(per_operator, dict):
+        raise ValueError("per_operator must be an object")
+    for name, limits in (per_operator or {}).items():
+        if not isinstance(name, str) or not isinstance(limits, dict):
+            raise ValueError("per_operator entries must be objects")
+        _control_int(limits.get("daily_call_limit", 0), f"per_operator.{name}.daily_call_limit")
+        _control_float(limits.get("daily_estimated_usd_limit", 0.0), f"per_operator.{name}.daily_estimated_usd_limit")
+
+
+def load_control_state() -> dict:
+    base = default_control_state()
+    if not CONTROL_FILE.exists():
+        return base
+    try:
+        raw = json.loads(CONTROL_FILE.read_text(encoding="utf-8", errors="replace") or "{}")
+        if not isinstance(raw, dict):
+            raise ValueError("control file must contain an object")
+        state = {**base, **raw}
+        validate_control_state(state)
+        return state
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            **base,
+            "global_kill_switch": True,
+            "reason": f"invalid control file: {exc}",
+            "control_file_error": str(exc),
+        }
+
+
+def save_control_state(state: dict) -> dict:
+    merged = {**default_control_state(), **state, "updated_at": utc_now()}
+    validate_control_state(merged)
+    CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONTROL_FILE.with_name(f"{CONTROL_FILE.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, CONTROL_FILE)
+    return merged
+
+
+def control_paused_reason(area: str) -> str:
+    state = load_control_state()
+    reason = str(state.get("reason") or "no reason")
+    if state.get("global_kill_switch"):
+        return f"global kill switch active: {reason}"
+    if area == "model" and state.get("model_calls_paused"):
+        return f"model calls paused: {reason}"
+    if area == "scheduler" and state.get("scheduled_recipes_paused"):
+        return f"scheduled recipes paused: {reason}"
+    if area == "proactive" and state.get("proactive_scan_paused"):
+        return f"proactive scan paused: {reason}"
+    return ""
+
+
+def nonblocked_usage(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if row.get("status") != "blocked"]
+
+
+def operator_control_limits(operator: str, state: dict) -> tuple[int, float]:
+    operator = operator_key(operator)
+    per_operator = state.get("per_operator") or {}
+    limits = per_operator.get(operator) if isinstance(per_operator, dict) else {}
+    if not isinstance(limits, dict):
+        limits = {}
+    call_limit = _control_int(limits.get("daily_call_limit", 0), f"per_operator.{operator}.daily_call_limit")
+    budget = _control_float(limits.get("daily_estimated_usd_limit", 0.0), f"per_operator.{operator}.daily_estimated_usd_limit")
+    return call_limit, budget
+
+
+def operator_env_call_limits(operator: str) -> list[tuple[str, int]]:
+    operator = operator_key(operator)
+    env_key = f"AI_COUNCIL_{operator.upper().replace('-', '_')}_DAILY_CALL_LIMIT"
+    default_limit = 50 if operator == "claude-flow" else 0
+    limits = [(env_key, int_cfg(env_key, default_limit))]
+    if operator == "grok":
+        limits.append(("GROK_DAILY_CALL_LIMIT", int_cfg("GROK_DAILY_CALL_LIMIT", 0)))
+    seen = set()
+    result = []
+    for name, value in limits:
+        if name not in seen and value > 0:
+            result.append((name, value))
+            seen.add(name)
+    return result
+
+
+def operator_env_budget_limits(operator: str) -> list[tuple[str, float]]:
+    operator = operator_key(operator)
+    env_key = f"AI_COUNCIL_{operator.upper().replace('-', '_')}_DAILY_BUDGET_USD"
+    limits = [(env_key, float_cfg(env_key, 0.0))]
+    if operator == "grok":
+        limits.append(("GROK_DAILY_BUDGET_USD", float_cfg("GROK_DAILY_BUDGET_USD", 0.0)))
+    return [(name, value) for name, value in limits if value > 0]
+
+
 def operator_usage_summary() -> dict[str, dict]:
     summary: dict[str, dict] = {}
     for row in usage_today():
@@ -3403,21 +3541,38 @@ def route_source_summary(limit: int = 200) -> dict[str, int]:
 
 
 def operator_call_allowed(operator: str) -> tuple[bool, str]:
-    calls = len([row for row in usage_today(operator) if row.get("status") != "blocked"])
-    if operator == "grok":
-        call_limit = int_cfg("GROK_DAILY_CALL_LIMIT", 0)
-        if call_limit and calls >= call_limit:
-            return False, f"Grok daily call limit reached: {calls}/{call_limit}"
-        budget = float_cfg("GROK_DAILY_BUDGET_USD", 0.0)
-        if budget:
-            used = sum(float(row.get("estimated_usd") or 0.0) for row in usage_today("grok"))
-            next_cost = estimated_operator_cost("grok")
-            if used + next_cost > budget:
-                return False, f"Grok estimated budget reached: {used:.4f}+{next_cost:.4f}>{budget:.4f} USD"
-    if operator == "claude-flow":
-        call_limit = int_cfg("AI_COUNCIL_CLAUDE_FLOW_DAILY_CALL_LIMIT", 50)
-        if call_limit and calls >= call_limit:
-            return False, f"Claude Flow daily call limit reached: {calls}/{call_limit}"
+    operator = operator_key(operator)
+    paused = control_paused_reason("model")
+    if paused:
+        return False, paused
+    state = load_control_state()
+    today_rows = usage_today()
+    active_rows = nonblocked_usage(today_rows)
+    total_call_limit = _control_int(state.get("daily_total_call_limit", 0), "daily_total_call_limit")
+    if total_call_limit and len(active_rows) >= total_call_limit:
+        return False, f"Global daily call limit reached: {len(active_rows)}/{total_call_limit}"
+    total_budget = _control_float(state.get("daily_total_estimated_usd_limit", 0.0), "daily_total_estimated_usd_limit")
+    if total_budget:
+        used = sum(float(row.get("estimated_usd") or 0.0) for row in active_rows)
+        next_cost = estimated_operator_cost(operator)
+        if used + next_cost > total_budget:
+            return False, f"Global estimated budget reached: {used:.4f}+{next_cost:.4f}>{total_budget:.4f} USD"
+
+    operator_rows = nonblocked_usage(usage_today(operator))
+    operator_calls = len(operator_rows)
+    control_call_limit, control_budget = operator_control_limits(operator, state)
+    call_limits = [("control", control_call_limit) if control_call_limit > 0 else None, *operator_env_call_limits(operator)]
+    for source in [item for item in call_limits if item]:
+        label, limit = source
+        if operator_calls >= limit:
+            return False, f"{operator} daily call limit reached via {label}: {operator_calls}/{limit}"
+    budget_limits = [("control", control_budget) if control_budget > 0 else None, *operator_env_budget_limits(operator)]
+    for source in [item for item in budget_limits if item]:
+        label, budget = source
+        used = sum(float(row.get("estimated_usd") or 0.0) for row in operator_rows)
+        next_cost = estimated_operator_cost(operator)
+        if used + next_cost > budget:
+            return False, f"{operator} estimated budget reached via {label}: {used:.4f}+{next_cost:.4f}>{budget:.4f} USD"
     return True, ""
 
 
@@ -3428,9 +3583,11 @@ def cost_response() -> str:
     total_blocked = sum(1 for row in rows if row.get("status") == "blocked")
     total_time = sum(int(row.get("duration_ms") or 0) for row in rows)
     total_est = sum(float(row.get("estimated_usd") or 0.0) for row in rows)
+    control = load_control_state()
     lines = [
         "[Council] Cost/usage today (UTC).",
         f"total_calls: {total_calls} | blocked: {total_blocked} | time: {total_time}ms | est: ${total_est:.4f}",
+        f"control: {'KILL' if control.get('global_kill_switch') else 'on'} | models_paused={control.get('model_calls_paused')} | scheduler_paused={control.get('scheduled_recipes_paused')} | total_call_limit={control.get('daily_total_call_limit')} | total_budget=${float(control.get('daily_total_estimated_usd_limit') or 0.0):.4f}",
     ]
     if not summary:
         lines.append("Brak zapisanych wywołań operatorów dzisiaj.")
@@ -3443,9 +3600,121 @@ def cost_response() -> str:
             )
     lines.append(
         "Uwaga: Codex/Claude przez subskrypcję nie zwracają realnego per-call billing z CLI; "
-        "Grok ma guard po call limit i estymowanym budżecie z env."
+        "L4.18 guard blokuje modele po kill switch, pauzie i limitach dziennych."
     )
     return "\n".join(lines)
+
+
+def control_status_lines(state: dict | None = None) -> list[str]:
+    state = state or load_control_state()
+    per_operator = state.get("per_operator") if isinstance(state.get("per_operator"), dict) else {}
+    lines = [
+        "[Council] Control L4.18",
+        f"global_kill_switch: {bool(state.get('global_kill_switch'))}",
+        f"model_calls_paused: {bool(state.get('model_calls_paused'))}",
+        f"scheduled_recipes_paused: {bool(state.get('scheduled_recipes_paused'))}",
+        f"proactive_scan_paused: {bool(state.get('proactive_scan_paused'))}",
+        f"daily_total_call_limit: {int(state.get('daily_total_call_limit') or 0)}",
+        f"daily_total_estimated_usd_limit: ${float(state.get('daily_total_estimated_usd_limit') or 0.0):.4f}",
+        f"reason: {state.get('reason') or '-'}",
+        f"updated_at: {state.get('updated_at') or '-'}",
+    ]
+    if state.get("control_file_error"):
+        lines.append(f"control_file_error: {state.get('control_file_error')}")
+    if per_operator:
+        lines.append("per_operator:")
+        for name in sorted(per_operator):
+            limits = per_operator.get(name) if isinstance(per_operator.get(name), dict) else {}
+            lines.append(
+                f"- {name}: calls={int(limits.get('daily_call_limit') or 0)} budget=${float(limits.get('daily_estimated_usd_limit') or 0.0):.4f}"
+            )
+    lines.append("Użyj: /control pause|resume [models|scheduler|proactive|all], /control kill, /control set total-calls <n>, /control set total-budget <usd>, /control set operator <name> calls|budget <n>.")
+    return lines
+
+
+def control_response(prompt: str, chat_id: str = "") -> str:
+    parts = prompt.strip().split()
+    if not parts or parts[0].lower() in {"status", "show"}:
+        return "\n".join(control_status_lines())
+    allowed_chat = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    if chat_id and allowed_chat and str(chat_id) != str(allowed_chat):
+        return "[Council] Control denied: unauthorized chat."
+    action = parts[0].lower()
+    state = load_control_state()
+    reason = " ".join(parts[2:]).strip() if len(parts) > 2 else ""
+    if action == "kill":
+        reason = " ".join(parts[1:]).strip() or "manual kill switch"
+        state.update({"global_kill_switch": True, "reason": reason, "updated_by": "telegram"})
+        saved = save_control_state(state)
+        return "\n".join(control_status_lines(saved))
+    if action in {"unkill", "resume"}:
+        target = parts[1].lower() if len(parts) >= 2 else "all"
+        if target in {"all", "everything"}:
+            state.update(
+                {
+                    "global_kill_switch": False,
+                    "model_calls_paused": False,
+                    "scheduled_recipes_paused": False,
+                    "proactive_scan_paused": False,
+                }
+            )
+        elif target in {"models", "model"}:
+            state["model_calls_paused"] = False
+        elif target in {"scheduler", "recipes", "loops"}:
+            state["scheduled_recipes_paused"] = False
+        elif target in {"proactive", "nudges"}:
+            state["proactive_scan_paused"] = False
+        else:
+            return "[Council] Control: nieznany target. Użyj models, scheduler, proactive albo all."
+        state.update({"reason": reason or f"resumed {target}", "updated_by": "telegram"})
+        saved = save_control_state(state)
+        return "\n".join(control_status_lines(saved))
+    if action == "pause":
+        target = parts[1].lower() if len(parts) >= 2 else "all"
+        if target in {"all", "everything"}:
+            state.update({"model_calls_paused": True, "scheduled_recipes_paused": True, "proactive_scan_paused": True})
+        elif target in {"models", "model"}:
+            state["model_calls_paused"] = True
+        elif target in {"scheduler", "recipes", "loops"}:
+            state["scheduled_recipes_paused"] = True
+        elif target in {"proactive", "nudges"}:
+            state["proactive_scan_paused"] = True
+        else:
+            return "[Council] Control: nieznany target. Użyj models, scheduler, proactive albo all."
+        state.update({"reason": reason or f"paused {target}", "updated_by": "telegram"})
+        saved = save_control_state(state)
+        return "\n".join(control_status_lines(saved))
+    if action == "reset":
+        saved = save_control_state({**default_control_state(), "reason": "control reset", "updated_by": "telegram"})
+        return "\n".join(control_status_lines(saved))
+    if action == "set":
+        if len(parts) < 3:
+            return "[Council] Control set: użyj total-calls <n>, total-budget <usd>, operator <name> calls|budget <n>."
+        target = parts[1].lower()
+        try:
+            if target == "total-calls":
+                state["daily_total_call_limit"] = _control_int(parts[2], "daily_total_call_limit")
+            elif target == "total-budget":
+                state["daily_total_estimated_usd_limit"] = _control_float(parts[2], "daily_total_estimated_usd_limit")
+            elif target == "operator" and len(parts) >= 5:
+                name = operator_key(parts[2])
+                field = parts[3].lower()
+                per_operator = state.setdefault("per_operator", {})
+                limits = per_operator.setdefault(name, {})
+                if field in {"calls", "call-limit", "daily-calls"}:
+                    limits["daily_call_limit"] = _control_int(parts[4], f"per_operator.{name}.daily_call_limit")
+                elif field in {"budget", "usd", "daily-budget"}:
+                    limits["daily_estimated_usd_limit"] = _control_float(parts[4], f"per_operator.{name}.daily_estimated_usd_limit")
+                else:
+                    return "[Council] Control operator: użyj calls albo budget."
+            else:
+                return "[Council] Control set: użyj total-calls, total-budget albo operator <name> calls|budget."
+        except ValueError as exc:
+            return f"[Council] Control set zablokowany: {exc}"
+        state.update({"reason": "limits updated", "updated_by": "telegram"})
+        saved = save_control_state(state)
+        return "\n".join(control_status_lines(saved))
+    return "[Council] Control: /control status, pause, resume, kill, unkill, reset, set."
 
 
 def default_recipes() -> dict[str, dict]:
@@ -3823,9 +4092,11 @@ def loops_response() -> str:
     loop_names = ["error_audit_twice_daily", "feature_evolution_loop"]
     open_count = len(open_improvements(limit=50))
     recent_errors = error_rows(days=1)
+    control = load_control_state()
     lines = [
-        "[Council] Autonomous loops L4.16",
+        "[Council] Autonomous loops L4.18",
         f"errors_24h: {len(recent_errors)} | open_improvements: {open_count}",
+        f"control: kill={control.get('global_kill_switch')} scheduler_paused={control.get('scheduled_recipes_paused')} proactive_paused={control.get('proactive_scan_paused')}",
     ]
     for name in loop_names:
         recipe = load_recipe(name)
@@ -3839,7 +4110,7 @@ def loops_response() -> str:
             f"- {name} [{'on' if recipe.get('enabled', True) else 'off'}] trigger={json.dumps(trigger, ensure_ascii=False)} last={last_text}"
         )
     lines.append("Manualnie: /recipe run error_audit_twice_daily albo /recipe run feature_evolution_loop")
-    lines.append("Backlog: /improvements | Next: /improve next")
+    lines.append("Backlog: /improvements | Next: /improve next | Control: /control")
     return "\n".join(lines)
 
 
@@ -3949,6 +4220,8 @@ def append_recipe_run(name: str, window_key: str, task_id: str, status: str) -> 
 def run_due_recipes(send: bool = False, now: datetime | None = None) -> int:
     if not bool_cfg("AI_COUNCIL_RECIPE_SCHEDULER", True):
         return 0
+    if control_paused_reason("scheduler"):
+        return 0
     chat_id = cfg("TELEGRAM_ALLOWED_CHAT_ID")
     started = 0
     for recipe in list_recipes():
@@ -4007,6 +4280,8 @@ def recipe_step_is_allowed(step: dict) -> tuple[bool, str]:
         return False, f"/source action `{action}` is not read-only recipe allowed"
     if command == "/memory" and action and action not in RECIPE_MEMORY_READ_ACTIONS:
         return False, f"/memory action `{action}` is not read-only recipe allowed"
+    if command == "/control" and action not in RECIPE_CONTROL_READ_ACTIONS:
+        return False, f"/control action `{action}` is not read-only recipe allowed"
     return True, ""
 
 
@@ -4108,9 +4383,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4123,10 +4398,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.18 Budget Guard/Kill Switch - autonomiczne pętle mają mieć globalne limity i łatwe zatrzymanie."
+        "Najbliższy cel wdrożeniowy: L4.19 Execution Verifier v2 - mocniejsze acceptance criteria i rollback dla szerszych lokalnych akcji."
     )
 
 
@@ -4139,16 +4414,17 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.17 Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, follow-up proposals, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.18 Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.17: /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.18: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
 def health_response() -> str:
     ensure_council_dirs()
     status = operator_binary_status()
+    control = load_control_state()
     running = [task for task in latest_tasks(limit=50) if task.get("status") in {"running", "running_background"}]
     stuck = stuck_tasks(limit=5)
     recent_errors = error_rows(days=1)
@@ -4167,6 +4443,7 @@ def health_response() -> str:
         f"errors_24h: {len(recent_errors)}",
         f"improvements_open: {len(improvements_open)}",
         f"nudges_open: {len(nudges_open)}",
+        f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
         f"route_sources: {route_counts_text}",
     ]
@@ -4199,7 +4476,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.17 Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.18 Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -5356,6 +5633,8 @@ def send_proactive_nudge(chat_id: str, event: dict) -> bool:
 
 def run_proactive_scan(send: bool = False, chat_id: str = "") -> int:
     if not bool_cfg("AI_COUNCIL_PROACTIVE_EVENT_BRAIN", True):
+        return 0
+    if control_paused_reason("proactive"):
         return 0
     chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
     existing = nudge_keys()
@@ -6648,6 +6927,7 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/facts",
     "/next",
     "/cost",
+    "/control",
     "/errors",
     "/improvements",
     "/loops",
@@ -6687,6 +6967,10 @@ def extract_json_object(text: str) -> dict | None:
 def llm_route(text: str, chat_id: str = "") -> dict | None:
     if not llm_router_enabled() or not cfg("XAI_API_KEY"):
         return None
+    allowed, reason = operator_call_allowed("grok")
+    if not allowed:
+        record_operator_usage("grok", status="blocked", duration_ms=0, estimated_usd=0.0, detail=f"llm_router: {reason}")
+        return None
     clean_text = text.strip()
     if not clean_text:
         return None
@@ -6700,7 +6984,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /control, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -6729,12 +7013,15 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         timeout=int_cfg("AI_COUNCIL_LLM_ROUTER_TIMEOUT", 20),
     )
     if data.get("ok") is False:
+        record_operator_usage("grok", status="failed", duration_ms=0, detail="llm_router failed")
         record_error("llm_router", message=str(data.get("error") or data.get("body_preview") or "router failed"), severity="warning")
         return None
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
+        record_operator_usage("grok", status="failed", duration_ms=0, detail="llm_router invalid response")
         return None
+    record_operator_usage("grok", status="completed", duration_ms=0, detail="llm_router")
     parsed = extract_json_object(str(content))
     if not parsed:
         return None
@@ -6813,6 +7100,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż koszty", "pokaz koszty", "pokaż usage", "pokaz usage")
     ):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost", "intent": "natural"}
+
+    if lower in {"control", "kontrola", "kill switch", "budget guard", "guard", "limity"} or lower.startswith(
+        ("pokaż kontrolę", "pokaz kontrole", "pokaż control", "pokaz control", "pokaż limity", "pokaz limity")
+    ):
+        return {"command": "/control", "operators": ["host"], "prompt": "status", "mode": "control", "intent": "natural"}
 
     if lower in {"błędy", "bledy", "errors", "error log", "log błędów", "log bledow"} or lower.startswith(
         ("pokaż błędy", "pokaz bledy", "pokaż errors", "pokaz errors", "sprawdź błędy", "sprawdz bledy")
@@ -7283,6 +7575,8 @@ def route_text(text: str) -> dict:
         return {"command": "/start-task", "operators": ["host"], "prompt": stripped[11:].strip(), "mode": "start_task"}
     if lower.startswith("/cost"):
         return {"command": "/cost", "operators": ["host"], "prompt": "", "mode": "cost"}
+    if lower.startswith("/control"):
+        return {"command": "/control", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "control"}
     if lower.startswith("/errors"):
         return {"command": "/errors", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "errors"}
     if lower.startswith("/nudges") or lower.startswith("/nudge"):
@@ -7800,6 +8094,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return start_planned_task_response(prompt, chat_id=chat_id)
     if command == "/cost":
         return cost_response()
+    if command == "/control":
+        return control_response(prompt, chat_id=chat_id)
     if command == "/errors":
         return errors_response(prompt)
     if command == "/nudges":
