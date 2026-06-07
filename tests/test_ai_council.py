@@ -316,12 +316,18 @@ class OperatorOutputTests(unittest.TestCase):
     def test_claude_flow_uses_opus_48_without_default_budget_cap(self):
         completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout="FLOW OK", stderr="")
 
-        with patch.object(ai_council, "command_path", return_value="claude"), patch.object(
-            ai_council, "memory_context_for_prompt", return_value=""
-        ), patch.object(ai_council, "OPENCLAW_EXPORT", Path("/missing-openclaw")), patch.object(
-            ai_council, "WORKSPACES_DIR", Path("/missing-workspaces")
-        ), patch("ai_council.subprocess.run", return_value=completed) as run:
-            response = ai_council.claude_flow_response("zrób pełny plan")
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "command_path", return_value="claude"
+            ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
+                ai_council, "OPENCLAW_EXPORT", Path("/missing-openclaw")
+            ), patch.object(ai_council, "WORKSPACES_DIR", Path("/missing-workspaces")), patch(
+                "ai_council.subprocess.run", return_value=completed
+            ) as run:
+                response = ai_council.claude_flow_response("zrób pełny plan")
 
         args, kwargs = run.call_args
         command = args[0]
@@ -420,6 +426,7 @@ class RoutingTests(unittest.TestCase):
             "/connector check github": ("/connector", ["host"]),
             "/improvements": ("/improvements", ["host"]),
             "/improve next": ("/improve", ["host"]),
+            "/followups": ("/followups", ["host"]),
             "/loops": ("/loops", ["host"]),
             "/goal": ("/goal", ["host"]),
             "/flow zrób pełny plan": ("/flow", ["claude-flow"]),
@@ -450,6 +457,7 @@ class RoutingTests(unittest.TestCase):
             "przygotuj mi raport z gmail": "/plan-action",
             "start task-20260606-120000-abcdef": "/start-task",
             "pokaż ulepszenia": "/improvements",
+            "pokaż follow-upy": "/followups",
             "pokaż pętle": "/loops",
             "health": "/health",
             "anuluj task-1": "/cancel",
@@ -645,6 +653,98 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("Approved planner checkpoint", approved)
         self.assertIn("Nie wykonałem external write", approved)
         self.assertIn("Next: status task-", approved)
+
+    def test_approve_followup_starts_safe_background_route(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] follow-up started"
+            ) as start:
+                action = ai_council.create_action(
+                    "Follow-up for task-test: plan improvement",
+                    action_type="followup_proposal",
+                    risk="R0",
+                    payload={
+                        "source_task_id": "task-test",
+                        "intent": "plan improvement",
+                        "recommended_command": "/improve",
+                        "recommended_prompt": "apply imp-1",
+                    },
+                )
+                response = ai_council.approve_response(action["action_id"])
+                second_response = ai_council.approve_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+                tasks = ai_council.latest_tasks(limit=1)
+
+        self.assertIn("follow-up started", response)
+        self.assertIn("status `executed`", second_response)
+        self.assertEqual(latest["status"], "executed")
+        self.assertEqual(latest["payload"]["launched_task_id"], tasks[0]["task_id"])
+        start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["task_id"], tasks[0]["task_id"])
+
+    def test_approve_followup_r4_does_not_auto_execute(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "start_background_job", return_value="should not start"
+            ) as start, patch.object(ai_council, "build_response", return_value="should not execute") as build:
+                action = ai_council.create_action(
+                    "Follow-up for task-test: wyślij maila do klienta",
+                    action_type="followup_proposal",
+                    risk="R4",
+                    payload={
+                        "source_task_id": "task-test",
+                        "intent": "wyślij maila do klienta",
+                        "recommended_command": "/plan-action",
+                        "recommended_prompt": "wyślij maila do klienta",
+                    },
+                )
+                response = ai_council.approve_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+
+        self.assertIn("checkpoint", response)
+        self.assertEqual(latest["status"], "approved")
+        self.assertEqual(start.call_count, 0)
+        self.assertEqual(build.call_count, 0)
+
+    def test_approve_followup_recomputes_risk_from_route(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "start_background_job", return_value="should not start"
+            ) as start, patch.object(ai_council, "build_response", return_value="should not execute") as build:
+                action = ai_council.create_action(
+                    "Follow-up for task-test: declared low risk mail",
+                    action_type="followup_proposal",
+                    risk="R0",
+                    payload={
+                        "source_task_id": "task-test",
+                        "intent": "wyślij maila do klienta",
+                        "recommended_command": "/plan-action",
+                        "recommended_prompt": "wyślij maila do klienta",
+                    },
+                )
+                response = ai_council.approve_response(action["action_id"])
+                latest = ai_council.get_latest_action(action["action_id"])
+
+        self.assertIn("checkpoint", response)
+        self.assertIn("risk: R4", response)
+        self.assertEqual(latest["status"], "approved")
+        self.assertEqual(start.call_count, 0)
+        self.assertEqual(build.call_count, 0)
 
     def test_edit_callback_marks_pending_action_as_editing(self):
         with temp_dir() as tmp:
@@ -1144,6 +1244,95 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertEqual(rows[0]["source_task_id"], "task-loop")
         self.assertEqual(rows[0]["priority"], "P1")
         self.assertIn("/improve show", " ".join(result["next_actions"]))
+        self.assertIn("/improve apply", " ".join(result["next_actions"]))
+        self.assertEqual(result["followup"]["command"], "/improve")
+
+    def test_save_recipe_artifact_creates_followup_action(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260607-000000-follow"
+            route = {"command": "/recipe", "operators": ["host"], "prompt": "run loop"}
+            result = {
+                "decision": "recipe done",
+                "facts": ["candidate ready"],
+                "dispute": "",
+                "next_actions": ["Follow-up: /improve apply imp-1"],
+                "ask_user": "approve follow-up",
+                "raw_output": "recipe output",
+                "report": "recipe report",
+                "followup": {
+                    "command": "/improve",
+                    "prompt": "apply imp-1",
+                    "intent": "Plan improvement imp-1",
+                    "risk": "R0",
+                    "reason": "test",
+                },
+            }
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ):
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+                next_text = ai_council.next_response(task_id)
+                followups = ai_council.followups_response()
+
+        self.assertEqual(actions[0]["type"], "followup_proposal")
+        self.assertEqual(actions[0]["status"], "pending")
+        self.assertEqual(actions[0]["payload"]["source_task_id"], task_id)
+        self.assertEqual(actions[0]["payload"]["recommended_command"], "/improve")
+        self.assertEqual(artifact["followup_action_id"], actions[0]["action_id"])
+        self.assertIn(f"/approve {actions[0]['action_id']}", next_text)
+        self.assertIn(actions[0]["action_id"], followups)
+
+    def test_save_recipe_artifact_respects_followup_chain_depth_limit(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260607-000000-depth"
+            route = {
+                "command": "/recipe",
+                "operators": ["host"],
+                "prompt": "run loop",
+                "followup_chain_id": "chain-test",
+                "followup_depth": 1,
+            }
+            result = {
+                "decision": "recipe done",
+                "facts": ["candidate ready"],
+                "next_actions": ["Follow-up: /improve apply imp-1"],
+                "raw_output": "recipe output",
+                "followup": {
+                    "command": "/improve",
+                    "prompt": "apply imp-1",
+                    "intent": "Plan improvement imp-1",
+                    "risk": "R0",
+                },
+            }
+            with patch.dict(os.environ, {"AI_COUNCIL_FOLLOWUP_MAX_DEPTH": "1"}), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+                next_text = ai_council.next_response(task_id)
+
+        self.assertEqual(actions, [])
+        self.assertEqual(artifact["followup_action_id"], "")
+        self.assertNotIn("Follow-up ready", next_text)
 
     def test_recipe_policy_blocks_write_step(self):
         recipe = {

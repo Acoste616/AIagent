@@ -138,6 +138,7 @@ READONLY_RECIPE_COMMANDS = {
     "/artifacts",
     "/errors",
     "/improvements",
+    "/followups",
     "/loops",
     "/nudges",
     "/sources",
@@ -159,6 +160,20 @@ READONLY_RECIPE_COMMANDS = {
 RECIPE_CONNECTOR_READ_ACTIONS = {"check", "status", "auth", "setup", "connect", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
+FOLLOWUP_EXECUTABLE_COMMANDS = {
+    "/plan-action",
+    "/improve",
+    "/flow",
+    "/council",
+    "@research",
+    "@xresearch",
+    "/xresearch",
+    "/poke-research",
+    "/recipe",
+    "/connector",
+    "/source",
+    "/chat",
+}
 
 
 def load_env(path: Path = ENV_PATH) -> dict[str, str]:
@@ -3033,6 +3048,143 @@ def default_next_actions(task_id: str, command: str = "") -> list[str]:
     return actions
 
 
+def followup_action_for_task(task_id: str) -> dict | None:
+    latest = latest_by_id(ACTIONS_FILE, "action_id", limit=80)
+    for action in latest:
+        payload = action.get("payload") or {}
+        if action.get("type") == "followup_proposal" and payload.get("source_task_id") == task_id:
+            return action
+    return None
+
+
+def followup_seed(next_actions: list[str], facts: list[str], task_id: str) -> str:
+    skip_prefixes = (
+        "przejrzyj wynik",
+        "przejrzyj pełny",
+        "przejrzyj pelny",
+        "pokaż recipe",
+        "pokaz recipe",
+        "/details",
+        "/facts",
+        "/recipe show",
+    )
+    for action in next_actions:
+        clean = compact_line(str(action), 240)
+        if clean and not clean.lower().startswith(skip_prefixes):
+            return clean
+    if facts:
+        return f"kontynuuj na podstawie faktu: {compact_line(str(facts[0]), 180)}"
+    return f"kontynuuj wynik task {task_id}"
+
+
+def risk_rank(level: str) -> int:
+    try:
+        return RISK_LEVELS.index((level or "").strip().upper())
+    except ValueError:
+        return RISK_LEVELS.index("R2")
+
+
+def stricter_risk(*items: tuple[str, str]) -> tuple[str, str]:
+    clean = [(level, reason) for level, reason in items if level]
+    if not clean:
+        return "R2", "unknown follow-up risk"
+    return max(clean, key=lambda item: risk_rank(item[0]))
+
+
+def followup_route_risk(command: str, prompt: str, intent: str = "") -> tuple[str, str]:
+    command = (command or "").strip()
+    text = " ".join(part for part in [command, prompt or "", intent or ""] if part)
+    if command not in FOLLOWUP_EXECUTABLE_COMMANDS:
+        return "R2", f"{command or '(empty)'} is not follow-up executable"
+    if command in SIDE_EFFECT_COMMANDS or command in {"/execute", "/verify", "/rollback", "/approve", "/deny"}:
+        return "R4", f"{command} is a side-effect/execution command"
+    if command == "/connector":
+        action = (prompt or "").split(maxsplit=1)[0].lower() if prompt else ""
+        if action and action not in RECIPE_CONNECTOR_READ_ACTIONS:
+            return "R3", f"/connector action `{action}` is not read-only follow-up allowed"
+    if command == "/source":
+        action = (prompt or "").split(maxsplit=1)[0].lower() if prompt else ""
+        if action and action not in RECIPE_SOURCE_READ_ACTIONS:
+            return "R3", f"/source action `{action}` is not read-only follow-up allowed"
+    return risk_level_for_text(text)
+
+
+def build_followup_payload(task_id: str, route: dict, normalized: dict, result: dict) -> dict:
+    explicit = result.get("followup") if isinstance(result.get("followup"), dict) else {}
+    if explicit:
+        command = str(explicit.get("command") or "/plan-action")
+        prompt = str(explicit.get("prompt") or explicit.get("intent") or "")
+        intent = str(explicit.get("intent") or prompt)
+        declared_risk = normalize_risk(str(explicit.get("risk") or ""), intent or prompt)
+        computed_risk = followup_route_risk(command, prompt, intent)
+        risk, reason = stricter_risk(declared_risk, computed_risk)
+        if risk_rank(computed_risk[0]) > risk_rank(declared_risk[0]):
+            reason = f"computed route risk overrides declared risk: {computed_risk[1]}"
+        elif explicit.get("reason"):
+            reason = str(explicit.get("reason"))
+    else:
+        seed = followup_seed(normalized.get("next_actions") or [], normalized.get("facts") or [], task_id)
+        command = "/plan-action"
+        prompt = f"Kontynuuj wynik task {task_id}: {seed}"
+        intent = prompt
+        risk, reason = followup_route_risk(command, prompt, intent)
+    try:
+        parent_depth = int(route.get("followup_depth") or route.get("chain_depth") or 0)
+    except (TypeError, ValueError):
+        parent_depth = 0
+    chain_depth = parent_depth + 1
+    chain_id = str(route.get("followup_chain_id") or route.get("chain_id") or f"followup:{task_id}")
+    return {
+        "source_task_id": task_id,
+        "source_command": route.get("command", ""),
+        "intent": compact_line(intent, 500),
+        "recommended_command": command,
+        "recommended_prompt": prompt,
+        "recommended_route": {
+            "command": command,
+            "operators": operators_for_command(command),
+            "prompt": prompt,
+            "mode": "followup",
+            "intent": "followup_runner",
+            "followup_chain_id": chain_id,
+            "followup_depth": chain_depth,
+        },
+        "followup_chain_id": chain_id,
+        "followup_depth": chain_depth,
+        "risk": risk,
+        "risk_reason": reason,
+    }
+
+
+def maybe_create_followup_action(task_id: str, route: dict, normalized: dict, result: dict) -> dict | None:
+    if not bool_cfg("AI_COUNCIL_FOLLOWUP_RUNNER", True):
+        return None
+    if route.get("command") != "/recipe":
+        return None
+    if str(result.get("status") or "") in {"blocked", "failed"}:
+        return None
+    existing = followup_action_for_task(task_id)
+    if existing:
+        return existing
+    payload = build_followup_payload(task_id, route, normalized, result)
+    max_depth = int_cfg("AI_COUNCIL_FOLLOWUP_MAX_DEPTH", 3)
+    if int(payload.get("followup_depth") or 0) > max_depth:
+        return None
+    command = str(payload.get("recommended_command") or "")
+    if command not in FOLLOWUP_EXECUTABLE_COMMANDS:
+        payload["blocked_reason"] = f"command `{command}` is not follow-up executable"
+        risk = "R2"
+    else:
+        risk = str(payload.get("risk") or "R0")
+    action = create_action(
+        f"Follow-up for {task_id}: {payload.get('intent')}",
+        action_type="followup_proposal",
+        risk=risk,
+        payload=payload,
+    )
+    return action
+
+
 def format_telegram_summary(result: dict, task_id: str) -> str:
     facts = result.get("facts") or []
     next_actions = result.get("next_actions") or []
@@ -3073,6 +3225,12 @@ def save_task_artifacts(task_id: str, route: dict, result: dict) -> dict:
         "raw_output": raw_output,
         "report": str(result.get("report") or raw_output),
     }
+    followup_action = maybe_create_followup_action(task_id, route, normalized, result)
+    if followup_action:
+        followup_line = f"Follow-up ready: /approve {followup_action['action_id']} albo /deny {followup_action['action_id']}"
+        if followup_line not in normalized["next_actions"]:
+            normalized["next_actions"] = [followup_line, *normalized["next_actions"]][:8]
+        normalized["followup_action_id"] = followup_action["action_id"]
     summary = str(result.get("summary") or format_telegram_summary(normalized, task_id))
     paths = {
         "raw_path": artifact_dir / "raw.md",
@@ -3097,6 +3255,7 @@ def save_task_artifacts(task_id: str, route: dict, result: dict) -> dict:
         "facts": normalized["facts"],
         "dispute": normalized["dispute"],
         "next_actions": normalized["next_actions"],
+        "followup_action_id": normalized.get("followup_action_id", ""),
         "ask_user": normalized["ask_user"],
         "summary": summary,
         "raw_preview": compact_line(normalized["raw_output"], 500),
@@ -3919,9 +4078,18 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
     facts = extract_fact_lines(raw, limit=3)
     improvement = create_improvement_from_recipe(recipe, name, task_id, raw)
     next_actions = [f"Przejrzyj wynik: /details {task_id}", f"Pokaż recipe: /recipe show {name}"]
+    followup = None
     if improvement:
-        next_actions.insert(0, f"Backlog: /improve show {improvement['improvement_id']}")
-    return {
+        next_actions.insert(0, f"Follow-up: /improve apply {improvement['improvement_id']}")
+        next_actions.insert(1, f"Backlog: /improve show {improvement['improvement_id']}")
+        followup = {
+            "command": "/improve",
+            "prompt": f"apply {improvement['improvement_id']}",
+            "intent": f"Zaplanuj wdrożenie improvement {improvement['improvement_id']}: {improvement.get('title', '')}",
+            "risk": "R0",
+            "reason": "improvement planning only; code changes still require Codex audit and tests",
+        }
+    result = {
         "decision": f"Recipe `{name}` zakończona.",
         "facts": facts or [f"Recipe `{name}` uruchomiona."],
         "dispute": "Recipe MVP działa deterministycznie; realne write/external actions nadal wymagają approval.",
@@ -3930,6 +4098,9 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
         "raw_output": raw,
         "report": f"# Recipe run: {name}\n\nInput: {recipe_input}\n\n{raw}",
     }
+    if followup:
+        result["followup"] = followup
+    return result
 
 
 def capabilities_response() -> str:
@@ -3937,9 +4108,9 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy i przygotować lokalne write/patch/execute po approval.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -3952,10 +4123,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: automatyczne multi-step follow-upy po recipe, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.17 Follow-up Runner - po zakończonej recipe system ma sam proponować i prowadzić kolejny krok z approval."
+        "Najbliższy cel wdrożeniowy: L4.18 Budget Guard/Kill Switch - autonomiczne pętle mają mieć globalne limity i łatwe zatrzymanie."
     )
 
 
@@ -3968,10 +4139,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.16 Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.17 Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, follow-up proposals, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.16: /plan-action, /start-task, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.17: /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4028,7 +4199,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.16 Live Recipes + Google OAuth read-sync",
+        "version: L4.17 Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -4999,6 +5170,25 @@ def actions_response(limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def followups_response(prompt: str = "") -> str:
+    rows = [
+        action
+        for action in latest_by_id(ACTIONS_FILE, "action_id", limit=50)
+        if action.get("type") == "followup_proposal"
+    ]
+    if not rows:
+        return "[Council] Follow-ups: brak propozycji. Zakończona recipe utworzy follow-up automatycznie."
+    lines = ["[Council] Follow-ups L4.17"]
+    for action in rows[:10]:
+        payload = action.get("payload") or {}
+        route = f"{payload.get('recommended_command', '')} {payload.get('recommended_prompt', '')}".strip()
+        lines.append(
+            f"- {action.get('action_id')} | {action.get('status')} | {action.get('risk')} | task={payload.get('source_task_id', '')} | {compact_line(route, 120)}"
+        )
+    lines.append("Użyj: /approve <id> albo /deny <id>.")
+    return "\n".join(lines)
+
+
 def nudged_ids() -> set[str]:
     return {str(row.get("action_id")) for row in read_jsonl(NUDGES_FILE) if row.get("action_id")}
 
@@ -5252,6 +5442,64 @@ def approve_response(prompt: str) -> str:
             f"route: {route_preview or '(none)'}\n"
             f"{next_line}"
         )
+    if updated.get("type") == "followup_proposal":
+        payload = updated.get("payload") or {}
+        command = str(payload.get("recommended_command") or "")
+        prompt_text = str(payload.get("recommended_prompt") or "")
+        route_preview = compact_line(f"{command} {prompt_text}".strip(), 220)
+        if command not in FOLLOWUP_EXECUTABLE_COMMANDS:
+            return (
+                f"[Council] Approved follow-up checkpoint: {updated['action_id']}.\n"
+                f"Nie uruchamiam route spoza allowlisty L4.17: {route_preview or '(none)'}."
+            )
+        execution_risk, execution_reason = followup_route_risk(command, prompt_text, str(payload.get("intent") or ""))
+        effective_risk, _ = stricter_risk((str(updated.get("risk") or "R2"), str(updated.get("risk_reason") or "")), (execution_risk, execution_reason))
+        if effective_risk in {"R3", "R4"}:
+            return (
+                f"[Council] Approved follow-up checkpoint: {updated['action_id']}.\n"
+                "Nie wykonałem external write/send/schedule/publish. R3/R4 wymaga osobnej ścieżki approval/execution.\n"
+                f"route: {route_preview or '(none)'}\n"
+                f"risk: {effective_risk} ({execution_reason})"
+            )
+        route = {
+            "command": command,
+            "operators": operators_for_command(command),
+            "prompt": prompt_text,
+            "mode": "followup",
+            "intent": "followup_runner",
+            "followup_chain_id": payload.get("followup_chain_id", ""),
+            "followup_depth": payload.get("followup_depth", 0),
+        }
+        chat_id = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+        if route_should_background(route):
+            task = create_task(
+                prompt_text or route_preview,
+                source="followup_runner",
+                status="queued",
+                command=command,
+                operators=route["operators"],
+                idempotency_key=f"followup:{updated['action_id']}",
+                chat_id_hash=short_hash(chat_id),
+            )
+            executed = {
+                **updated,
+                "status": "executed",
+                "updated_at": utc_now(),
+                "payload": {**payload, "launched_task_id": task["task_id"]},
+                "execution_result": f"started follow-up task {task['task_id']}",
+            }
+            append_jsonl(ACTIONS_FILE, executed)
+            started = start_background_job(route, chat_id=chat_id, task_id=task["task_id"], send_progress=True)
+            return f"[Council] Approved + follow-up started: {updated['action_id']}.\n{started}"
+        response = build_response(route, chat_id=chat_id)
+        executed = {
+            **updated,
+            "status": "executed",
+            "updated_at": utc_now(),
+            "execution_result": compact_line(response, 500),
+        }
+        append_jsonl(ACTIONS_FILE, executed)
+        return f"[Council] Approved + follow-up executed: {updated['action_id']}.\n{response}"
     return (
         f"[Council] Approved: {updated['action_id']}.\n"
         "Ta akcja nie ma automatycznego wykonania w L3.0."
@@ -6314,6 +6562,7 @@ def task_delivery_reply_markup(task_id: str) -> dict:
         [
             [("Status", f"status:{task_id}"), ("Details", f"details:{task_id}")],
             [("Facts", f"facts:{task_id}"), ("Next", f"next:{task_id}")],
+            [("Actions", "actions:latest")],
         ]
     )
 
@@ -6451,7 +6700,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /followups, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -6645,6 +6894,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż ulepszenia", "pokaz ulepszenia", "pokaż backlog", "pokaz backlog", "następne wdrożenie", "nastepne wdrozenie")
     ):
         return {"command": "/improvements", "operators": ["host"], "prompt": "", "mode": "improvements", "intent": "natural"}
+
+    if lower in {"followups", "follow-ups", "follow upy", "follow-upy"} or lower.startswith(
+        ("pokaż followups", "pokaz followups", "pokaż follow-upy", "pokaz follow-upy", "pokaż follow upy", "pokaz follow upy")
+    ):
+        return {"command": "/followups", "operators": ["host"], "prompt": "", "mode": "followups", "intent": "natural"}
 
     if lower in {"loops", "pętle", "petle", "autonomiczne pętle", "autonomiczne petle"} or lower.startswith(
         ("pokaż pętle", "pokaz petle", "pokaż loops", "pokaz loops", "sprawdź pętle", "sprawdz petle")
@@ -7046,6 +7300,8 @@ def route_text(text: str) -> dict:
         return {"command": "/improvements", "operators": ["host"], "prompt": stripped[13:].strip(), "mode": "improvements"}
     if lower.startswith("/improve"):
         return {"command": "/improve", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "improvements"}
+    if lower.startswith("/followups"):
+        return {"command": "/followups", "operators": ["host"], "prompt": stripped[10:].strip(), "mode": "followups"}
     if lower.startswith("/loops"):
         return {"command": "/loops", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "loops"}
     if lower.startswith("/recipes"):
@@ -7560,6 +7816,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return improvements_response(prompt)
     if command == "/improve":
         return improvements_response(prompt)
+    if command == "/followups":
+        return followups_response(prompt)
     if command == "/loops":
         return loops_response()
     if command == "/recipes":

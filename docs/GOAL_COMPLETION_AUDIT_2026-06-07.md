@@ -51,18 +51,19 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.17 Follow-up Runner: after a completed recipe, propose and run the next safe step with approval boundaries.
+1. L4.18 Budget Guard/Kill Switch for autonomous loops and expensive model calls.
 2. Stronger verifier/rollback for broader local execution.
 3. Streaming/progress UX for long jobs and recipe steps.
 4. iPhone Shortcuts as primary capture layer.
 5. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
-6. Global budget guard/kill switch for autonomous loops.
+6. Longer-term project memory and source-grounded operator recall.
 
 Completed layers in the current implementation state:
 
 - L4.14 Google OAuth read-sync for Gmail/Calendar/Drive.
 - L4.15 Poke Action Planner: one natural message -> planned task/preview/risk/cost/start path without slash.
 - L4.16 Live Recipes: Action Planner selects deterministic recipes for research/Gmail/Calendar/Drive/error-audit/evolution and exposes `/loops`.
+- L4.17 Follow-up Runner: completed recipes create follow-up proposals; approved safe follow-ups can start the next task, while R3/R4 stay checkpoint-only.
 
 ## External Follow-up
 
