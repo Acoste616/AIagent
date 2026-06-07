@@ -236,8 +236,9 @@ PROVIDER_EXECUTOR_OPERATIONS = {
 }
 PROVIDER_EXECUTOR_VERSION = "L4.41"
 POKE_FRONT_VERSION = "L4.44"
+POKE_GAP_VERSION = "L4.48"
 AUTONOMOUS_LOOP_VERSION = "L4.43"
-SHORTCUTS_VERSION = "L4.47"
+SHORTCUTS_VERSION = "L4.48"
 AGENT_INBOX_VERSION = "L4.46"
 AUTONOMOUS_LOOP_NAMES = ("error_audit_twice_daily", "feature_evolution_loop")
 POKE_CHAT_FOLLOWUP_PREFIXES = (
@@ -248,6 +249,42 @@ POKE_CHAT_FOLLOWUP_PREFIXES = (
     "rozwin",
     "doprecyzuj",
     "przeredaguj",
+)
+SHORTCUT_RECIPE_ALIASES = frozenset(
+    {
+        "recipes",
+        "recipe",
+        "cookbook",
+        "ios recipes",
+        "payloads",
+        "payload",
+        "payloady iphone",
+        "payloady shortcuts",
+        "iphone payloads",
+        "iphone recipes",
+        "iphone recipe",
+        "shortcut recipes",
+        "shortcuts recipes",
+    }
+)
+SHORTCUT_RECIPE_NATURAL_ALIASES = frozenset(
+    {
+        "shortcuts recipes",
+        "shortcut recipes",
+        "iphone recipes",
+        "ios recipes",
+        "payloady iphone",
+        "payloady shortcuts",
+        "iphone payloads",
+    }
+)
+SHORTCUT_RECIPE_NATURAL_PREFIXES = (
+    "pokaż recipes iphone",
+    "pokaz recipes iphone",
+    "pokaż payloady iphone",
+    "pokaz payloady iphone",
+    "pokaż payloady shortcuts",
+    "pokaz payloady shortcuts",
 )
 AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS = {
     "recipe_version",
@@ -5367,6 +5404,7 @@ def shortcuts_setup_response(prompt: str = "") -> str:
             "2. Jeśli iPhone ma łączyć się przez Tailscale, ustaw `AI_COUNCIL_SHORTCUT_HOST` na Tailscale IP albo nazwę desktopu, nie `127.0.0.1`.",
             "3. Po Twoim approval uruchom: `D:\\ai-council\\windows-deploy\\start-ai-council-shortcuts.ps1`.",
             "4. W iOS Shortcuts zrób POST na `/shortcut` z headerem `X-AI-Council-Token` albo `Authorization: Bearer <token>`.",
+            "5. Użyj gotowych przepływów z `/shortcuts recipes` zamiast budować payload od zera.",
             "PAYLOAD:",
             "- Ask Council: {\"text\":\"...\"}",
             "- Share URL: {\"url\":\"https://...\", \"title\":\"...\", \"mode\":\"url\"}",
@@ -5378,6 +5416,100 @@ def shortcuts_setup_response(prompt: str = "") -> str:
         lines.append("NEXT: zatwierdź start listenera; potem sprawdź `/shortcuts` i iPhone POST `/shortcut`.")
     else:
         lines.append("NEXT: uzupełnij token/host, potem wróć do `/shortcuts setup`.")
+    return "\n".join(lines)
+
+
+def shortcut_recipe_pack(status: dict | None = None) -> list[dict]:
+    status = shortcut_runtime_status() if status is None else status
+    endpoint = status["endpoint"]
+    base = {"url": endpoint}
+    return [
+        {
+            **base,
+            "name": "ask_council",
+            "ios": "Text -> Get Contents of URL",
+            "body": {"text": "<question_or_task>", "send_telegram": True},
+        },
+        {
+            **base,
+            "name": "share_url_research",
+            "ios": "Share Sheet URL -> Get Contents of URL",
+            "body": {"url": "<Shortcut Input URL>", "title": "<optional title>", "mode": "url", "research": True, "send_telegram": True},
+        },
+        {
+            **base,
+            "name": "voice_note_to_task",
+            "ios": "Record Audio -> Base64 Encode -> Get Contents of URL",
+            "body": {
+                "media_base64": "<Base64 Encoded File>",
+                "filename": "voice.m4a",
+                "mime_type": "audio/m4a",
+                "caption": "<what should Council do?>",
+                "send_telegram": True,
+            },
+        },
+        {
+            **base,
+            "name": "screenshot_to_task",
+            "ios": "Screenshot/Image -> Base64 Encode -> Get Contents of URL",
+            "body": {
+                "media_base64": "<Base64 Encoded File>",
+                "filename": "screenshot.png",
+                "mime_type": "image/png",
+                "caption": "<what should Council inspect?>",
+                "send_telegram": True,
+            },
+        },
+        {
+            **base,
+            "name": "agent_inbox_status",
+            "ios": "Menu Item -> Get Contents of URL",
+            "body": {"action": "agent", "send_telegram": True},
+        },
+        {
+            **base,
+            "name": "task_status",
+            "ios": "Ask for Text task_id -> Get Contents of URL",
+            "body": {"action": "status", "task_id": "task-...", "send_telegram": True},
+        },
+    ]
+
+
+def shortcuts_recipes_response(prompt: str = "") -> str:
+    status = shortcut_runtime_status()
+    blockers = shortcut_setup_blockers(status)
+    lines = [
+        f"[Council] iPhone Shortcuts Recipes {SHORTCUTS_VERSION}",
+        "DECYZJA: to jest cookbook do Poke-like iPhone capture; nie drukuję tokena, nie zapisuję env i nie startuję listenera.",
+        "STAN:",
+        f"- endpoint: {status['endpoint']}",
+        f"- token: {'configured' if status['token_ready'] else 'missing'}",
+        f"- bind_scope: {status['bind_scope']}",
+        "PREREQ:",
+    ]
+    if blockers:
+        lines.extend(f"- {blocker}" for blocker in blockers)
+    else:
+        lines.append("- token/host wyglądają gotowo; listener nadal wymaga osobnego approval/start")
+    lines.extend(
+        [
+            "RECIPES:",
+            "headers: X-AI-Council-Token: <token> albo Authorization: Bearer <token>",
+        ]
+    )
+    for recipe in shortcut_recipe_pack(status):
+        body = json.dumps(recipe["body"], ensure_ascii=False, separators=(",", ":"))
+        lines.append(f"- {recipe['name']}: {recipe['ios']} | POST {recipe['url']} | body: {body}")
+    lines.extend(
+        [
+            "SAFETY: approve/deny/cancel/write są blokowane w iOS Shortcuts; mutujące akcje zostają w Telegram approval.",
+            "NIE ROBIĘ TERAZ: nie generuję tokena, nie zapisuję `.env`, nie startuję daemonu, nie otwieram portu.",
+        ]
+    )
+    if blockers:
+        lines.append("NEXT: /shortcuts setup, potem wróć do `/shortcuts recipes`.")
+    else:
+        lines.append("NEXT: zbuduj Shortcut z jednego recipe i przetestuj POST `/shortcut`.")
     return "\n".join(lines)
 
 
@@ -5400,6 +5532,8 @@ def shortcut_recent_tasks(limit: int = 5) -> list[dict]:
 def shortcuts_response(prompt: str = "") -> str:
     ensure_council_dirs()
     lower = normalize_intent_text(prompt)
+    if lower in SHORTCUT_RECIPE_ALIASES:
+        return shortcuts_recipes_response(prompt)
     if lower in {"setup", "konfiguracja", "config", "configure", "token", "activate", "aktywuj", "start", "iphone setup"}:
         return shortcuts_setup_response(prompt)
     status = shortcut_runtime_status()
@@ -5425,6 +5559,7 @@ def shortcuts_response(prompt: str = "") -> str:
         "headers: X-AI-Council-Token albo Authorization: Bearer <token>",
         "safety: capture/read/research/status only; approve/deny/cancel są blokowane w Shortcuts i wymagają Telegram approval.",
         "setup: /shortcuts setup",
+        "recipes: /shortcuts recipes",
     ]
     if recent:
         lines.append("recent:")
@@ -5447,7 +5582,7 @@ def capabilities_response() -> str:
         "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, zbudować /provider plan/show/verify/request/execute, wykonać GitHub issue, Gmail draft, Calendar event i Drive document tylko za osobnym approvalem, confirm tokenem, provider-specific env gate i L4.41 read-before-write, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        f"{SHORTCUTS_VERSION}: iPhone Shortcuts Guided Setup pokazuje token, endpoint, bind scope, blockery i kroki aktywacji bez autostartu. {POKE_FRONT_VERSION}: One Contact Memory Front używa ostatniego wątku dla zwykłych follow-upów i `co dalej`. L4.43: Autonomous Loop Cadence wymusza dwa cykle dziennie dla error-audit i feature-evolution oraz migruje stare recipe JSON po deployu. L4.42: Default Front Host skraca odpowiedzi o Poke/parity i zwykłe pytania prowadzi jak operator, nie jak status techniczny. L4.41: Provider Read-Before-Write sprawdza GitHub/Gmail/Calendar/Drive przed realnym write i blokuje duplikaty jako dry-run bez POST/upload. L4.40: Drive Document Executor tworzy Google Docs przez Drive files.create tylko po approval, confirm tokenie, Google OAuth i AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=true. L4.39: Poke Front Host Contract skraca feedback o celu/frustracji do decyzji, faktów i jednego następnego ruchu. L4.38: Provider Write Dedupe blokuje duplikaty provider write po connector+operation+canonical body przed request i execute. L4.37: Poke Action Cards dodaje przyciski Agent/Improve/Poke research/Health pod Poke Gap. L4.36: Poke Host Gap sprawia, że krytyka `nie działa jak Poke` wraca jako krótka diagnoza i P0 backlog, nie długa lista funkcji. L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień.\n"
+        f"{POKE_GAP_VERSION}: Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack daje krótką diagnozę parity oraz gotowe przepływy Ask/URL/Voice/Screenshot/Status bez sekretów i bez autostartu; setup nadal pokazuje token, endpoint, bind scope i blockery. {POKE_FRONT_VERSION}: One Contact Memory Front używa ostatniego wątku dla zwykłych follow-upów i `co dalej`. L4.43: Autonomous Loop Cadence wymusza dwa cykle dziennie dla error-audit i feature-evolution oraz migruje stare recipe JSON po deployu. L4.42: Default Front Host skraca odpowiedzi o Poke/parity i zwykłe pytania prowadzi jak operator, nie jak status techniczny. L4.41: Provider Read-Before-Write sprawdza GitHub/Gmail/Calendar/Drive przed realnym write i blokuje duplikaty jako dry-run bez POST/upload. L4.40: Drive Document Executor tworzy Google Docs przez Drive files.create tylko po approval, confirm tokenie, Google OAuth i AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=true. L4.39: Poke Front Host Contract skraca feedback o celu/frustracji do decyzji, faktów i jednego następnego ruchu. L4.38: Provider Write Dedupe blokuje duplikaty provider write po connector+operation+canonical body przed request i execute. L4.37: Poke Action Cards dodaje przyciski Agent/Improve/Poke research/Health pod Poke Gap. L4.36: Poke Host Gap sprawia, że krytyka `nie działa jak Poke` wraca jako krótka diagnoza i P0 backlog, nie długa lista funkcji. L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień.\n"
         "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, provider-write adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
@@ -5493,13 +5628,14 @@ def poke_gap_message(prompt: str = "", improvement_id: str = "", running_tasks: 
     user_line = f"TWOJA WIADOMOŚĆ: {compact_line(prompt, 160)}\n" if prompt.strip() else ""
     improvement_value = improvement_id or "not_logged_chat_fallback"
     return (
-        f"[Council] Poke Gap {POKE_FRONT_VERSION}\n"
+        f"[Council] Poke Gap {POKE_GAP_VERSION}\n"
         f"{user_line}"
         "DECYZJA: masz rację. To jeszcze nie jest Poke-level; cel zostaje aktywny aż do parity albo lepiej.\n"
-        f"FAKTY: L4.41 read-before-write jest już wdrożone; {SHORTCUTS_VERSION} prowadzi iPhone Shortcuts setup; problemem nadal jest UX frontu, proaktywne prowadzenie spraw i brak prywatnego iMessage bridge.\n"
+        f"FAKTY: rdzeń Telegram/background/artifacts/approval działa; {SHORTCUTS_VERSION} dodaje gotowe iPhone recipe payloady; nadal brakuje aktywnego iPhone listenera, prywatnego iMessage bridge i głębszych integracji, więc to nie jest jeszcze Poke parity.\n"
+        "BRAKI P0: 1) iPhone listener + real Shortcut test, 2) prywatny Messages/iMessage bridge, 3) integracje read/write prowadzone jako jeden operator.\n"
         f"STAN: running_tasks={running_tasks}, errors_24h={errors_24h}, improvement={improvement_value}.\n"
         f"TERAZ: {POKE_FRONT_VERSION} trzyma ostatni kontekst rozmowy; L4.43 pilnuje dwóch cykli dziennie.\n"
-        f"NEXT: wdrażam {SHORTCUTS_VERSION} iPhone wejście, potem kolejny brak parity zamiast zamykać goal."
+        "NEXT: sprawdź `/shortcuts recipes`, potem aktywujemy iPhone listener za approval i dopiero potem prywatny iMessage bridge."
     )
 
 
@@ -5513,7 +5649,7 @@ def goal_response() -> str:
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
         "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, L4.30 provider adapter manifests, L4.31 provider write-request gate/dry-run, L4.32 GitHub issue executor v0 za twardymi gate'ami, L4.33 Gmail draft executor v0 za twardymi gate'ami, L4.34 Calendar event executor v0 za twardymi gate'ami, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        f"Gotowe także: {SHORTCUTS_VERSION} iPhone Shortcuts Guided Setup, L4.45 iPhone Shortcuts Service Pack, {POKE_FRONT_VERSION} One Contact Memory Front, L4.43 Autonomous Loop Cadence, L4.42 Default Front Host, L4.41 Provider Read-Before-Write dla GitHub/Gmail/Calendar/Drive, L4.40 Drive Document Executor, L4.39 Poke Front Host Contract, L4.38 Provider Write Dedupe, L4.37 Poke Action Cards dla szybkich działań pod Poke Gap, L4.36 Poke Host Gap dla frustracji/parity feedback oraz L4.35 Poke Safe Autostart, czyli bezpieczne R0 research/recipe/flow/council startują same zamiast prosić Cię o `start task-...`; reminder/kalendarz/mail dalej tworzą draft/approval.\n"
+        f"Gotowe także: {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + Guided Setup, L4.45 iPhone Shortcuts Service Pack, {POKE_FRONT_VERSION} One Contact Memory Front, L4.43 Autonomous Loop Cadence, L4.42 Default Front Host, L4.41 Provider Read-Before-Write dla GitHub/Gmail/Calendar/Drive, L4.40 Drive Document Executor, L4.39 Poke Front Host Contract, L4.38 Provider Write Dedupe, L4.37 Poke Action Cards dla szybkich działań pod Poke Gap, L4.36 Poke Host Gap dla frustracji/parity feedback oraz L4.35 Poke Safe Autostart, czyli bezpieczne R0 research/recipe/flow/council startują same zamiast prosić Cię o `start task-...`; reminder/kalendarz/mail dalej tworzą draft/approval.\n"
         "Brakuje do Poke-level: prywatny iMessage bridge, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming, głębsze autonomiczne prowadzenie tematów przez integracje i zatwierdzony start iPhone Shortcuts service.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
         f"Najbliższy cel wdrożeniowy po {SHORTCUTS_VERSION}: approval/start iPhone Shortcuts service, potem prywatny iMessage/Messages bridge, żeby system był bliżej Poke jako natywny kontakt."
@@ -5529,7 +5665,7 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        f"[Council] Online na Desktopie 24/7. {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, /poke-gap for Poke parity feedback, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        f"[Council] Online na Desktopie 24/7. {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts recipes, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, /poke-gap for Poke parity feedback, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; bezpieczne R0 research/recipe/flow/council startują od razu w tle; kalendarz/mail/GitHub/Drive external write -> draft/approval; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
         f"Komendy {AGENT_INBOX_VERSION}: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
@@ -5560,7 +5696,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: {POKE_FRONT_VERSION} memory_front=on loop_cadence=on default_front=on shortcuts_guided_setup={SHORTCUTS_VERSION} agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5592,7 +5728,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        f"version: {SHORTCUTS_VERSION} iPhone Shortcuts Guided Setup + {AGENT_INBOX_VERSION} Mobile Activation Advisor + L4.45 iPhone Shortcuts Service Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        f"version: {POKE_GAP_VERSION} Poke Gap Front Calibration + iPhone Shortcuts Recipe Pack + Guided Setup + {AGENT_INBOX_VERSION} Mobile Activation Advisor + L4.45 iPhone Shortcuts Service Pack + {POKE_FRONT_VERSION} One Contact Memory Front + L4.43 Autonomous Loop Cadence + L4.42 Default Front Host + L4.41 Provider Read-Before-Write + L4.40 Drive Document Executor + L4.39 Poke Front Host Contract + L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -10939,6 +11075,9 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż agent", "pokaz agent", "pokaż inbox", "pokaz inbox", "agent status", "agent next", "operator status")
     ):
         return {"command": "/agent", "operators": ["host"], "prompt": "", "mode": "agent", "intent": "natural"}
+
+    if lower in SHORTCUT_RECIPE_NATURAL_ALIASES or lower.startswith(SHORTCUT_RECIPE_NATURAL_PREFIXES):
+        return {"command": "/shortcuts", "operators": ["host"], "prompt": "recipes", "mode": "shortcuts_recipes", "intent": "natural"}
 
     if lower in {"shortcuts", "iphone shortcuts", "ios shortcuts", "skrót iphone", "skrot iphone", "skróty iphone", "skroty iphone", "iphone inbox"} or lower.startswith(
         ("pokaż shortcuts", "pokaz shortcuts", "pokaż skróty", "pokaz skroty", "pokaż iphone", "pokaz iphone", "sprawdź shortcuts", "sprawdz shortcuts")

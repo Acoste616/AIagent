@@ -556,12 +556,14 @@ class RoutingTests(unittest.TestCase):
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
         self.assertEqual(route["command"], "/poke-gap")
-        self.assertIn("Poke Gap L4.44", response)
+        self.assertIn("Poke Gap L4.48", response)
         self.assertIn("DECYZJA: masz rację", response)
         self.assertIn("FAKTY:", response)
+        self.assertIn("BRAKI P0:", response)
         self.assertIn("TERAZ:", response)
-        self.assertIn("L4.41 read-before-write jest już wdrożone", response)
+        self.assertIn("iPhone recipe payloady", response)
         self.assertIn("NEXT:", response)
+        self.assertIn("/shortcuts recipes", response)
         self.assertIn("TWOJA WIADOMOŚĆ:", response)
         self.assertIn("improvement=imp-", response)
         self.assertNotIn("Drive write/read-before-write", response)
@@ -614,7 +616,7 @@ class RoutingTests(unittest.TestCase):
                 neutral = ai_council.poke_chat_fallback("pokemon jest spoko")
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
-        self.assertIn("Poke Gap L4.44", gap)
+        self.assertIn("Poke Gap L4.48", gap)
         self.assertIn("improvement=not_logged_chat_fallback", gap)
         self.assertIn("running_tasks=1", gap)
         self.assertIn("errors_24h=1", gap)
@@ -796,6 +798,8 @@ class RoutingTests(unittest.TestCase):
             "agent inbox": "/agent",
             "czym się zająć": "/agent",
             "iphone shortcuts": "/shortcuts",
+            "iphone recipes": "/shortcuts",
+            "payloady shortcuts": "/shortcuts",
             "pokaż skróty": "/shortcuts",
             "pokaż drafty": "/drafts",
             "draft gmail odpowiedz klientowi": "/connector",
@@ -5046,7 +5050,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertFalse(bad_ok)
         self.assertEqual(bad_reason, "invalid_token")
 
-    def test_shortcuts_response_reports_l47_guided_setup_without_token_leak(self):
+    def test_shortcuts_response_reports_l48_recipe_pack_without_token_leak(self):
         def fake_cfg(key, default=""):
             values = {
                 "AI_COUNCIL_SHORTCUT_TOKEN": "secret-token",
@@ -5064,7 +5068,7 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
                 response = ai_council.shortcuts_response()
 
-        self.assertIn("iPhone Shortcuts L4.47", response)
+        self.assertIn("iPhone Shortcuts L4.48", response)
         self.assertIn("token: configured", response)
         self.assertNotIn("secret-token", response)
         self.assertNotIn("L4.27", response)
@@ -5072,6 +5076,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("bind_scope: network_visible", response)
         self.assertIn("service: not_started_by_default", response)
         self.assertIn("setup: /shortcuts setup", response)
+        self.assertIn("recipes: /shortcuts recipes", response)
         self.assertIn("start-ai-council-shortcuts.ps1", response)
         self.assertIn("status-ai-council-shortcuts.ps1", response)
         self.assertIn("stop-ai-council-shortcuts.ps1", response)
@@ -5089,7 +5094,7 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
                 response = ai_council.shortcuts_response()
 
-        self.assertIn("iPhone Shortcuts L4.47", response)
+        self.assertIn("iPhone Shortcuts L4.48", response)
         self.assertIn("token: missing", response)
         self.assertIn("bind_scope: local_only", response)
         self.assertIn("service: not_started_by_default", response)
@@ -5112,10 +5117,11 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
                 response = ai_council.shortcuts_response("setup")
 
-        self.assertIn("iPhone Shortcuts Setup L4.47", response)
+        self.assertIn("iPhone Shortcuts Setup L4.48", response)
         self.assertIn("AI_COUNCIL_SHORTCUT_TOKEN missing", response)
         self.assertIn("endpoint local_only", response)
         self.assertIn("listener not started by default", response)
+        self.assertIn("/shortcuts recipes", response)
         self.assertIn("start-ai-council-shortcuts.ps1", response)
         self.assertIn("NIE ROBIĘ TERAZ", response)
         self.assertIn("nie generuję tokena", response)
@@ -5161,7 +5167,7 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
                 response = ai_council.shortcuts_response("start")
 
-        self.assertIn("iPhone Shortcuts Setup L4.47", response)
+        self.assertIn("iPhone Shortcuts Setup L4.48", response)
         self.assertIn("trigger: start", response)
         self.assertIn("start wymaga approval", response)
         self.assertNotIn("Started Bartek AI Council Shortcuts", response)
@@ -5175,8 +5181,60 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None):
                 response = ai_council.shortcuts_response("iphone setup")
 
-        self.assertIn("iPhone Shortcuts Setup L4.47", response)
+        self.assertIn("iPhone Shortcuts Setup L4.48", response)
         self.assertIn("trigger: iphone setup", response)
+
+    def test_shortcuts_recipes_response_lists_core_payloads_without_token_leak(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "AI_COUNCIL_SHORTCUT_TOKEN": "secret-token",
+                "AI_COUNCIL_SHORTCUT_HOST": "100.101.53.21",
+                "AI_COUNCIL_SHORTCUT_PORT": "8788",
+            }
+            return values.get(key, str(default))
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "ensure_council_dirs", return_value=None
+            ), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                response = ai_council.shortcuts_response("recipes")
+
+        self.assertIn("iPhone Shortcuts Recipes L4.48", response)
+        self.assertIn("ask_council", response)
+        self.assertIn("share_url_research", response)
+        self.assertIn("voice_note_to_task", response)
+        self.assertIn("screenshot_to_task", response)
+        self.assertIn("agent_inbox_status", response)
+        self.assertIn("task_status", response)
+        self.assertIn("POST http://100.101.53.21:8788/shortcut", response)
+        self.assertIn("X-AI-Council-Token: <token>", response)
+        self.assertIn("approve/deny/cancel/write są blokowane", response)
+        self.assertIn('"send_telegram":true', response)
+        self.assertNotIn('"mode":"ask"', response)
+        self.assertNotIn("secret-token", response)
+
+    def test_shortcuts_recipe_aliases_route_to_recipes(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "ensure_council_dirs", return_value=None
+            ):
+                response = ai_council.shortcuts_response("ios recipes")
+                payloady = ai_council.shortcuts_response("payloady iphone")
+                garbage = ai_council.shortcuts_response("garbage")
+                polish_shortcut = ai_council.shortcuts_response("skróty")
+                natural = ai_council.route_text("payloady shortcuts")
+                singular = ai_council.route_text("shortcut recipes")
+
+        self.assertIn("iPhone Shortcuts Recipes L4.48", response)
+        self.assertIn("iPhone Shortcuts Recipes L4.48", payloady)
+        self.assertNotIn("iPhone Shortcuts Recipes", garbage)
+        self.assertNotIn("iPhone Shortcuts Recipes", polish_shortcut)
+        self.assertEqual(natural["command"], "/shortcuts")
+        self.assertEqual(natural["prompt"], "recipes")
+        self.assertEqual(singular["command"], "/shortcuts")
+        self.assertEqual(singular["prompt"], "recipes")
 
     def test_shortcut_endpoint_url_brackets_ipv6_hosts(self):
         self.assertEqual(ai_council.shortcut_endpoint_url("::1", 8788), "http://[::1]:8788/shortcut")
