@@ -1699,7 +1699,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
         self.assertIn("[iphone_setup/101]", inbox)
         self.assertIn("shortcuts-token", inbox)
         self.assertIn("AI_COUNCIL_SHORTCUT_TOKEN", inbox)
-        self.assertIn("NEXT: /shortcuts", inbox)
+        self.assertIn("NEXT: /shortcuts setup", inbox)
         self.assertIn("RUN: brak bezpiecznego auto-run", inbox)
 
     def test_agent_inbox_survives_shortcuts_status_failure(self):
@@ -1766,7 +1766,7 @@ class ProactiveEventBrainTests(unittest.TestCase):
 
         self.assertEqual(created, 1)
         self.assertEqual(rows[0]["kind"], "iphone_setup")
-        self.assertEqual(rows[0]["next_action"], "/shortcuts")
+        self.assertEqual(rows[0]["next_action"], "/shortcuts setup")
         self.assertIn("Shortcuts", rows[0]["title"])
 
     def test_proactive_scan_creates_deduped_error_nudge(self):
@@ -5046,7 +5046,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertFalse(bad_ok)
         self.assertEqual(bad_reason, "invalid_token")
 
-    def test_shortcuts_response_reports_l45_service_pack_without_token_leak(self):
+    def test_shortcuts_response_reports_l47_guided_setup_without_token_leak(self):
         def fake_cfg(key, default=""):
             values = {
                 "AI_COUNCIL_SHORTCUT_TOKEN": "secret-token",
@@ -5064,13 +5064,14 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
                 response = ai_council.shortcuts_response()
 
-        self.assertIn("iPhone Shortcuts L4.45", response)
+        self.assertIn("iPhone Shortcuts L4.47", response)
         self.assertIn("token: configured", response)
         self.assertNotIn("secret-token", response)
         self.assertNotIn("L4.27", response)
         self.assertIn("endpoint: http://100.101.53.21:8788/shortcut", response)
         self.assertIn("bind_scope: network_visible", response)
         self.assertIn("service: not_started_by_default", response)
+        self.assertIn("setup: /shortcuts setup", response)
         self.assertIn("start-ai-council-shortcuts.ps1", response)
         self.assertIn("status-ai-council-shortcuts.ps1", response)
         self.assertIn("stop-ai-council-shortcuts.ps1", response)
@@ -5088,12 +5089,94 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
                 response = ai_council.shortcuts_response()
 
-        self.assertIn("iPhone Shortcuts L4.45", response)
+        self.assertIn("iPhone Shortcuts L4.47", response)
         self.assertIn("token: missing", response)
         self.assertIn("bind_scope: local_only", response)
         self.assertIn("service: not_started_by_default", response)
-        self.assertIn("NEXT: ustaw AI_COUNCIL_SHORTCUT_TOKEN", response)
+        self.assertIn("NEXT: /shortcuts setup", response)
         self.assertNotIn("Bearer secret", response)
+
+    def test_shortcuts_setup_response_guides_activation_without_side_effects(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "AI_COUNCIL_SHORTCUT_TOKEN": "",
+                "AI_COUNCIL_SHORTCUT_HOST": "127.0.0.1",
+                "AI_COUNCIL_SHORTCUT_PORT": "8788",
+            }
+            return values.get(key, str(default))
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                response = ai_council.shortcuts_response("setup")
+
+        self.assertIn("iPhone Shortcuts Setup L4.47", response)
+        self.assertIn("AI_COUNCIL_SHORTCUT_TOKEN missing", response)
+        self.assertIn("endpoint local_only", response)
+        self.assertIn("listener not started by default", response)
+        self.assertIn("start-ai-council-shortcuts.ps1", response)
+        self.assertIn("NIE ROBIĘ TERAZ", response)
+        self.assertIn("nie generuję tokena", response)
+        self.assertIn("NEXT: uzupełnij token/host", response)
+        self.assertNotIn("secret-token", response)
+
+    def test_shortcuts_setup_response_ready_state_still_requires_approval(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "AI_COUNCIL_SHORTCUT_TOKEN": "secret-token",
+                "AI_COUNCIL_SHORTCUT_HOST": "100.101.53.21",
+                "AI_COUNCIL_SHORTCUT_PORT": "8788",
+            }
+            return values.get(key, str(default))
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                response = ai_council.shortcuts_response("setup")
+
+        self.assertIn("token: configured", response)
+        self.assertIn("bind_scope: network_visible", response)
+        self.assertIn("brak twardych blockerów token/host", response)
+        self.assertIn("NEXT: zatwierdź start listenera", response)
+        self.assertIn("nie startuję daemonu", response)
+        self.assertNotIn("secret-token", response)
+
+    def test_shortcuts_start_routes_to_setup_not_daemon_start(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "AI_COUNCIL_SHORTCUT_TOKEN": "secret-token",
+                "AI_COUNCIL_SHORTCUT_HOST": "100.101.53.21",
+                "AI_COUNCIL_SHORTCUT_PORT": "8788",
+            }
+            return values.get(key, str(default))
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(ai_council, "cfg", side_effect=fake_cfg):
+                response = ai_council.shortcuts_response("start")
+
+        self.assertIn("iPhone Shortcuts Setup L4.47", response)
+        self.assertIn("trigger: start", response)
+        self.assertIn("start wymaga approval", response)
+        self.assertNotIn("Started Bartek AI Council Shortcuts", response)
+        self.assertNotIn("secret-token", response)
+
+    def test_shortcuts_iphone_setup_alias_routes_to_setup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None):
+                response = ai_council.shortcuts_response("iphone setup")
+
+        self.assertIn("iPhone Shortcuts Setup L4.47", response)
+        self.assertIn("trigger: iphone setup", response)
 
     def test_shortcut_endpoint_url_brackets_ipv6_hosts(self):
         self.assertEqual(ai_council.shortcut_endpoint_url("::1", 8788), "http://[::1]:8788/shortcut")
