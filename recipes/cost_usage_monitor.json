@@ -1,0 +1,25 @@
+{
+  "name": "cost_usage_monitor",
+  "description": "Monitoruje dzienne użycie i estymowany koszt.",
+  "enabled": false,
+  "trigger": {
+    "type": "schedule",
+    "interval_seconds": 3600
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "intent_keywords": [
+    "koszt",
+    "koszty",
+    "usage",
+    "budżet",
+    "budzet"
+  ],
+  "steps": [
+    {
+      "command": "/cost",
+      "prompt": ""
+    }
+  ]
+}

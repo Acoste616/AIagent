@@ -1,0 +1,38 @@
+{
+  "name": "calendar_context_brief",
+  "description": "Synchronizuje Calendar read-only i robi source-backed brief.",
+  "enabled": true,
+  "trigger": {
+    "type": "manual"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "source_connectors": [
+    "calendar"
+  ],
+  "intent_keywords": [
+    "calendar",
+    "kalendarz",
+    "spotkania",
+    "meetingi",
+    "plan dnia",
+    "dzisiejszy dzień",
+    "dzisiejszy dzien"
+  ],
+  "integrations": [
+    "calendar",
+    "connector_cache",
+    "artifacts"
+  ],
+  "steps": [
+    {
+      "command": "/connector",
+      "prompt": "sync calendar {input}"
+    },
+    {
+      "command": "/connector",
+      "prompt": "brief calendar {input}"
+    }
+  ]
+}

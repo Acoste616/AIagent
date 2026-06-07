@@ -1,0 +1,39 @@
+{
+  "name": "drive_context_brief",
+  "description": "Synchronizuje Drive/Docs read-only i robi source-backed brief.",
+  "enabled": true,
+  "trigger": {
+    "type": "manual"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "source_connectors": [
+    "drive"
+  ],
+  "intent_keywords": [
+    "drive",
+    "docs",
+    "google docs",
+    "dokument",
+    "dokumenty",
+    "plik",
+    "pliki"
+  ],
+  "integrations": [
+    "drive",
+    "docs",
+    "connector_cache",
+    "artifacts"
+  ],
+  "steps": [
+    {
+      "command": "/connector",
+      "prompt": "sync drive {input}"
+    },
+    {
+      "command": "/connector",
+      "prompt": "brief drive {input}"
+    }
+  ]
+}

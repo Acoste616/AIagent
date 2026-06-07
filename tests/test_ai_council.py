@@ -286,18 +286,26 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertIn("error_audit_twice_daily", recipes)
         self.assertIn("feature_evolution_loop", recipes)
+        self.assertIn("gmail_context_brief", recipes)
+        self.assertIn("calendar_context_brief", recipes)
+        self.assertIn("drive_context_brief", recipes)
         error_recipe = recipes["error_audit_twice_daily"]
         feature_recipe = recipes["feature_evolution_loop"]
 
         self.assertTrue(error_recipe["enabled"])
         self.assertTrue(error_recipe["capture_improvement"])
+        self.assertTrue(error_recipe["planner_selectable"])
         self.assertEqual(error_recipe["trigger"]["cron"], "0 9,21 * * *")
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in error_recipe["steps"]))
         self.assertTrue(feature_recipe["enabled"])
         self.assertTrue(feature_recipe["capture_improvement"])
+        self.assertTrue(feature_recipe["planner_selectable"])
         self.assertEqual(feature_recipe["trigger"]["cron"], "15 10 * * *")
         self.assertTrue(any(step["command"] == "@xresearch" for step in feature_recipe["steps"]))
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in feature_recipe["steps"]))
+        self.assertEqual(recipes["gmail_context_brief"]["source_connectors"], ["gmail"])
+        self.assertTrue(any(step["prompt"].startswith("sync gmail") for step in recipes["gmail_context_brief"]["steps"]))
+        self.assertTrue(recipes["drive_context_brief"]["planner_selectable"])
 
     def test_recipe_prompt_can_use_previous_step_output(self):
         prompt = ai_council.render_recipe_step_prompt("input={input}\nprevious={previous}", "temat", "wynik groka")
@@ -412,6 +420,7 @@ class RoutingTests(unittest.TestCase):
             "/connector check github": ("/connector", ["host"]),
             "/improvements": ("/improvements", ["host"]),
             "/improve next": ("/improve", ["host"]),
+            "/loops": ("/loops", ["host"]),
             "/goal": ("/goal", ["host"]),
             "/flow zrób pełny plan": ("/flow", ["claude-flow"]),
             "@claude-flow zrób pełny plan": ("@claude-flow", ["claude-flow"]),
@@ -441,6 +450,7 @@ class RoutingTests(unittest.TestCase):
             "przygotuj mi raport z gmail": "/plan-action",
             "start task-20260606-120000-abcdef": "/start-task",
             "pokaż ulepszenia": "/improvements",
+            "pokaż pętle": "/loops",
             "health": "/health",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
@@ -479,7 +489,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(route["prompt"], "sync drive Poke recipes")
         self.assertEqual(benign["command"], "/chat")
 
-    def test_action_planner_builds_planned_research_task_without_auto_execute(self):
+    def test_action_planner_builds_planned_research_recipe_without_auto_execute(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
@@ -497,12 +507,15 @@ class RoutingTests(unittest.TestCase):
                 tasks = ai_council.latest_tasks(limit=1)
                 actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
 
-        self.assertIn("Action Planner L4.15", response)
-        self.assertIn("TRYB: research", response)
+        self.assertIn("Action Planner L4.16", response)
+        self.assertIn("TRYB: recipe", response)
+        self.assertIn("live_recipe: research_brief", response)
         self.assertIn("NEXT:", response)
         self.assertEqual(tasks[0]["status"], "planned")
-        self.assertEqual(tasks[0]["planner_mode"], "research")
-        self.assertEqual(tasks[0]["recommended_command"], "@research")
+        self.assertEqual(tasks[0]["planner_mode"], "recipe")
+        self.assertEqual(tasks[0]["recommended_command"], "/recipe")
+        self.assertEqual(tasks[0]["recommended_recipe"], "research_brief")
+        self.assertIn("run research_brief", tasks[0]["recommended_prompt"])
         self.assertEqual(actions, [])
 
     def test_action_planner_side_effect_creates_pending_approval(self):
@@ -532,7 +545,7 @@ class RoutingTests(unittest.TestCase):
         self.assertIn(f"approve:{actions[0]['action_id']}", callback_data)
         self.assertIn(f"edit:{actions[0]['action_id']}", callback_data)
 
-    def test_action_planner_read_only_connector_does_not_create_pending_approval(self):
+    def test_action_planner_read_only_connector_uses_live_recipe_without_approval(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"), patch.object(
@@ -550,10 +563,13 @@ class RoutingTests(unittest.TestCase):
                 actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
                 task = ai_council.latest_tasks(limit=1)[0]
 
-        self.assertIn("TRYB: connector", response)
+        self.assertIn("TRYB: recipe", response)
+        self.assertIn("live_recipe: gmail_context_brief", response)
         self.assertNotIn("Pending action", response)
         self.assertEqual(actions, [])
-        self.assertEqual(task["recommended_command"], "/connector")
+        self.assertEqual(task["recommended_command"], "/recipe")
+        self.assertEqual(task["recommended_recipe"], "gmail_context_brief")
+        self.assertIn("run gmail_context_brief", task["recommended_prompt"])
 
     def test_action_planner_does_not_overclassify_send_me_link_as_r4(self):
         plan = ai_council.action_planner_mode("wyślij mi link do dokumentu")
@@ -572,6 +588,39 @@ class RoutingTests(unittest.TestCase):
         risk, _ = ai_council.risk_level_for_text("sprawdź dokumentację auth")
 
         self.assertEqual(risk, "R0")
+
+    def test_live_recipe_selector_prefers_source_recipe(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"):
+                selected = ai_council.select_live_recipe("przygotuj mi raport z gmail o Poke")
+                suggestions = ai_council.recipe_suggest_response("przygotuj mi raport z gmail o Poke")
+
+        self.assertEqual(selected["name"], "gmail_context_brief")
+        self.assertIn("gmail_context_brief", suggestions)
+        self.assertIn("/recipe run gmail_context_brief", suggestions)
+
+    def test_loops_response_shows_autonomous_loops(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "RECIPE_RUNS_FILE", root / "state" / "recipe_runs.jsonl"
+            ), patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                ai_council.append_recipe_run("error_audit_twice_daily", "cron:test", "task-loop", "started")
+                response = ai_council.loops_response()
+
+        self.assertIn("Autonomous loops L4.16", response)
+        self.assertIn("error_audit_twice_daily", response)
+        self.assertIn("feature_evolution_loop", response)
+        self.assertIn("task-loop", response)
 
     def test_approve_planner_proposal_reports_checkpoint_next_step(self):
         with temp_dir() as tmp:
@@ -651,7 +700,15 @@ class RoutingTests(unittest.TestCase):
             ), patch.object(ai_council, "build_response", return_value="[Council] Error: connector failed"):
                 task = ai_council.create_planned_task(
                     "przygotuj mi raport z gmail",
-                    ai_council.action_planner_mode("przygotuj mi raport z gmail"),
+                    {
+                        "mode": "connector",
+                        "command": "/connector",
+                        "prompt": "brief gmail Poke",
+                        "risk": "R0",
+                        "risk_reason": "read-only test",
+                        "decision": "test",
+                        "approval_required": False,
+                    },
                 )
                 response = ai_council.start_planned_task_response(task["task_id"], chat_id="553")
                 latest = ai_council.get_latest_task(task["task_id"])
@@ -1087,6 +1144,43 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertEqual(rows[0]["source_task_id"], "task-loop")
         self.assertEqual(rows[0]["priority"], "P1")
         self.assertIn("/improve show", " ".join(result["next_actions"]))
+
+    def test_recipe_policy_blocks_write_step(self):
+        recipe = {
+            "bad": {
+                "name": "bad",
+                "description": "unsafe",
+                "enabled": True,
+                "trigger": {"type": "manual"},
+                "steps": [{"command": "/write", "prompt": "shared/x.txt = no"}],
+            }
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "default_recipes", return_value=recipe
+            ), patch.object(ai_council, "build_response", return_value="should not run") as build_response:
+                result = ai_council.run_recipe_background("run bad", task_id="task-bad")
+                errors = ai_council.read_jsonl(root / "state" / "errors.jsonl")
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("/write", result["raw_output"])
+        self.assertEqual(build_response.call_count, 0)
+        self.assertEqual(errors[0]["context"], "recipe_step_policy")
+
+    def test_recipe_policy_blocks_unknown_connector_action(self):
+        allowed, reason = ai_council.recipe_step_is_allowed({"command": "/connector", "prompt": "send gmail hello"})
+
+        self.assertFalse(allowed)
+        self.assertIn("not read-only", reason)
 
 
 class L2LedgerTests(unittest.TestCase):

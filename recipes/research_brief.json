@@ -1,0 +1,32 @@
+{
+  "name": "research_brief",
+  "description": "Grok X research brief z faktami, ryzykami i next actions.",
+  "enabled": true,
+  "trigger": {
+    "type": "manual"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "intent_keywords": [
+    "research",
+    "zbadaj",
+    "poszukaj",
+    "x.com",
+    "twitter",
+    "poke",
+    "sprawdź internet",
+    "sprawdz internet"
+  ],
+  "integrations": [
+    "grok",
+    "x_search",
+    "artifacts"
+  ],
+  "steps": [
+    {
+      "command": "@xresearch",
+      "prompt": "{input}"
+    }
+  ]
+}

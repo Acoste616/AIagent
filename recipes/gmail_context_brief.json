@@ -1,0 +1,38 @@
+{
+  "name": "gmail_context_brief",
+  "description": "Synchronizuje Gmail read-only i robi source-backed brief.",
+  "enabled": true,
+  "trigger": {
+    "type": "manual"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "source_connectors": [
+    "gmail"
+  ],
+  "intent_keywords": [
+    "gmail",
+    "mail",
+    "email",
+    "poczta",
+    "raport z gmail",
+    "sprawdź maile",
+    "sprawdz maile"
+  ],
+  "integrations": [
+    "gmail",
+    "connector_cache",
+    "artifacts"
+  ],
+  "steps": [
+    {
+      "command": "/connector",
+      "prompt": "sync gmail {input}"
+    },
+    {
+      "command": "/connector",
+      "prompt": "brief gmail {input}"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "name": "feature_evolution_loop",
+  "description": "Codzienny research Poke/Hermes/OpenClaw i plan kolejnej funkcji do wdrożenia.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "15 10 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "capture_improvement": true,
+  "planner_selectable": true,
+  "intent_keywords": [
+    "ulepsz",
+    "rozwijaj",
+    "nowe funkcje",
+    "poke parity",
+    "top 1",
+    "co wdrażać",
+    "co wdrożyć",
+    "co wdrozyc",
+    "następne wdrożenie",
+    "nastepne wdrozenie"
+  ],
+  "integrations": [
+    "grok",
+    "x_search",
+    "claude-flow",
+    "improvements"
+  ],
+  "improvement_policy": {
+    "enabled": true,
+    "source": "feature_evolution_loop",
+    "priority": "P2"
+  },
+  "steps": [
+    {
+      "command": "@xresearch",
+      "prompt": "Najnowsze funkcje Poke/@interaction, agentów messaging-first, recipes, proactive alerts, iPhone/Apple Messages integrations, Hermes/OpenClaw-style execution. Wyciągnij fakty, wzorce UX, braki i jedną najważniejszą funkcję do skopiowania lub ulepszenia."
+    },
+    {
+      "command": "/flow",
+      "prompt": "Na podstawie researchu poniżej oraz repo D:\\ai-council przygotuj plan jednej kolejnej implementacji, która najbardziej zbliża system Bartka do Poke-like OpenClaw Agent OS. Wynik: decyzja, scope, pliki, testy, ryzyka, acceptance criteria.\n\nRESEARCH:\n{previous}"
+    }
+  ]
+}

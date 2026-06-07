@@ -129,6 +129,36 @@ BACKGROUND_COMMANDS = {
     "@all",
     "/council",
 }
+READONLY_RECIPE_COMMANDS = {
+    "/health",
+    "/selftest",
+    "/status",
+    "/cost",
+    "/queue",
+    "/artifacts",
+    "/errors",
+    "/improvements",
+    "/loops",
+    "/nudges",
+    "/sources",
+    "/source",
+    "/connectors",
+    "/connector",
+    "/memory",
+    "/chat",
+    "@research",
+    "@grok",
+    "@xresearch",
+    "/xresearch",
+    "/poke-research",
+    "@claude",
+    "@claude-flow",
+    "/flow",
+    "/council",
+}
+RECIPE_CONNECTOR_READ_ACTIONS = {"check", "status", "auth", "setup", "connect", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
+RECIPE_SOURCE_READ_ACTIONS = {"search"}
+RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
 
 
 def load_env(path: Path = ENV_PATH) -> dict[str, str]:
@@ -1065,6 +1095,8 @@ def task_status_response(task_id: str) -> str:
             lines.append(f"planner_mode: {task.get('planner_mode')}")
         if task.get("recommended_command"):
             lines.append(f"recommended: {task.get('recommended_command')} {compact_line(str(task.get('recommended_prompt') or ''), 140)}")
+        if task.get("recommended_recipe"):
+            lines.append(f"recipe: {task.get('recommended_recipe')} ({compact_line(str(task.get('recipe_reason') or ''), 120)})")
         artifact = get_latest_task_artifact(task_id)
         if artifact:
             lines.append(f"details: /details {task_id}")
@@ -3266,7 +3298,58 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "manual"},
             "risk": "R0",
             "approval_policy": "auto",
+            "planner_selectable": True,
+            "intent_keywords": ["research", "zbadaj", "poszukaj", "x.com", "twitter", "poke", "sprawdź internet", "sprawdz internet"],
+            "integrations": ["grok", "x_search", "artifacts"],
             "steps": [{"command": "@xresearch", "prompt": "{input}"}],
+        },
+        "gmail_context_brief": {
+            "name": "gmail_context_brief",
+            "description": "Synchronizuje Gmail read-only i robi source-backed brief.",
+            "enabled": True,
+            "trigger": {"type": "manual"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "planner_selectable": True,
+            "source_connectors": ["gmail"],
+            "intent_keywords": ["gmail", "mail", "email", "poczta", "raport z gmail", "sprawdź maile", "sprawdz maile"],
+            "integrations": ["gmail", "connector_cache", "artifacts"],
+            "steps": [
+                {"command": "/connector", "prompt": "sync gmail {input}"},
+                {"command": "/connector", "prompt": "brief gmail {input}"},
+            ],
+        },
+        "calendar_context_brief": {
+            "name": "calendar_context_brief",
+            "description": "Synchronizuje Calendar read-only i robi source-backed brief.",
+            "enabled": True,
+            "trigger": {"type": "manual"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "planner_selectable": True,
+            "source_connectors": ["calendar"],
+            "intent_keywords": ["calendar", "kalendarz", "spotkania", "meetingi", "plan dnia", "dzisiejszy dzień", "dzisiejszy dzien"],
+            "integrations": ["calendar", "connector_cache", "artifacts"],
+            "steps": [
+                {"command": "/connector", "prompt": "sync calendar {input}"},
+                {"command": "/connector", "prompt": "brief calendar {input}"},
+            ],
+        },
+        "drive_context_brief": {
+            "name": "drive_context_brief",
+            "description": "Synchronizuje Drive/Docs read-only i robi source-backed brief.",
+            "enabled": True,
+            "trigger": {"type": "manual"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "planner_selectable": True,
+            "source_connectors": ["drive"],
+            "intent_keywords": ["drive", "docs", "google docs", "dokument", "dokumenty", "plik", "pliki"],
+            "integrations": ["drive", "docs", "connector_cache", "artifacts"],
+            "steps": [
+                {"command": "/connector", "prompt": "sync drive {input}"},
+                {"command": "/connector", "prompt": "brief drive {input}"},
+            ],
         },
         "daily_system_digest": {
             "name": "daily_system_digest",
@@ -3275,11 +3358,15 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "schedule", "cron": "30 8 * * *"},
             "risk": "R0",
             "approval_policy": "auto",
+            "planner_selectable": True,
+            "intent_keywords": ["digest", "podsumowanie systemu", "status systemu", "raport systemu"],
             "steps": [
                 {"command": "/health", "prompt": ""},
                 {"command": "/cost", "prompt": ""},
                 {"command": "/queue", "prompt": ""},
                 {"command": "/artifacts", "prompt": ""},
+                {"command": "/errors", "prompt": "recent 10"},
+                {"command": "/improvements", "prompt": "open"},
             ],
         },
         "stuck_tasks_monitor": {
@@ -3289,6 +3376,8 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "schedule", "interval_seconds": 1800},
             "risk": "R0",
             "approval_policy": "auto",
+            "planner_selectable": True,
+            "intent_keywords": ["stuck", "zawieszone", "wiszące", "running tasks", "kolejka"],
             "steps": [
                 {"command": "/health", "prompt": ""},
                 {"command": "/queue", "prompt": ""},
@@ -3301,6 +3390,8 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "schedule", "interval_seconds": 3600},
             "risk": "R0",
             "approval_policy": "auto",
+            "planner_selectable": True,
+            "intent_keywords": ["koszt", "koszty", "usage", "budżet", "budzet"],
             "steps": [{"command": "/cost", "prompt": ""}],
         },
         "error_audit_twice_daily": {
@@ -3311,6 +3402,9 @@ def default_recipes() -> dict[str, dict]:
             "risk": "R0",
             "approval_policy": "auto",
             "capture_improvement": True,
+            "planner_selectable": True,
+            "intent_keywords": ["błędy", "bledy", "errors", "audyt błędów", "audyt bledow", "debug", "wysypuje", "napraw błędy", "napraw bledy"],
+            "integrations": ["errors", "claude-flow", "improvements"],
             "improvement_policy": {"enabled": True, "source": "error_audit_loop", "priority": "P1"},
             "steps": [
                 {"command": "/errors", "prompt": "recent 20"},
@@ -3333,6 +3427,9 @@ def default_recipes() -> dict[str, dict]:
             "risk": "R0",
             "approval_policy": "auto",
             "capture_improvement": True,
+            "planner_selectable": True,
+            "intent_keywords": ["ulepsz", "rozwijaj", "nowe funkcje", "poke parity", "top 1", "co wdrażać", "co wdrożyć", "co wdrozyc", "następne wdrożenie", "nastepne wdrozenie"],
+            "integrations": ["grok", "x_search", "claude-flow", "improvements"],
             "improvement_policy": {"enabled": True, "source": "feature_evolution_loop", "priority": "P2"},
             "steps": [
                 {
@@ -3361,6 +3458,9 @@ def default_recipes() -> dict[str, dict]:
             "trigger": {"type": "manual"},
             "risk": "R0",
             "approval_policy": "auto",
+            "planner_selectable": True,
+            "intent_keywords": ["plan", "wdrożenie", "wdrozenie", "co dalej", "następny krok", "nastepny krok", "projekt"],
+            "integrations": ["claude-flow", "artifacts"],
             "steps": [{"command": "/flow", "prompt": "Wybierz najbliższy bezpieczny krok dla: {input}"}],
         },
     }
@@ -3430,6 +3530,123 @@ def list_recipes() -> list[dict]:
     return recipes
 
 
+def recipe_last_run(name: str) -> dict | None:
+    rows = [row for row in read_jsonl(RECIPE_RUNS_FILE) if row.get("recipe") == name]
+    return rows[-1] if rows else None
+
+
+def recipe_step_estimated_cost(step: dict) -> float:
+    command = str(step.get("command") or "")
+    if command in {"@research", "@grok", "@xresearch", "/xresearch", "/poke-research"}:
+        return estimated_operator_cost("grok")
+    if command in {"/flow", "@claude-flow"}:
+        return estimated_operator_cost("claude-flow")
+    if command == "@claude":
+        return estimated_operator_cost("claude")
+    if command in {"@codex", "codex_default"}:
+        return estimated_operator_cost("codex")
+    if command == "/council":
+        return estimated_operator_cost("grok") + estimated_operator_cost("claude") + estimated_operator_cost("codex")
+    return 0.0
+
+
+def recipe_estimated_cost(name: str) -> float:
+    recipe = load_recipe(name)
+    if not recipe:
+        return 0.0
+    return sum(recipe_step_estimated_cost(step) for step in recipe.get("steps") or [])
+
+
+def connector_tokens_for_recipe(recipe: dict) -> list[str]:
+    tokens: list[str] = []
+    for connector in recipe.get("source_connectors") or []:
+        normalized = normalize_connector_name(str(connector))
+        if normalized == "gmail":
+            tokens.extend(["gmail", "mail", "email", "poczta", "maile"])
+        elif normalized == "calendar":
+            tokens.extend(["calendar", "kalendarz", "spotkania", "meetingi"])
+        elif normalized == "drive":
+            tokens.extend(["drive", "docs", "google docs", "dokument", "dokumenty", "plik", "pliki"])
+        else:
+            tokens.append(normalized)
+    return tokens
+
+
+def recipe_match_score(recipe: dict, prompt: str) -> tuple[int, list[str]]:
+    lower = normalize_intent_text(prompt)
+    if recipe.get("enabled") is False or not recipe.get("planner_selectable"):
+        return 0, []
+    name = str(recipe.get("name") or "")
+    score = 0
+    matches: list[str] = []
+    if name and name.replace("_", " ") in lower:
+        score += 12
+        matches.append(name)
+    for keyword in recipe.get("intent_keywords") or []:
+        clean = normalize_intent_text(str(keyword))
+        if clean and clean in lower:
+            score += 6 if " " in clean else 4
+            matches.append(clean)
+    for token in connector_tokens_for_recipe(recipe):
+        if token and token in lower:
+            score += 8
+            matches.append(token)
+    return score, list(dict.fromkeys(matches))
+
+
+def recipe_candidates_for_intent(prompt: str, limit: int = 5) -> list[dict]:
+    candidates: list[dict] = []
+    for recipe in list_recipes():
+        score, matches = recipe_match_score(recipe, prompt)
+        if score <= 0:
+            continue
+        candidates.append(
+            {
+                "name": recipe.get("name", ""),
+                "description": recipe.get("description", ""),
+                "score": score,
+                "matches": matches,
+                "recipe": recipe,
+            }
+        )
+    candidates.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("name") or "")))
+    return candidates[:limit]
+
+
+def select_live_recipe(prompt: str) -> dict | None:
+    candidates = recipe_candidates_for_intent(prompt, limit=1)
+    if not candidates:
+        return None
+    candidate = candidates[0]
+    if int(candidate.get("score") or 0) < 4:
+        return None
+    matches = ", ".join(candidate.get("matches") or [])
+    return {
+        "name": candidate.get("name", ""),
+        "score": candidate.get("score", 0),
+        "reason": f"matched: {matches}" if matches else "matched recipe metadata",
+        "description": candidate.get("description", ""),
+    }
+
+
+def recipe_suggest_response(prompt: str) -> str:
+    clean = prompt.strip()
+    if not clean:
+        return "[Council] Recipe suggest: podaj intencję, np. /recipe suggest przygotuj raport z gmail o Poke."
+    candidates = recipe_candidates_for_intent(clean, limit=5)
+    if not candidates:
+        return "[Council] Nie znalazłem pasującej live recipe. Fallback: Action Planner użyje /flow albo /council."
+    lines = [f"[Council] Recipe suggestions for: {compact_line(clean, 160)}"]
+    for index, item in enumerate(candidates, start=1):
+        matches = ", ".join(item.get("matches") or [])
+        lines.append(
+            f"{index}. {item.get('name')} score={item.get('score')} matches={compact_line(matches, 100)} - {compact_line(str(item.get('description') or ''), 120)}"
+        )
+    top = candidates[0]
+    lines.append(f"NEXT: /recipe run {top.get('name')} {compact_line(clean, 120)}")
+    return "\n".join(lines)
+
+
 def recipes_response() -> str:
     recipes = list_recipes()
     if not recipes:
@@ -3440,6 +3657,30 @@ def recipes_response() -> str:
         lines.append(f"- {recipe.get('name')} [{enabled}] {compact_line(recipe.get('description', ''), 110)}")
     lines.append("Uruchom: /recipe run <name> <input>")
     lines.append("Zarządzaj: /recipe show|enable|disable <name>")
+    return "\n".join(lines)
+
+
+def loops_response() -> str:
+    loop_names = ["error_audit_twice_daily", "feature_evolution_loop"]
+    open_count = len(open_improvements(limit=50))
+    recent_errors = error_rows(days=1)
+    lines = [
+        "[Council] Autonomous loops L4.16",
+        f"errors_24h: {len(recent_errors)} | open_improvements: {open_count}",
+    ]
+    for name in loop_names:
+        recipe = load_recipe(name)
+        if not recipe:
+            lines.append(f"- {name}: missing")
+            continue
+        trigger = recipe.get("trigger") or {}
+        last = recipe_last_run(name)
+        last_text = "never" if not last else f"{last.get('updated_at')} {last.get('status')} {last.get('task_id')}"
+        lines.append(
+            f"- {name} [{'on' if recipe.get('enabled', True) else 'off'}] trigger={json.dumps(trigger, ensure_ascii=False)} last={last_text}"
+        )
+    lines.append("Manualnie: /recipe run error_audit_twice_daily albo /recipe run feature_evolution_loop")
+    lines.append("Backlog: /improvements | Next: /improve next")
     return "\n".join(lines)
 
 
@@ -3465,6 +3706,8 @@ def recipe_response(prompt: str) -> str:
     if not parts:
         return recipes_response()
     action = parts[0].lower()
+    if action in {"suggest", "match"}:
+        return recipe_suggest_response(" ".join(parts[1:]) if len(parts) >= 2 else "")
     if action == "show" and len(parts) >= 2:
         recipe = load_recipe(parts[1])
         return format_recipe(recipe) if recipe else f"[Council] Nie znalazłem recipe `{parts[1]}`."
@@ -3593,6 +3836,34 @@ def render_recipe_step_prompt(template: str, recipe_input: str, previous_output:
     )
 
 
+def recipe_step_is_allowed(step: dict) -> tuple[bool, str]:
+    command = str(step.get("command") or "").strip()
+    prompt = str(step.get("prompt") or "").strip()
+    if command not in READONLY_RECIPE_COMMANDS:
+        return False, f"{command or '(empty)'} is not allowed in recipes"
+    action = prompt.split(maxsplit=1)[0].lower() if prompt else ""
+    if command == "/connector" and action and action not in RECIPE_CONNECTOR_READ_ACTIONS:
+        return False, f"/connector action `{action}` is not read-only recipe allowed"
+    if command == "/source" and action and action not in RECIPE_SOURCE_READ_ACTIONS:
+        return False, f"/source action `{action}` is not read-only recipe allowed"
+    if command == "/memory" and action and action not in RECIPE_MEMORY_READ_ACTIONS:
+        return False, f"/memory action `{action}` is not read-only recipe allowed"
+    return True, ""
+
+
+def recipe_step_violations(recipe: dict) -> list[str]:
+    violations: list[str] = []
+    max_steps = int_cfg("AI_COUNCIL_RECIPE_MAX_STEPS", 8)
+    steps = recipe.get("steps") or []
+    if len(steps) > max_steps:
+        violations.append(f"too many steps: {len(steps)} > {max_steps}")
+    for index, step in enumerate(steps, start=1):
+        allowed, reason = recipe_step_is_allowed(step)
+        if not allowed:
+            violations.append(f"step {index}: {reason}")
+    return violations
+
+
 def run_recipe_background(prompt: str, task_id: str = "") -> dict:
     parts = prompt.strip().split(maxsplit=2)
     if len(parts) < 2 or parts[0].lower() != "run":
@@ -3615,6 +3886,21 @@ def run_recipe_background(prompt: str, task_id: str = "") -> dict:
     if recipe.get("enabled") is False:
         response = f"[Council] Recipe `{name}` jest disabled."
         return {"decision": response, "facts": [response], "dispute": "", "next_actions": [f"/recipe show {name}"], "ask_user": "Włącz recipe zanim ją uruchomisz.", "raw_output": response, "report": response}
+    violations = recipe_step_violations(recipe)
+    if violations:
+        message = "; ".join(violations)
+        record_error("recipe_step_policy", message=f"{name}: {message}", severity="warning", event={"recipe": name, "violations": violations})
+        response = f"[Council] Recipe `{name}` zablokowana przez policy.\n" + "\n".join(f"- {violation}" for violation in violations)
+        return {
+            "decision": f"Recipe `{name}` zablokowana.",
+            "facts": violations[:3],
+            "dispute": "Recipe policy działa deny-by-default; write/external side effects wymagają osobnej approval ścieżki.",
+            "next_actions": [f"/recipe show {name}", "/errors recent 10"],
+            "ask_user": "Popraw recipe albo użyj jawnej ścieżki approval.",
+            "raw_output": response,
+            "report": response,
+            "status": "blocked",
+        }
     outputs = []
     previous_output = ""
     for index, step in enumerate(recipe.get("steps") or [], start=1):
@@ -3650,10 +3936,10 @@ def capabilities_response() -> str:
     ensure_council_dirs()
     return (
         "[Council] Poke-like core online.\n"
-        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, uruchamiać recipes i przygotować lokalne write/patch/execute po approval.\n"
+        "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, zapisać i śledzić taski, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy i przygotować lokalne write/patch/execute po approval.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
-        "Przykłady bez slashy: `ogarnij mi ...`, `przygotuj mi ...`, `załatw ...`, `start task-...`, `zrób research o ...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
+        "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -3666,10 +3952,10 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v0, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: live recipes na żywych danych, automatyczne dopasowanie recipe do taska, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: automatyczne multi-step follow-upy po recipe, naprawiony GitHub CLI auth jako natywna ścieżka, pełny execution verifier/rollback dla szerszych akcji, streaming/progress UX, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, iMessage bridge, globalny kill switch/budget guard.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.16 Live Recipes - Action Planner ma automatycznie wybierać i uruchamiać recipes na źródłach Gmail/Calendar/Drive/memory."
+        "Najbliższy cel wdrożeniowy: L4.17 Follow-up Runner - po zakończonej recipe system ma sam proponować i prowadzić kolejny krok z approval."
     )
 
 
@@ -3682,10 +3968,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.15 Poke Action Planner + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.16 Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.15: /plan-action, /start-task, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.16: /plan-action, /start-task, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -3742,7 +4028,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.15 Poke Action Planner + Google OAuth read-sync",
+        "version: L4.16 Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -4139,8 +4425,28 @@ def action_planner_mode(prompt: str) -> dict:
     route_prompt = prompt.strip()
     decision = "Przygotować plan wykonania i zostawić wykonanie po decyzji użytkownika."
     source_requested = any(token in lower for token in ("gmail", "calendar", "kalendarz", "drive", "docs", "źródł", "zrodl"))
+    selected_recipe = None
 
-    if source_requested and not has_side_effect_verb:
+    if has_side_effect_verb or risk in {"R2", "R4"} or (risk == "R3" and not source_requested):
+        mode = "approval"
+        command = "/propose"
+        decision = "To wygląda na akcję z ryzykiem, więc najpierw powstaje pending action z approval."
+    else:
+        selected_recipe = select_live_recipe(prompt)
+    if mode == "approval":
+        pass
+    elif selected_recipe:
+        recipe_name = str(selected_recipe.get("name") or "")
+        recipe = load_recipe(recipe_name) or {}
+        recipe_risk = str(recipe.get("risk") or "")
+        if recipe_risk:
+            risk = recipe_risk
+            reason = "selected live recipe declared read-only/planning risk" if recipe_risk == "R0" else f"selected live recipe risk {recipe_risk}"
+        mode = "recipe"
+        command = "/recipe"
+        route_prompt = f"run {recipe_name} {prompt.strip()}".strip()
+        decision = f"Uruchomić live recipe `{recipe_name}`, bo pasuje do intencji i źródeł."
+    elif source_requested and not has_side_effect_verb:
         mode = "connector"
         command = "/connector"
         decision = "Najpierw odczytać źródła read-only albo zrobić connector brief."
@@ -4150,10 +4456,6 @@ def action_planner_mode(prompt: str) -> dict:
             route_prompt = f"brief calendar {prompt.strip()}"
         else:
             route_prompt = f"brief gmail {prompt.strip()}"
-    elif has_side_effect_verb or risk in {"R2", "R3", "R4"}:
-        mode = "approval"
-        command = "/propose"
-        decision = "To wygląda na akcję z ryzykiem, więc najpierw powstaje pending action z approval."
     elif any(token in lower for token in ("council", "claude i grok", "claude i grokiem", "rada ai", "ai council")):
         mode = "council"
         command = "/council"
@@ -4180,6 +4482,9 @@ def action_planner_mode(prompt: str) -> dict:
         "risk_reason": reason,
         "decision": decision,
         "approval_required": mode == "approval",
+        "recipe_name": selected_recipe.get("name", "") if selected_recipe else "",
+        "recipe_reason": selected_recipe.get("reason", "") if selected_recipe else "",
+        "recipe_score": selected_recipe.get("score", 0) if selected_recipe else 0,
     }
 
 
@@ -4187,7 +4492,9 @@ def action_planner_estimated_cost(plan: dict) -> float:
     mode = str(plan.get("mode") or "")
     if mode == "research":
         return estimated_operator_cost("grok")
-    if mode in {"flow", "recipe"}:
+    if mode == "recipe":
+        return recipe_estimated_cost(str(plan.get("recipe_name") or ""))
+    if mode == "flow":
         return estimated_operator_cost("claude-flow")
     if mode == "council":
         return estimated_operator_cost("grok") + estimated_operator_cost("claude") + estimated_operator_cost("codex")
@@ -4215,9 +4522,13 @@ def create_planned_task(prompt: str, plan: dict) -> dict:
             "prompt": plan.get("prompt", ""),
             "mode": plan.get("mode", ""),
             "intent": "planner",
+            "recipe_name": plan.get("recipe_name", ""),
         },
         risk=plan.get("risk", ""),
         risk_reason=plan.get("risk_reason", ""),
+        recommended_recipe=plan.get("recipe_name", ""),
+        recipe_reason=plan.get("recipe_reason", ""),
+        recipe_score=plan.get("recipe_score", 0),
     )
     return updated or task
 
@@ -4255,7 +4566,7 @@ def action_planner_response(prompt: str, chat_id: str = "") -> str:
             },
         )
     lines = [
-        "[Council] Action Planner L4.15",
+        "[Council] Action Planner L4.16",
         f"task_id: {task.get('task_id')}",
         f"DECYZJA: {plan['decision']}",
         f"TRYB: {plan['mode']}",
@@ -4265,6 +4576,8 @@ def action_planner_response(prompt: str, chat_id: str = "") -> str:
         f"- intent: {compact_line(clean, 220)}",
         f"- next_route: {plan['command']} {compact_line(str(plan['prompt']), 180)}",
     ]
+    if plan.get("recipe_name"):
+        lines.append(f"- live_recipe: {plan.get('recipe_name')} ({compact_line(str(plan.get('recipe_reason') or ''), 120)})")
     if action:
         lines.extend(
             [
@@ -5489,12 +5802,36 @@ def run_background_job(task_id: str) -> int:
         result = execute_route_for_background(route, chat_id, task_id)
         artifact = save_task_artifacts(task_id, route, result)
         duration_ms = int((time.time() - started) * 1000)
+        result_status = str(result.get("status") or "")
         if is_cancelled_id(task_id):
             update_task_status(task_id, "cancelled", "background worker cancelled after artifact write", duration_ms=duration_ms, report_path=artifact.get("report_path"))
             append_background_job_event({"job_id": f"bg-{task_id}", "task_id": task_id, "updated_at": utc_now(), "status": "cancelled", "pid": pid})
             if send_progress and chat_id:
                 telegram_send_message(chat_id, f"[AI Council] {task_id}\nCANCELLED.")
             return 0
+        if result_status in {"blocked", "failed"}:
+            update_task_status(
+                task_id,
+                "failed",
+                f"background worker {result_status}",
+                duration_ms=duration_ms,
+                report_path=artifact.get("report_path"),
+                summary_path=artifact.get("summary_path"),
+            )
+            append_background_job_event(
+                {
+                    "job_id": f"bg-{task_id}",
+                    "task_id": task_id,
+                    "updated_at": utc_now(),
+                    "status": "failed",
+                    "pid": pid,
+                    "duration_ms": duration_ms,
+                    "report_path": artifact.get("report_path"),
+                }
+            )
+            if send_progress and chat_id:
+                telegram_send_message_with_markup(chat_id, artifact.get("summary", ""), task_delivery_reply_markup(task_id))
+            return 1
         update_task_status(
             task_id,
             "completed",
@@ -6064,6 +6401,9 @@ LLM_ROUTER_ALLOWED_COMMANDS = {
     "/cost",
     "/errors",
     "/improvements",
+    "/loops",
+    "/recipes",
+    "/recipe",
     "/goal",
     "/nudges",
     "/sources",
@@ -6111,7 +6451,7 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
         "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
         "Zwracasz wyłącznie JSON bez markdown: "
         '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
-        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
+        "Dozwolone command: /chat, /plan-action, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements, /loops, /recipes, /recipe, /goal, /nudges, /sources, /source, /connectors, /connector.\n"
         "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
         "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
         "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
@@ -6305,6 +6645,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
         ("pokaż ulepszenia", "pokaz ulepszenia", "pokaż backlog", "pokaz backlog", "następne wdrożenie", "nastepne wdrozenie")
     ):
         return {"command": "/improvements", "operators": ["host"], "prompt": "", "mode": "improvements", "intent": "natural"}
+
+    if lower in {"loops", "pętle", "petle", "autonomiczne pętle", "autonomiczne petle"} or lower.startswith(
+        ("pokaż pętle", "pokaz petle", "pokaż loops", "pokaz loops", "sprawdź pętle", "sprawdz petle")
+    ):
+        return {"command": "/loops", "operators": ["host"], "prompt": "", "mode": "loops", "intent": "natural"}
 
     start_task_prefixes = ["start task-", "uruchom task-", "odpal task-"]
     if any(lower.startswith(prefix) for prefix in start_task_prefixes):
@@ -6701,6 +7046,8 @@ def route_text(text: str) -> dict:
         return {"command": "/improvements", "operators": ["host"], "prompt": stripped[13:].strip(), "mode": "improvements"}
     if lower.startswith("/improve"):
         return {"command": "/improve", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "improvements"}
+    if lower.startswith("/loops"):
+        return {"command": "/loops", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "loops"}
     if lower.startswith("/recipes"):
         return {"command": "/recipes", "operators": ["host"], "prompt": "", "mode": "recipes"}
     if lower.startswith("/recipe"):
@@ -7213,6 +7560,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return improvements_response(prompt)
     if command == "/improve":
         return improvements_response(prompt)
+    if command == "/loops":
+        return loops_response()
     if command == "/recipes":
         return recipes_response()
     if command == "/cancel":

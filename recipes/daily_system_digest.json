@@ -1,0 +1,44 @@
+{
+  "name": "daily_system_digest",
+  "description": "Krótki digest health, kosztów, kolejki i artefaktów.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "30 8 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "intent_keywords": [
+    "digest",
+    "podsumowanie systemu",
+    "status systemu",
+    "raport systemu"
+  ],
+  "steps": [
+    {
+      "command": "/health",
+      "prompt": ""
+    },
+    {
+      "command": "/cost",
+      "prompt": ""
+    },
+    {
+      "command": "/queue",
+      "prompt": ""
+    },
+    {
+      "command": "/artifacts",
+      "prompt": ""
+    },
+    {
+      "command": "/errors",
+      "prompt": "recent 10"
+    },
+    {
+      "command": "/improvements",
+      "prompt": "open"
+    }
+  ]
+}

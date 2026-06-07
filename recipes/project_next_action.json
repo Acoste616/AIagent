@@ -1,0 +1,30 @@
+{
+  "name": "project_next_action",
+  "description": "Claude Flow wybiera najbliższy bezpieczny krok dla projektu.",
+  "enabled": true,
+  "trigger": {
+    "type": "manual"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "intent_keywords": [
+    "plan",
+    "wdrożenie",
+    "wdrozenie",
+    "co dalej",
+    "następny krok",
+    "nastepny krok",
+    "projekt"
+  ],
+  "integrations": [
+    "claude-flow",
+    "artifacts"
+  ],
+  "steps": [
+    {
+      "command": "/flow",
+      "prompt": "Wybierz najbliższy bezpieczny krok dla: {input}"
+    }
+  ]
+}

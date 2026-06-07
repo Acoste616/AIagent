@@ -1,0 +1,44 @@
+{
+  "name": "error_audit_twice_daily",
+  "description": "Dwa razy dziennie audytuje folder errors i proponuje naprawy kodu.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "0 9,21 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "capture_improvement": true,
+  "planner_selectable": true,
+  "intent_keywords": [
+    "błędy",
+    "bledy",
+    "errors",
+    "audyt błędów",
+    "audyt bledow",
+    "debug",
+    "wysypuje",
+    "napraw błędy",
+    "napraw bledy"
+  ],
+  "integrations": [
+    "errors",
+    "claude-flow",
+    "improvements"
+  ],
+  "improvement_policy": {
+    "enabled": true,
+    "source": "error_audit_loop",
+    "priority": "P1"
+  },
+  "steps": [
+    {
+      "command": "/errors",
+      "prompt": "recent 20"
+    },
+    {
+      "command": "/flow",
+      "prompt": "Zrób audyt błędów AI Council na bazie kontekstu poniżej. Oceń prawdopodobną przyczynę, wskaż konkretne pliki/funkcje do poprawy, zaproponuj minimalny patch i testy. Nie wykonuj zmian zewnętrznych.\n\nERROR_CONTEXT:\n{previous}"
+    }
+  ]
+}

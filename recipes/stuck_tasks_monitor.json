@@ -1,0 +1,29 @@
+{
+  "name": "stuck_tasks_monitor",
+  "description": "Sprawdza stuck/running tasks i kolejkę.",
+  "enabled": false,
+  "trigger": {
+    "type": "schedule",
+    "interval_seconds": 1800
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "planner_selectable": true,
+  "intent_keywords": [
+    "stuck",
+    "zawieszone",
+    "wiszące",
+    "running tasks",
+    "kolejka"
+  ],
+  "steps": [
+    {
+      "command": "/health",
+      "prompt": ""
+    },
+    {
+      "command": "/queue",
+      "prompt": ""
+    }
+  ]
+}
