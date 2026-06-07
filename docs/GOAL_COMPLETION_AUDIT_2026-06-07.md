@@ -1,7 +1,7 @@
 # Goal Status Audit
 
 Date: 2026-06-07
-Updated: 2026-06-07 20:30 Europe/Warsaw
+Updated: 2026-06-07 20:41 Europe/Warsaw
 
 Goal:
 
@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.46 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, and `D:\ai-council\docs\implementation\L4_46_MOBILE_ACTIVATION_ADVISOR.md`; Telegram listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 20:29 | Proven |
+| Windows deployment | L4.47 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, and `D:\ai-council\docs\implementation\L4_47_IPHONE_SHORTCUTS_GUIDED_SETUP.md`; Telegram listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 20:40 | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,22 +30,22 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.46: Mac py_compile, agent/proactive/shortcut target tests `26/26 OK`, full `237/237 OK`; Windows Desktop py_compile, target tests `26 passed, 211 deselected`, full `237 passed, 111 subtests passed` | Proven |
+| Test verification | L4.47: Mac py_compile, agent/proactive/shortcut target tests `30/30 OK`, full `241/241 OK`; Windows Desktop py_compile, target tests `30 passed, 211 deselected`, full `241 passed, 111 subtests passed` | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | L4.46 functional commit ready/pushed in this deployment set: `6b6d1d0 Add mobile activation advisor`; L4.45 functional commit `1e33995` remains present | Proven |
-| Claude review | Claude Code reviewed L4.46; findings on RUN fallback comments and Shortcuts status error handling were applied before deployment. Safety confirmed: no token generation, no env writes, no daemon start. | Proven |
+| GitHub push to `Acoste616/AIagent` | L4.47 functional commit ready/pushed in this deployment set: `aa241af Add iPhone Shortcuts guided setup`; L4.46 functional commit `6b6d1d0` remains present | Proven |
+| Claude review | Claude Code reviewed L4.47; findings on blocker/safety separation and setup intent test coverage were applied before deployment. Safety confirmed: no token generation, no env writes, no daemon start. | Proven |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
-- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 20:29:45`.
-- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.46 `agent_mobile_advisor`, L4.45 `shortcuts_service_pack`, L4.44 `memory_front=on`, L4.43 `loop_cadence=on`, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
-- Selftest: version now starts with `L4.46 Mobile Activation Advisor + L4.45 iPhone Shortcuts Service Pack`; docs OK, operators OK, Telegram configured, Shortcuts state `token_missing_not_started`.
+- Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`, `LastRunTime=07.06.2026 20:40:25`.
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.47 `shortcuts_guided_setup`, L4.46 `agent_mobile_advisor`, L4.44 `memory_front=on`, L4.43 `loop_cadence=on`, L4.42 `default_front=on`, L4.41 `provider_read_before_write=on`, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version now starts with `L4.47 iPhone Shortcuts Guided Setup + L4.46 Mobile Activation Advisor + L4.45 iPhone Shortcuts Service Pack`; docs OK, operators OK, Telegram configured, Shortcuts state `token_missing_not_started`.
 - Loops smoke: `/loops` returns `Autonomous loops L4.43`; `error_audit_twice_daily` next windows `2026-06-07 21:00 +0200`, `2026-06-08 09:00 +0200`; `feature_evolution_loop` next windows `2026-06-07 22:15 +0200`, `2026-06-08 10:15 +0200`.
-- Agent smoke: `/agent` returns `Agent Inbox L4.46`; top priority is `[iphone_setup/101]`, `NEXT: /shortcuts`, and `RUN` points only to a separate safe improvement action, not Shortcuts startup.
-- Shortcuts smoke: `/shortcuts` returns `iPhone Shortcuts L4.45`, Windows paths for `start/status/stop-ai-council-shortcuts.ps1`, `service: not_started_by_default`, and `token: missing`; `status-ai-council-shortcuts.ps1` reports `State: Stopped`.
+- Agent smoke: `/agent` returns `Agent Inbox L4.46`; top priority is `[iphone_setup/101]`, `NEXT: /shortcuts setup`, and `RUN` points only to a separate safe improvement action, not Shortcuts startup.
+- Shortcuts smoke: `/shortcuts` returns `iPhone Shortcuts L4.47`; `/shortcuts setup` returns token/host blockers, `SAFETY`, payload examples, and `NIE ROBIĘ TERAZ`; `status-ai-council-shortcuts.ps1` reports `State: Stopped`.
 - Front smoke: the exact complaint `Ani nie odpowiada on jak poke...` routes to `/poke-gap` and returns a short `Poke Gap L4.44` response that says the goal remains active and L4.45 is the current iPhone service-pack layer.
 - Memory-front smoke: with front LLM disabled for the process, `a teraz krócej` after prior local turn `zrób research o Poke` returns `OSTATNI WĄTEK: Ty: zrób research o Poke` and does not start a blank status response.
 
@@ -98,6 +98,7 @@ Completed layers in the current implementation state:
 - L4.44 One Contact Memory Front: deterministic local `/chat` fallback uses the latest conversation turn for the same Telegram chat, so follow-ups such as `a teraz krócej` and `co dalej` no longer sound like a fresh empty conversation when Grok front chat is gated; the Grok front prompt also treats Telegram as one continuous contact.
 - L4.45 iPhone Shortcuts Service Pack: `/shortcuts` reports token state, endpoint, bind scope, payloads, recent tasks, and Windows start/status/stop scripts; Shortcuts HTTP `/health` returns the service version; deploy scripts use token gating and PID-file process verification; no Shortcuts daemon starts automatically.
 - L4.46 Mobile Activation Advisor: `/agent` now surfaces missing `AI_COUNCIL_SHORTCUT_TOKEN` as a high-priority `iphone_setup` item with `NEXT: /shortcuts`; proactive scan can create a daily `iphone_setup` nudge; RUN fallback still surfaces the first safe runnable action without bypassing token setup or daemon approval.
+- L4.47 iPhone Shortcuts Guided Setup: `/shortcuts setup`, `/shortcuts start`, and setup aliases now route to a guided activation checklist with token/host blockers, safety notes, iOS payload examples, and no side effects; `/agent` and proactive `iphone_setup` nudges point to `/shortcuts setup`.
 
 ## External Follow-up
 
