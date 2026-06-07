@@ -175,6 +175,16 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("next:task-20260606-120000-abcdef", callback_data)
         self.assertNotIn("cancel:task-20260606-120000-abcdef", callback_data)
 
+    def test_poke_gap_reply_markup_has_action_cards(self):
+        markup = ai_council.response_reply_markup("[Council] Poke Gap L4.99\nDECYZJA: x")
+        callback_data = [
+            button["callback_data"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+
+        self.assertEqual(callback_data, ["host:agent", "host:improve-next", "host:poke-research", "host:health"])
+
     def test_callback_approve_routes_to_approve_response(self):
         with patch.object(ai_council, "approve_response", return_value="[Council] Approved: act-1") as approve:
             response, status = ai_council.handle_callback_query({"data": "approve:act-1"})
@@ -188,6 +198,60 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertEqual(status, "edit")
         self.assertIn("poprawioną intencję", response.lower())
+
+    def test_host_callback_routes_action_cards(self):
+        callback = {"data": "host:agent", "message": {"chat": {"id": "553"}}}
+        with patch.object(ai_council, "agent_response", return_value="[Council] Agent") as agent:
+            response, status = ai_council.handle_callback_query(callback)
+
+        agent.assert_called_once_with("", chat_id="553")
+        self.assertEqual(status, "host_agent")
+        self.assertIn("Agent", response)
+
+    def test_host_improve_callback_uses_existing_backlog_or_planner(self):
+        callback = {"data": "host:improve-next", "message": {"chat": {"id": "553"}}}
+        with patch.object(ai_council, "open_improvements", return_value=[{"improvement_id": "imp-1"}]), patch.object(
+            ai_council, "improvements_response", return_value="[Council] Improvement"
+        ) as improvements:
+            response, status = ai_council.handle_callback_query(callback)
+
+        improvements.assert_called_once_with("next")
+        self.assertEqual(status, "host_improve_next")
+        self.assertIn("Improvement", response)
+
+        with patch.object(ai_council, "open_improvements", return_value=[]), patch.object(
+            ai_council, "action_planner_response", return_value="[Council] Action Planner"
+        ) as planner:
+            response, status = ai_council.handle_callback_query(callback)
+
+        planner.assert_called_once()
+        self.assertEqual(planner.call_args.kwargs["chat_id"], "553")
+        self.assertEqual(status, "host_improve_next_planner")
+        self.assertIn("Action Planner", response)
+
+    def test_host_poke_research_callback_uses_action_planner(self):
+        callback = {"data": "host:poke-research", "message": {"chat": {"id": "553"}}}
+        with patch.object(ai_council, "action_planner_response", return_value="[Council] Action Planner") as planner:
+            response, status = ai_council.handle_callback_query(callback)
+
+        planner.assert_called_once()
+        self.assertEqual(planner.call_args.kwargs["chat_id"], "553")
+        self.assertIn("Poke parity", planner.call_args.args[0])
+        self.assertEqual(status, "host_poke_research")
+        self.assertIn("Action Planner", response)
+
+    def test_host_health_and_unknown_callbacks(self):
+        with patch.object(ai_council, "health_response", return_value="[Council] Health") as health:
+            response, status = ai_council.handle_callback_query({"data": "host:health"})
+
+        health.assert_called_once_with()
+        self.assertEqual(status, "host_health")
+        self.assertIn("Health", response)
+
+        response, status = ai_council.handle_callback_query({"data": "host:missing"})
+
+        self.assertEqual(status, "unknown_host_action")
+        self.assertIn("Nieznany host action", response)
 
     def test_callback_facts_and_next_route_to_artifact_responses(self):
         with patch.object(ai_council, "facts_response", return_value="[Council] Facts task-1") as facts, patch.object(
@@ -420,7 +484,7 @@ class RoutingTests(unittest.TestCase):
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
         self.assertEqual(route["command"], "/poke-gap")
-        self.assertIn("Poke Gap L4.36", response)
+        self.assertIn("Poke Gap L4.37", response)
         self.assertIn("DECYZJA: masz rację", response)
         self.assertIn("TWOJA WIADOMOŚĆ:", response)
         self.assertIn("improvement=imp-", response)

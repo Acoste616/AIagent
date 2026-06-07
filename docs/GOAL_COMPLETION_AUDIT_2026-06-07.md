@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.36 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, docs copied to desktop; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 17:58 | Proven |
+| Windows deployment | L4.37 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, docs copied to desktop; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 18:11 | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,7 +30,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.36: Mac `206/206 OK` + py_compile + diff check; Windows Desktop `206 passed, 109 subtests passed` + py_compile | Proven |
+| Test verification | L4.37: Mac `211/211 OK` + py_compile + diff check; Windows Desktop `211 passed, 109 subtests passed` + py_compile | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
 | GitHub push to `Acoste616/AIagent` | L4.36 pushed: `19df275..a0bf29d main -> main` | Proven |
@@ -40,8 +40,8 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
 - Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`.
-- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, L4.34 provider executors still gated until provider-specific env/auth are enabled.
-- Selftest: version now includes `L4.36 Poke Host Gap`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, L4.34 provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version now includes `L4.37 Poke Action Cards`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
 
 ## Completion Decision
 
@@ -51,7 +51,7 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.37 Action cards / provider dedupe-read-before-write for external writes.
+1. L4.38 Provider dedupe-read-before-write for external writes.
 2. Drive document/file create with the same approval/confirm/verifier model.
 3. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
 4. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
@@ -83,6 +83,7 @@ Completed layers in the current implementation state:
 - L4.34 Calendar Event Executor v0: `/provider execute <request_id> <confirm>` can create a Calendar event only for `calendar.events.insert`, only after request approval, only with `AI_COUNCIL_PROVIDER_WRITE_ENABLED=true`, `AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=true`, and Google OAuth; it uses `sendUpdates=none`.
 - L4.35 Poke Safe Autostart + Reminder/Calendar Intent: Action Planner auto-starts safe R0 research/recipe/flow/council routes instead of requiring `start task-...`; reminder/calendar phrases create Calendar integration drafts behind approval; `/connector` auto-start is scoped to read-only subcommands; `respond` CLI dry-runs full response generation for debugging.
 - L4.36 Poke Host Gap: feedback such as `nie odpowiadasz jak Poke`, `nie ma takich możliwości`, `gdzie ten cel`, or `poke parity` routes to `/poke-gap` instead of the long `/goal` dump; the response is bounded, includes the user's phrasing, admits parity is not complete, and creates one idempotent P0 improvement backlog item.
+- L4.37 Poke Action Cards: `/poke-gap` responses attach Telegram inline buttons for Agent, Improve, Poke research, and Health; `host:*` callbacks route to safe host actions; Poke research and empty-backlog Improve go through Action Planner instead of blocking or bypassing safety.
 
 ## External Follow-up
 
