@@ -1910,7 +1910,7 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.30", response)
+        self.assertIn("Connectors L4.31", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
@@ -2326,7 +2326,7 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("missing_fields: attendees, start_time, end_time, timezone", show)
         self.assertIn("OK", verify)
         self.assertIn("provider manifest verified", verify)
-        self.assertIn("Execute zablokowane w L4.30", execute)
+        self.assertIn("Request: /provider request", execute)
         self.assertEqual(data["provider_operation"], "calendar.events.insert")
         self.assertFalse(data["external_write_performed"])
         self.assertEqual(data["write_gate"], "disabled_l4_30_manifest_only")
@@ -2350,6 +2350,138 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("FAILED", failed)
         self.assertIn("provider manifest missing files", failed)
         self.assertEqual(latest["provider_manifest_verification_status"], "failed")
+
+    def test_provider_write_request_requires_approval_confirm_and_stays_dry_run(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "google_oauth_configured", return_value=True
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "summary": "Spotkanie zespołu",
+                    "start": "2026-06-08T10:00:00+02:00",
+                    "end": "2026-06-08T10:30:00+02:00",
+                    "attendees": ["team@example.com"],
+                    "description": "Plan wdrożenia AI Council",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                request_action = ai_council.get_latest_action(request_id)
+                token = (request_action["payload"] or {}).get("confirm_token")
+                blocked_pending = ai_council.provider_response(f"execute {request_id} {token}")
+                approved = ai_council.approve_response(request_id)
+                wrong_token = ai_council.provider_response(f"execute {request_id} wrong")
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                verified = ai_council.provider_response(f"verify {request_id}")
+                latest = ai_council.get_latest_action(request_id)
+                dry_run = (latest["payload"] or {}).get("provider_write_dry_run") or {}
+                data = json.loads(Path(dry_run["json_path"]).read_text(encoding="utf-8"))
+
+        self.assertIn("Pending provider write request", request)
+        self.assertEqual(request_action["type"], "provider_write_request")
+        self.assertIn("wymaga najpierw /approve", blocked_pending)
+        self.assertIn("Approved provider write request checkpoint", approved)
+        self.assertIn("wymagany confirm token", wrong_token)
+        self.assertIn("Write gate L4.31", executed)
+        self.assertIn("external_write_performed: false", executed)
+        self.assertIn("OK", verified)
+        self.assertIn("provider write request dry-run verified", verified)
+        self.assertFalse(data["external_write_performed"])
+        self.assertEqual(latest["status"], "verified")
+
+    def test_provider_write_request_readiness_blocks_missing_fields_and_auth(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "google_oauth_configured", return_value=True
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                missing = ai_council.provider_response(f"request {action['action_id']}")
+
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state2" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts2"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state2" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs2"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs2" / "audit.jsonl"), patch.object(
+                ai_council, "google_oauth_configured", return_value=False
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {}), "missing_fields": []}
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                auth = ai_council.provider_response(f"request {action['action_id']}")
+
+        self.assertIn("missing_fields:", missing)
+        self.assertIn("auth not configured", auth)
+
+    def test_provider_write_request_verify_failure_sets_verify_failed(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "google_oauth_configured", return_value=True
+            ):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {}), "missing_fields": []}
+                payload["draft"] = {
+                    "summary": "Spotkanie zespołu",
+                    "start": "2026-06-08T10:00:00+02:00",
+                    "end": "2026-06-08T10:30:00+02:00",
+                    "attendees": ["team@example.com"],
+                    "description": "Plan wdrożenia AI Council",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                ai_council.provider_response(f"execute {request_id} {token}")
+                latest = ai_council.get_latest_action(request_id)
+                dry_run = (latest["payload"] or {}).get("provider_write_dry_run") or {}
+                Path(dry_run["json_path"]).unlink()
+                failed = ai_council.provider_response(f"verify {request_id}")
+                latest = ai_council.get_latest_action(request_id)
+
+        self.assertIn("FAILED", failed)
+        self.assertIn("provider write dry-run missing", failed)
+        self.assertEqual(latest["status"], "verify_failed")
 
     def test_agent_inbox_surfaces_integration_draft_approval(self):
         with temp_dir() as tmp:

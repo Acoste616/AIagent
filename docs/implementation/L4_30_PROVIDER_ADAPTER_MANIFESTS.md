@@ -74,7 +74,7 @@ L4.30 preserves the same no-write guarantee as L4.29:
 - no GitHub issue is opened,
 - no external write happens.
 
-Future L4.31 must add a separate confirmation gate, provider-specific verifier, and rollback/undo policy before any real write-capable adapter can run.
+L4.31 adds the separate write-request confirmation gate and dry-run verifier. Real provider execution still requires a later executor layer with provider-specific verification and rollback/undo policy.
 
 ## Verification
 
