@@ -2613,6 +2613,108 @@ class L2LedgerTests(unittest.TestCase):
         self.assertFalse(data["external_write_performed"])
         self.assertEqual(latest["status"], "verified")
 
+    def test_provider_write_dedupe_key_is_stable_for_json_order(self):
+        first = ai_council.provider_write_dedupe_key("github", "github.issues.create", {"title": "T", "body": "B", "labels": ["x"]})
+        second = ai_council.provider_write_dedupe_key("github", "github.issues.create", {"labels": ["x"], "body": "B", "title": "T"})
+
+        self.assertEqual(first, second)
+
+    def test_provider_write_request_dedupe_blocks_duplicate_request_creation(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {"AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent", "GITHUB_TOKEN": "unit-token"}
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value="unit-token"):
+                draft = {
+                    "repo": "Acoste616/AIagent",
+                    "title": "Dedupe request test",
+                    "body": "Same provider body.",
+                    "labels": ["ai-council"],
+                }
+                action = ai_council.create_integration_draft_action("github", "otwórz issue dedupe", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {}), "missing_fields": [], "draft": draft}
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                first_request = ai_council.provider_response(f"request {action['action_id']}")
+
+                duplicate = ai_council.create_integration_draft_action("github", "otwórz issue dedupe duplicate", risk="R3")
+                ai_council.approve_response(duplicate["action_id"])
+                ai_council.execute_response(duplicate["action_id"])
+                ai_council.verify_response(duplicate["action_id"])
+                ready_duplicate = ai_council.get_latest_action(duplicate["action_id"])
+                duplicate_payload = {**(ready_duplicate["payload"] or {}), "missing_fields": [], "draft": dict(draft)}
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready_duplicate, "updated_at": ai_council.utc_now(), "payload": duplicate_payload})
+                ai_council.provider_response(f"plan {duplicate['action_id']}")
+                ai_council.provider_response(f"verify {duplicate['action_id']}")
+                duplicate_request = ai_council.provider_response(f"request {duplicate['action_id']}")
+                provider_requests = [row for row in ai_council.read_jsonl(ai_council.ACTIONS_FILE) if row.get("type") == "provider_write_request"]
+
+        self.assertIn("Pending provider write request", first_request)
+        self.assertIn("L4.38 dedupe", duplicate_request)
+        self.assertIn("external_write_performed: false", duplicate_request)
+        self.assertEqual(len(provider_requests), 1)
+
+    def test_provider_write_request_dedupe_ignores_terminal_blocked_statuses(self):
+        for terminal_status in ("write_blocked", "verify_failed"):
+            with self.subTest(terminal_status=terminal_status), temp_dir() as tmp:
+                root = Path(tmp)
+                env = {"AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent", "GITHUB_TOKEN": "unit-token"}
+                with patch.dict(os.environ, env, clear=False), patch.object(
+                    ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+                ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                    ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+                ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                    ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+                ), patch.object(ai_council, "github_token", return_value="unit-token"):
+                    draft = {
+                        "repo": "Acoste616/AIagent",
+                        "title": "Dedupe terminal status test",
+                        "body": "Same provider body.",
+                        "labels": ["ai-council"],
+                    }
+                    action = ai_council.create_integration_draft_action("github", "otwórz issue terminal dedupe", risk="R3")
+                    ai_council.approve_response(action["action_id"])
+                    ai_council.execute_response(action["action_id"])
+                    ai_council.verify_response(action["action_id"])
+                    ready = ai_council.get_latest_action(action["action_id"])
+                    payload = {**(ready["payload"] or {}), "missing_fields": [], "draft": draft}
+                    ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                    ai_council.provider_response(f"plan {action['action_id']}")
+                    ai_council.provider_response(f"verify {action['action_id']}")
+                    first_request = ai_council.provider_response(f"request {action['action_id']}")
+                    request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", first_request).group(1)
+                    request_action = ai_council.get_latest_action(request_id)
+                    ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**request_action, "status": terminal_status, "updated_at": ai_council.utc_now()})
+
+                    duplicate = ai_council.create_integration_draft_action("github", "otwórz issue terminal dedupe duplicate", risk="R3")
+                    ai_council.approve_response(duplicate["action_id"])
+                    ai_council.execute_response(duplicate["action_id"])
+                    ai_council.verify_response(duplicate["action_id"])
+                    ready_duplicate = ai_council.get_latest_action(duplicate["action_id"])
+                    duplicate_payload = {**(ready_duplicate["payload"] or {}), "missing_fields": [], "draft": dict(draft)}
+                    ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready_duplicate, "updated_at": ai_council.utc_now(), "payload": duplicate_payload})
+                    ai_council.provider_response(f"plan {duplicate['action_id']}")
+                    ai_council.provider_response(f"verify {duplicate['action_id']}")
+                    duplicate_request = ai_council.provider_response(f"request {duplicate['action_id']}")
+                    provider_request_ids = {
+                        str(row.get("action_id") or "")
+                        for row in ai_council.read_jsonl(ai_council.ACTIONS_FILE)
+                        if row.get("type") == "provider_write_request"
+                    }
+
+                self.assertIn("Pending provider write request", duplicate_request)
+                self.assertEqual(len(provider_request_ids), 2)
+
     def test_github_provider_write_request_executes_with_gates_and_verifies(self):
         captured: dict[str, object] = {}
 
@@ -2688,6 +2790,78 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("provider write request result verified", verified)
         self.assertEqual(latest["status"], "verified")
         self.assertIn("wcześniejszy provider POST/result", retry_after_verify_failed)
+        self.assertEqual(request_json.call_count, 1)
+
+    def test_provider_write_dedupe_blocks_legacy_duplicate_before_network(self):
+        def fake_request_json(url: str, **kwargs):
+            return {
+                "id": 123456,
+                "number": 8,
+                "html_url": "https://github.com/Acoste616/AIagent/issues/8",
+                "url": "https://api.github.com/repos/Acoste616/AIagent/issues/8",
+                "title": kwargs["payload"]["title"],
+            }
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+                "GITHUB_TOKEN": "unit-token",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value="unit-token"), patch.object(
+                ai_council, "request_json", side_effect=fake_request_json
+            ) as request_json:
+                action = ai_council.create_integration_draft_action("github", "otwórz issue dedupe executor", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "repo": "Acoste616/AIagent",
+                    "title": "L4.38 executor dedupe test",
+                    "body": "Verify duplicate provider executor flow.",
+                    "labels": ["ai-council"],
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                request_action = ai_council.get_latest_action(request_id)
+                token = (request_action["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                first_execute = ai_council.provider_response(f"execute {request_id} {token}")
+
+                legacy_payload = {**(request_action["payload"] or {}), "confirm_token": "dupetok"}
+                legacy_payload.pop("dedupe_key", None)
+                duplicate = ai_council.create_action(
+                    "Legacy duplicate provider write request",
+                    action_type="provider_write_request",
+                    risk="R3",
+                    payload=legacy_payload,
+                )
+                ai_council.approve_response(duplicate["action_id"])
+                duplicate_execute = ai_council.provider_response(f"execute {duplicate['action_id']} dupetok")
+                duplicate_latest = ai_council.get_latest_action(duplicate["action_id"])
+                dry_run = (duplicate_latest["payload"] or {}).get("provider_write_dry_run") or {}
+                dry_run_text = Path(dry_run["json_path"]).read_text(encoding="utf-8")
+
+        self.assertIn("GitHub issue executed L4.34", first_execute)
+        self.assertIn("Write gate L4.38 dedupe", duplicate_execute)
+        self.assertIn("external_write_performed: false", duplicate_execute)
+        self.assertEqual(duplicate_latest["status"], "write_blocked")
+        self.assertTrue((duplicate_latest["payload"] or {}).get("provider_write_dedupe_conflict"))
+        self.assertIn("L4.38 dedupe", dry_run_text)
         self.assertEqual(request_json.call_count, 1)
 
     def test_github_provider_write_failure_is_redacted_verified_and_not_retried(self):

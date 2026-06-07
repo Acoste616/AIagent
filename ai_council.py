@@ -5242,7 +5242,7 @@ def capabilities_response() -> str:
         "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, pokazać /agent jako jeden priorytetowy inbox/next action, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, przygotować integration drafty Gmail/Calendar/Drive/GitHub za approval, po approval stworzyć lokalny execution pack i zweryfikować go przez /verify, zbudować /provider plan/show/verify/request/execute, wykonać GitHub issue, Gmail draft i Calendar event tylko za osobnym approvalem, confirm tokenem i provider-specific env gate, pokazać /front gdy bot wygląda na cichy, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress oraz heartbeat dla długich prac, pokazać pełną historię etapów przez /progress, odpowiadać jednym hostowym głosem dla operatorów, zapisywać source-backed project memory z artifacts, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `czemu bot nie odpowiada`, `front status`, `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `pamięć projektu`, `szukaj w pamięci projektu Poke`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "L4.37: Poke Action Cards dodaje przyciski Agent/Improve/Poke research/Health pod Poke Gap. L4.36: Poke Host Gap sprawia, że krytyka `nie działa jak Poke` wraca jako krótka diagnoza i P0 backlog, nie długa lista funkcji. L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień, i wymaga /provider request, /approve, confirm tokena, Google OAuth oraz AI_COUNCIL_PROVIDER_WRITE_ENABLED=true + AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=true. Pozostałe providery nadal kończą jako blocker/dry-run.\n"
+        "L4.38: Provider Write Dedupe blokuje duplikaty provider write po connector+operation+canonical body przed request i execute. L4.37: Poke Action Cards dodaje przyciski Agent/Improve/Poke research/Health pod Poke Gap. L4.36: Poke Host Gap sprawia, że krytyka `nie działa jak Poke` wraca jako krótka diagnoza i P0 backlog, nie długa lista funkcji. L4.35: Poke Safe Autostart startuje bezpieczne R0 research/recipe/flow/council bez dodatkowego `start task-...`, a kalendarz/remindery/mail/GitHub/Drive pozostają draftem/approval. L4.34: Provider Executor expansion dodaje Calendar event create obok GitHub issue i Gmail draft. Calendar używa sendUpdates=none, więc nie wysyła powiadomień, i wymaga /provider request, /approve, confirm tokena, Google OAuth oraz AI_COUNCIL_PROVIDER_WRITE_ENABLED=true + AI_COUNCIL_CALENDAR_EVENT_WRITE_ENABLED=true. Pozostałe providery nadal kończą jako blocker/dry-run.\n"
         "To nadal nie jest pełny Poke: brakuje prywatnego iMessage bridge, provider-write adapterów dla zatwierdzonych integracji i bardziej proaktywnego prowadzenia tematów przez integracje.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
@@ -5305,10 +5305,10 @@ def goal_response() -> str:
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
         "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
         "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection i L4.28 integration drafts, L4.29 local execution packs dla integration drafts, L4.30 provider adapter manifests, L4.31 provider write-request gate/dry-run, L4.32 GitHub issue executor v0 za twardymi gate'ami, L4.33 Gmail draft executor v0 za twardymi gate'ami, L4.34 Calendar event executor v0 za twardymi gate'ami, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, Project Memory Spine L4.22, L4.23 Cost Ledger Reservation, L4.24 Poke Front Reliability, L4.25 Rich Progress Streaming, L4.26 Agent Inbox, L4.27 iPhone Primary Capture, L4.28 Gmail/Calendar/Drive/GitHub action drafts, szybki front chat, /front runtime diagnosis, background jobs, cancel/status/progress/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Gotowe także: L4.37 Poke Action Cards dla szybkich działań pod Poke Gap, L4.36 Poke Host Gap dla frustracji/parity feedback oraz L4.35 Poke Safe Autostart, czyli bezpieczne R0 research/recipe/flow/council startują same zamiast prosić Cię o `start task-...`; reminder/kalendarz/mail dalej tworzą draft/approval.\n"
+        "Gotowe także: L4.38 Provider Write Dedupe, L4.37 Poke Action Cards dla szybkich działań pod Poke Gap, L4.36 Poke Host Gap dla frustracji/parity feedback oraz L4.35 Poke Safe Autostart, czyli bezpieczne R0 research/recipe/flow/council startują same zamiast prosić Cię o `start task-...`; reminder/kalendarz/mail dalej tworzą draft/approval.\n"
         "Brakuje do Poke-level: prywatny iMessage bridge, provider-write adapter Drive, dedupe/read-before-write, natywna ścieżka GitHub CLI auth, opcjonalny token-level streaming, lepszy tone/voice frontu i głębsze autonomiczne prowadzenie tematów przez integracje.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy po L4.37: provider dedupe/read-before-write albo Drive document/file create z tym samym approval/confirm/verifier modelem."
+        "Najbliższy cel wdrożeniowy po L4.38: Drive document/file create albo read-before-write dla konkretnych providerów z tym samym approval/confirm/verifier modelem."
     )
 
 
@@ -5321,10 +5321,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, /poke-gap for Poke parity feedback, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "[Council] Online na Desktopie 24/7. L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + Provider Write Gate + Provider Adapter Manifests + Integration Execution Packs + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: /agent priority inbox, /drafts, /drafts show <id>, /approve <draft>, /execute <draft>, /verify <draft>, /provider plan/show/verify/request/execute, /connector draft gmail|calendar|drive|github, /shortcuts status, Share URL -> research brief, shortcut read-only actions/status, Telegram media capture + text/image/STT analysis + media-to-intent routing, /front runtime diagnosis, short chat local-first, gated Grok chat, /poke-gap for Poke parity feedback, Action Planner task/preview/risk/cost/live_recipe/draft_action + safe auto-start R0, final delivery cards, START/RUNNING/final progress messages, heartbeat dla długich prac, /progress timeline z COLLECTING/DELIVERING/COMPLETED events, host-wrapped operator responses, source-backed project memory, model-call reservation before expensive calls, LLM router off by default for ordinary chat, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
         "Domyślnie: zwykła wiadomość -> szybki front operator; `co dalej` -> /agent z jednym priorytetem; action-like wiadomość -> Action Planner; bezpieczne R0 research/recipe/flow/council startują od razu w tle; kalendarz/mail/GitHub/Drive external write -> draft/approval; długie zadanie -> START/RUNNING, heartbeat jeśli trwa długo, potem final delivery card; /status i /progress pokazują pełny timeline etapów; completed artifact -> project memory decision/facts/next with source; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.37: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.38: /agent, /agent run [id], /drafts, /drafts show <id>, /connector draft <name> <intent>, /approve <id>, /execute <id>, /verify <id>, /provider plan|show|verify|request|execute <id>, /shortcuts, /front, /poke-gap, /project-memory, /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /progress <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -5352,7 +5352,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: L4.37 action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: L4.38 provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -5384,7 +5384,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.38 Provider Write Dedupe + L4.37 Poke Action Cards + L4.36 Poke Host Gap + L4.35 Poke Safe Autostart + Reminder/Calendar Intent + L4.34 GitHub Issue + Gmail Draft + Calendar Event Executors v0 + L4.31 Provider Write Gate + L4.30 Provider Adapter Manifests + L4.29 Integration Execution Packs + L4.28 Integration Action Drafts + iPhone Primary Capture + Agent Inbox + Rich Progress Streaming + Poke Front Reliability + Cost Ledger Reservation + Project Memory Spine + Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -7476,19 +7476,93 @@ def provider_request_body(connector: str, draft: dict) -> dict:
     return {"draft": draft}
 
 
+def canonical_provider_request_body(value: dict) -> str:
+    try:
+        return json.dumps(value or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return json.dumps(json.loads(json.dumps(value or {}, ensure_ascii=False, default=str)), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def provider_write_dedupe_key(connector: str, operation: str, request_body: dict) -> str:
+    canonical = canonical_provider_request_body(request_body)
+    raw = f"provider-write:{normalize_connector_name(connector)}:{operation}:{canonical}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def provider_payload_dedupe_key(payload: dict) -> str:
+    return str(payload.get("dedupe_key") or provider_write_dedupe_key(
+        str(payload.get("connector") or ""),
+        str(payload.get("provider_operation") or ""),
+        payload.get("request_body") or {},
+    ))
+
+
+def provider_write_conflict_status(status: str) -> bool:
+    # Empty status is treated as non-conflicting because malformed JSONL rows are not safe blockers.
+    return status not in {"denied", "dismissed", "cancelled", "editing", "write_blocked", "verify_failed", ""}
+
+
+def provider_action_created_before_or_equal(row_created: str, current_created: str) -> bool:
+    row_dt = parse_utc(row_created)
+    current_dt = parse_utc(current_created)
+    if row_dt and current_dt:
+        return row_dt <= current_dt
+    return bool(row_created and current_created and row_created <= current_created)
+
+
+def provider_write_dedupe_conflict(payload: dict, current_action: dict | None = None) -> dict | None:
+    key = provider_payload_dedupe_key(payload)
+    current_id = str((current_action or {}).get("action_id") or "")
+    current_created = str((current_action or {}).get("created_at") or "")
+    for row in latest_by_id(ACTIONS_FILE, "action_id", limit=10000):
+        row_id = str(row.get("action_id") or "")
+        if not row_id or row_id == current_id or row.get("type") != "provider_write_request":
+            continue
+        status = str(row.get("status") or "")
+        if not provider_write_conflict_status(status):
+            continue
+        row_payload = row.get("payload") or {}
+        if provider_payload_dedupe_key(row_payload) != key:
+            continue
+        row_result = row_payload.get("provider_write_result") or {}
+        external_done = bool(row_payload.get("external_write_performed")) or bool(row_result)
+        row_created = str(row.get("created_at") or "")
+        if not current_action or external_done or not current_created or provider_action_created_before_or_equal(row_created, current_created):
+            return {
+                "action_id": row_id,
+                "status": status,
+                "created_at": row_created,
+                "dedupe_key": key,
+                "external_write_performed": bool(row_payload.get("external_write_performed")),
+                "has_provider_result": bool(row_result),
+            }
+    return None
+
+
+def provider_write_dedupe_reason(conflict: dict) -> str:
+    return (
+        "L4.38 dedupe: matching provider write request "
+        f"{conflict.get('action_id')} status={conflict.get('status')} "
+        f"dedupe_key={conflict.get('dedupe_key')}"
+    )
+
+
 def provider_write_request_payload(action: dict) -> dict:
     payload = action.get("payload") or {}
     manifest = provider_manifest_for_action(action)
     connector = normalize_connector_name(str(payload.get("connector") or manifest.get("connector") or ""))
     operation = str(manifest.get("provider_operation") or "")
     token = provider_write_confirm_token(str(action.get("action_id") or ""), connector, operation)
+    request_body = provider_request_body(connector, payload.get("draft") or manifest.get("draft") or {})
     return {
         "source_action_id": action.get("action_id"),
         "connector": connector,
         "provider_operation": operation,
         "provider_manifest": manifest,
-        "request_body": provider_request_body(connector, payload.get("draft") or manifest.get("draft") or {}),
-        "adapter_note": "L4.34 can execute github.issues.create, gmail.users.drafts.create, or calendar.events.insert only for their matching connector, only when provider write gates and provider auth are configured; other providers remain dry-run/blocker only.",
+        "request_body": request_body,
+        "dedupe_key": provider_write_dedupe_key(connector, operation, request_body),
+        "dedupe_scope": "connector+provider_operation+canonical_request_body",
+        "adapter_note": "L4.38 dedupes provider write requests before request creation and execute; L4.34 can execute github.issues.create, gmail.users.drafts.create, or calendar.events.insert only for their matching connector, only when provider write gates and provider auth are configured; other providers remain dry-run/blocker only.",
         "external_write_intended": True,
         "external_write_performed": False,
         "write_gate": "requires_explicit_approve_and_confirm",
@@ -7529,6 +7603,17 @@ def provider_request_response(action_id: str) -> str:
             "external_write_performed: false"
         )
     payload = provider_write_request_payload(action)
+    conflict = provider_write_dedupe_conflict(payload)
+    if conflict:
+        return (
+            "[Provider] Write request zablokowany L4.38 dedupe.\n"
+            f"source: {action_id}\n"
+            f"connector: {payload.get('connector')}\n"
+            f"operation: {payload.get('provider_operation')}\n"
+            f"existing: {conflict.get('action_id')} status={conflict.get('status')}\n"
+            "external_write_performed: false\n"
+            "NEXT: użyj istniejącego requestu albo zmień treść draftu, jeśli to ma być osobna akcja."
+        )
     request = create_action(
         f"Provider write request `{payload.get('connector')}` for {action_id}: {payload.get('provider_operation')}",
         action_type="provider_write_request",
@@ -7536,7 +7621,7 @@ def provider_request_response(action_id: str) -> str:
         payload=payload,
     )
     return (
-        "[Provider] Pending provider write request utworzony L4.34.\n"
+        "[Provider] Pending provider write request utworzony L4.38.\n"
         f"id: {request['action_id']}\n"
         f"source: {action_id}\n"
         f"connector: {payload.get('connector')}\n"
@@ -8280,6 +8365,39 @@ def provider_execute_response(action_id: str) -> str:
                 "external_write_performed: false"
             )
         connector = normalize_connector_name(str(payload.get("connector") or ""))
+        conflict = provider_write_dedupe_conflict(payload, current_action=action)
+        if conflict:
+            reason = provider_write_dedupe_reason(conflict)
+            dry_run = write_provider_dry_run(action, reason)
+            updated = {
+                **action,
+                "status": "write_blocked",
+                "updated_at": utc_now(),
+                "payload": {
+                    **payload,
+                    "provider_write_dry_run": dry_run,
+                    "provider_write_dedupe_conflict": conflict,
+                    "external_write_performed": False,
+                },
+                "execution_result": f"provider write dedupe blocked; dry-run saved {dry_run.get('markdown_path')}",
+            }
+            append_jsonl(ACTIONS_FILE, updated)
+            memory_save(
+                f"provider-write-dedupe:{action_id}",
+                str(dry_run.get("markdown_path") or ""),
+                kind="action",
+                agent="host",
+                source="provider_write_dedupe",
+                task_id=action_id,
+            )
+            return (
+                f"[Provider] Write gate L4.38 dedupe: {action_id}\n"
+                "status: write_blocked\n"
+                "external_write_performed: false\n"
+                f"reason: {reason}\n"
+                f"dry_run: {dry_run.get('markdown_path')}\n"
+                f"Verify: /provider verify {action_id}"
+            )
         blockers = provider_write_gate_blockers(action)
         if not blockers:
             if connector == "github":
