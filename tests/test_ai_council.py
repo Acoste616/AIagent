@@ -85,6 +85,30 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertTrue(response.startswith("[Codex] unavailable:"))
 
+    def test_subprocess_operator_timeout_is_recorded_as_error(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ERRORS_FILE", root / "state" / "errors.jsonl"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "use-test", "operator": "claude-flow"})
+            ), patch.object(ai_council, "finalize_operator_call"), patch(
+                "ai_council.subprocess.run", side_effect=subprocess.TimeoutExpired(["claude"], timeout=7)
+            ):
+                response = ai_council.call_subprocess_operator(
+                    "Claude Flow",
+                    ["claude", "-p", "plan"],
+                    timeout=7,
+                    task_id="task-timeout",
+                )
+                errors = ai_council.read_jsonl(root / "state" / "errors.jsonl")
+
+        self.assertIn("timeout after 7s", response)
+        self.assertEqual(errors[0]["context"], "operator_claude-flow")
+        self.assertEqual(errors[0]["message"], "Claude Flow timeout after 7s")
+        self.assertEqual(errors[0]["event"]["task_id"], "task-timeout")
+
     def test_codex_operator_prompt_includes_memory_auto_recall(self):
         completed = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="OK", stderr="")
 
@@ -2353,6 +2377,38 @@ class ImprovementBacklogTests(unittest.TestCase):
         self.assertNotEqual(improvement["title"], "Research gotowy.")
         self.assertTrue(improvement["summary"].startswith(f"[Loop synthesis {ai_council.LOOP_SYNTHESIS_VERSION}]"))
         self.assertIn("RAW OUTPUT", improvement["summary"])
+
+    def test_recipe_improvement_falls_back_to_grok_when_claude_flow_times_out(self):
+        raw = (
+            "## Step 1: /errors\n\n"
+            "[Council] Errors\n- telegram_getUpdates timeout\n\n"
+            "## Step 2: @grok\n\n"
+            "## Decyzja\n"
+            "Napraw Telegram polling timeout przez zapis root-cause i retry guard.\n\n"
+            "## Testy\nDodać regresję na operator timeout.\n\n"
+            "## Step 3: /flow\n\n"
+            "[Claude Flow] unavailable: timeout after 600s"
+        )
+        recipe = {
+            "capture_improvement": True,
+            "improvement_policy": {"enabled": True, "source": "error_audit_loop", "priority": "P1"},
+        }
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"):
+                improvement = ai_council.create_improvement_from_recipe(
+                    recipe,
+                    "error_audit_twice_daily",
+                    "task-loop",
+                    raw,
+                )
+
+        self.assertIsNotNone(improvement)
+        self.assertIn("Napraw Telegram polling timeout", improvement["title"])
+        self.assertNotIn("Claude Flow", improvement["title"])
+        self.assertIn("Step 3: /flow", improvement["summary"])
 
     def test_create_show_and_close_improvement(self):
         with temp_dir() as tmp:
