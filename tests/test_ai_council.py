@@ -554,7 +554,7 @@ class RoutingTests(unittest.TestCase):
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
         self.assertEqual(route["command"], "/poke-gap")
-        self.assertIn("Poke Gap L4.43", response)
+        self.assertIn("Poke Gap L4.44", response)
         self.assertIn("DECYZJA: masz rację", response)
         self.assertIn("FAKTY:", response)
         self.assertIn("TERAZ:", response)
@@ -612,7 +612,7 @@ class RoutingTests(unittest.TestCase):
                 neutral = ai_council.poke_chat_fallback("pokemon jest spoko")
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
-        self.assertIn("Poke Gap L4.43", gap)
+        self.assertIn("Poke Gap L4.44", gap)
         self.assertIn("improvement=not_logged_chat_fallback", gap)
         self.assertIn("running_tasks=1", gap)
         self.assertIn("errors_24h=1", gap)
@@ -1407,6 +1407,67 @@ class ConversationThreadTests(unittest.TestCase):
         self.assertEqual([turn["text"] for turn in turns], ["pierwsze", "drugie"])
         self.assertTrue(all(turn["chat_id_hash"] == ai_council.short_hash("553") for turn in turns))
 
+    def test_latest_conversation_hint_uses_same_chat_only(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                ai_council.append_conversation_turn("553", "user", "zrób research o Poke", {"command": "/chat"})
+                ai_council.append_conversation_turn("999", "user", "obcy temat", {"command": "/chat"})
+                hint = ai_council.latest_conversation_hint("553", "a teraz krócej")
+
+        self.assertIn("Ty: zrób research o Poke", hint)
+        self.assertNotIn("obcy temat", hint)
+
+    def test_poke_chat_fallback_followup_uses_recent_context_without_llm(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "poke_chat_llm_response", return_value=None
+            ):
+                ai_council.append_conversation_turn("553", "user", "zrób research o Poke")
+                response = ai_council.poke_chat_response("a teraz krócej", chat_id="553")
+
+        self.assertIn("kontynuuję ostatni wątek", response)
+        self.assertIn("OSTATNI WĄTEK: Ty: zrób research o Poke", response)
+        self.assertNotIn("Komendy:", response)
+
+    def test_poke_chat_co_dalej_uses_recent_context(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "poke_chat_llm_response", return_value=None
+            ):
+                ai_council.append_conversation_turn("553", "assistant", "Ustaliliśmy iPhone capture jako następny layer.")
+                response = ai_council.poke_chat_response("co dalej", chat_id="553")
+
+        self.assertIn("OSTATNI WĄTEK: Ja: Ustaliliśmy iPhone capture", response)
+        self.assertIn("L4.44 używa pamięci rozmowy", response)
+        self.assertIn("iPhone capture hardening", response)
+
     def test_poke_chat_includes_recent_conversation_context(self):
         def fake_cfg(key, default=""):
             values = {
@@ -1441,6 +1502,7 @@ class ConversationThreadTests(unittest.TestCase):
 
         self.assertIn("Jasne", response)
         messages = request_json.call_args.kwargs["payload"]["messages"]
+        self.assertIn("ciągły kontakt", messages[0]["content"])
         self.assertTrue(any(message["content"] == "zrób research o Poke" for message in messages))
         self.assertTrue(any(message["content"] == "Mam research." for message in messages))
 
