@@ -31,24 +31,23 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
 | Test verification | Local Mac `66/66 OK`; Windows Desktop `66/66 OK`; py_compile OK | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
-| Telegram fresh inbound verification | `/selftest` is deployed for this. Requires Bartek to send `/selftest` in Telegram and confirm reply. | Needs user action |
-| GitHub push to `Acoste616/AIagent` | Local repo configured, commits exist; push blocked by missing GitHub auth | Blocked by auth |
+| Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
+| GitHub push to `Acoste616/AIagent` | Local repo configured, commits exist; push blocked by missing GitHub auth. This is an external publishing follow-up, not required for the Windows Desktop runtime goal. | External follow-up |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
 - Process: one `python -X utf8 -u D:\ai-council\ai_council.py serve --send`
-- Health: env OK, running tasks 0, stuck tasks 0, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK.
+- Health: env OK, Telegram offset 437154824, running tasks 0, stuck tasks 0, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK.
 - Selftest: docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
 
-## Remaining External Checks
+## Completion Decision
 
-1. Send `/selftest` to the Telegram bot.
-   - Expected: bot replies with `[Council] Selftest`.
-   - This proves live Telegram inbound + outbound on the running desktop service.
+The Windows Desktop AI Council goal is complete: research, Claude planning, tournament, audited implementation, desktop deployment, Telegram live inbound/outbound, status, and tests are all proven by current evidence.
 
-2. Authenticate GitHub.
+## External Follow-up
+
+1. Authenticate GitHub.
    - Current error: `fatal: could not read Username for 'https://github.com': Device not configured`
    - After auth: run `git push origin main`.
-
