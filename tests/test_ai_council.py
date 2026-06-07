@@ -439,6 +439,183 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("2/2: @claude-flow", response)
         self.assertIn("[Claude Flow]\nok", response)
 
+    def test_llm_route_parses_strict_json_and_selects_research(self):
+        def fake_cfg(key, default=""):
+            if key == "XAI_API_KEY":
+                return "xai-test"
+            if key == "AI_COUNCIL_LLM_ROUTER":
+                return "true"
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"@research","prompt":"nowy Grok","confidence":0.91,"reason":"research"}'}}]}
+        ):
+            route = ai_council.route_message("sprawdź proszę co ludzie piszą o nowym Groku", chat_id="553")
+
+        self.assertEqual(route["command"], "@research")
+        self.assertEqual(route["route_source"], "llm")
+        self.assertGreaterEqual(route["confidence"], 0.9)
+
+    def test_llm_route_rejects_side_effect_commands(self):
+        def fake_cfg(key, default=""):
+            if key == "XAI_API_KEY":
+                return "xai-test"
+            if key == "AI_COUNCIL_LLM_ROUTER":
+                return "true"
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"/execute","prompt":"act-1","confidence":0.99,"reason":"danger"}'}}]}
+        ):
+            route = ai_council.route_message("usuń wszystkie pliki", chat_id="553")
+
+        self.assertEqual(route["command"], "/chat")
+        self.assertEqual(route["route_source"], "fallback")
+
+    def test_llm_route_low_confidence_falls_back_to_chat(self):
+        def fake_cfg(key, default=""):
+            if key == "XAI_API_KEY":
+                return "xai-test"
+            if key == "AI_COUNCIL_LLM_ROUTER":
+                return "true"
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"/flow","prompt":"x","confidence":0.2,"reason":"unclear"}'}}]}
+        ):
+            route = ai_council.route_message("może coś z tym zrób", chat_id="553")
+
+        self.assertEqual(route["command"], "/chat")
+        self.assertEqual(route["route_source"], "fallback")
+
+    def test_llm_route_disabled_without_xai_key(self):
+        with patch.object(ai_council, "cfg", return_value=""), patch.object(ai_council, "request_json") as request_json:
+            route = ai_council.llm_route("sprawdź internet", chat_id="553")
+
+        self.assertIsNone(route)
+        request_json.assert_not_called()
+
+    def test_route_message_prefers_explicit_then_keyword_then_llm(self):
+        with patch.object(ai_council, "llm_route", return_value={"command": "@research", "operators": ["grok"], "prompt": "x", "route_source": "llm", "confidence": 0.9}) as llm:
+            explicit = ai_council.route_message("@codex ping", chat_id="553")
+            keyword = ai_council.route_message("status", chat_id="553")
+            natural = ai_council.route_message("sprawdź to szerzej", chat_id="553")
+
+        self.assertEqual(explicit["command"], "@codex")
+        self.assertEqual(explicit["route_source"], "explicit")
+        self.assertEqual(keyword["command"], "/status")
+        self.assertEqual(keyword["route_source"], "keyword")
+        self.assertEqual(natural["command"], "@research")
+        self.assertEqual(llm.call_count, 1)
+
+
+class ConversationThreadTests(unittest.TestCase):
+    def test_conversation_thread_roundtrip_isolated_by_chat_id(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"):
+                ai_council.append_conversation_turn("553", "user", "pierwsze", {"command": "/chat"})
+                ai_council.append_conversation_turn("553", "assistant", "drugie", {"command": "/chat"})
+                ai_council.append_conversation_turn("999", "user", "obce", {"command": "/chat"})
+                turns = ai_council.recent_conversation("553", limit=5)
+
+        self.assertEqual([turn["text"] for turn in turns], ["pierwsze", "drugie"])
+        self.assertTrue(all(turn["chat_id_hash"] == ai_council.short_hash("553") for turn in turns))
+
+    def test_poke_chat_includes_recent_conversation_context(self):
+        def fake_cfg(key, default=""):
+            values = {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_MODEL": "grok-test",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"), patch.object(
+                ai_council, "ARTIFACTS_DIR", root / "artifacts"
+            ), patch.object(ai_council, "REPORTS_DIR", root / "reports"), patch.object(
+                ai_council, "ERRORS_DIR", root / "errors"
+            ), patch.object(ai_council, "RECIPES_DIR", root / "recipes"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+                ai_council, "memory_context_for_prompt", return_value=""
+            ), patch.object(
+                ai_council,
+                "request_json",
+                return_value={"choices": [{"message": {"content": "Jasne, robię krócej."}}]},
+            ) as request_json:
+                ai_council.append_conversation_turn("553", "user", "zrób research o Poke")
+                ai_council.append_conversation_turn("553", "assistant", "Mam research.")
+                response = ai_council.poke_chat_response("a teraz krócej", chat_id="553")
+
+        self.assertIn("Jasne", response)
+        messages = request_json.call_args.kwargs["payload"]["messages"]
+        self.assertTrue(any(message["content"] == "zrób research o Poke" for message in messages))
+        self.assertTrue(any(message["content"] == "Mam research." for message in messages))
+
+    def test_listen_once_persists_user_and_assistant_turns(self):
+        update = {
+            "update_id": 101,
+            "message": {
+                "message_id": 1,
+                "from": {"id": 553},
+                "chat": {"id": 553},
+                "text": "hej",
+            },
+        }
+
+        def fake_cfg(key, default=""):
+            values = {
+                "TELEGRAM_BOT_TOKEN": "token",
+                "TELEGRAM_ALLOWED_USER_ID": "553",
+                "TELEGRAM_ALLOWED_CHAT_ID": "553",
+                "XAI_API_KEY": "",
+                "AI_COUNCIL_LLM_ROUTER": "false",
+            }
+            return values.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "OFFSET_FILE", root / "state" / "telegram_offset"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "RECIPES_DIR", root / "recipes"
+            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
+                ai_council, "cfg", side_effect=fake_cfg
+            ), patch.object(
+                ai_council, "request_json", return_value={"ok": True, "result": [update]}
+            ), patch.object(ai_council, "poke_chat_llm_response", return_value=None):
+                code = ai_council.listen_once(send=False, limit=1, verbose=False)
+                turns = ai_council.read_jsonl(root / "state" / "conversations.jsonl")
+                audit_rows = ai_council.read_jsonl(root / "logs" / "audit.jsonl")
+
+        self.assertEqual(code, 0)
+        self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
+        self.assertEqual(turns[0]["text"], "hej")
+        self.assertIn("Mam to", turns[1]["text"])
+        self.assertEqual(audit_rows[-1]["route_source"], "fallback")
+        self.assertEqual(audit_rows[-1]["confidence"], 0.0)
+
 
 class ErrorStoreTests(unittest.TestCase):
     def test_record_error_writes_state_and_daily_error_files(self):

@@ -62,6 +62,7 @@ BACKGROUND_JOB_SPECS_DIR = STATE_DIR / "background_job_specs"
 COSTS_FILE = STATE_DIR / "costs.jsonl"
 ERRORS_FILE = STATE_DIR / "errors.jsonl"
 IMPROVEMENTS_FILE = STATE_DIR / "improvements.jsonl"
+CONVERSATIONS_FILE = STATE_DIR / "conversations.jsonl"
 MEMORY_DB = STATE_DIR / "memory.sqlite"
 RECIPES_DIR = PROJECT_DIR / "recipes"
 NUDGES_FILE = STATE_DIR / "nudges.jsonl"
@@ -372,6 +373,29 @@ def errors_response(prompt: str = "") -> str:
         )
     lines.append("Audit: /recipe run error_audit_twice_daily albo poczekaj na cykl 09:00/21:00.")
     return "\n".join(lines)
+
+
+def append_conversation_turn(chat_id: str, role: str, text: str, route: dict | None = None) -> dict:
+    ensure_council_dirs()
+    clean_role = role if role in {"user", "assistant", "system"} else "user"
+    turn = {
+        "turn_id": f"turn-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{chat_id}:{role}:{text}:{time.time()}')[:6]}",
+        "created_at": utc_now(),
+        "chat_id_hash": short_hash(str(chat_id)),
+        "role": clean_role,
+        "text": compact_line(redact_secrets(text or ""), int_cfg("AI_COUNCIL_CONVERSATION_TURN_MAX_CHARS", 1200)),
+        "command": (route or {}).get("command", ""),
+        "route_source": (route or {}).get("route_source", ""),
+        "confidence": (route or {}).get("confidence", ""),
+    }
+    append_jsonl(CONVERSATIONS_FILE, turn)
+    return turn
+
+
+def recent_conversation(chat_id: str, limit: int = 6) -> list[dict]:
+    chat_hash = short_hash(str(chat_id))
+    rows = [row for row in read_jsonl(CONVERSATIONS_FILE) if row.get("chat_id_hash") == chat_hash]
+    return rows[-max(0, limit) :]
 
 
 def improvement_title_from_text(text: str, fallback: str = "AI Council improvement") -> str:
@@ -2112,6 +2136,16 @@ def operator_usage_summary() -> dict[str, dict]:
     return summary
 
 
+def route_source_summary(limit: int = 200) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in read_jsonl(AUDIT_LOG)[-limit:]:
+        source = str(row.get("route_source") or "")
+        if not source:
+            continue
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
 def operator_call_allowed(operator: str) -> tuple[bool, str]:
     calls = len([row for row in usage_today(operator) if row.get("status") != "blocked"])
     if operator == "grok":
@@ -2582,6 +2616,8 @@ def health_response() -> str:
     stuck = stuck_tasks(limit=5)
     recent_errors = error_rows(days=1)
     improvements_open = open_improvements(limit=50)
+    route_counts = route_source_summary()
+    route_counts_text = ", ".join(f"{key}:{route_counts[key]}" for key in sorted(route_counts)) or "brak"
     offset = read_offset()
     lines = [
         "[Council] Health",
@@ -2592,6 +2628,8 @@ def health_response() -> str:
         f"stuck_tasks: {len(stuck)}",
         f"errors_24h: {len(recent_errors)}",
         f"improvements_open: {len(improvements_open)}",
+        f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
+        f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
         marker = "OK" if item.get("configured") else "missing"
@@ -4345,6 +4383,116 @@ def normalize_intent_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip(" \t\r\n?!.,")
 
 
+LLM_ROUTER_ALLOWED_COMMANDS = {
+    "/chat",
+    "@research",
+    "/xresearch",
+    "/flow",
+    "/council",
+    "/task",
+    "/status",
+    "/details",
+    "/facts",
+    "/next",
+    "/cost",
+    "/errors",
+    "/improvements",
+}
+
+
+def llm_router_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_LLM_ROUTER", bool(cfg("XAI_API_KEY")))
+
+
+def extract_json_object(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?", "", raw.strip(), flags=re.IGNORECASE).strip()
+        raw = re.sub(r"```$", "", raw).strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start : end + 1]
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def llm_route(text: str, chat_id: str = "") -> dict | None:
+    if not llm_router_enabled() or not cfg("XAI_API_KEY"):
+        return None
+    clean_text = text.strip()
+    if not clean_text:
+        return None
+    history = recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_LLM_ROUTER_HISTORY_TURNS", 6)) if chat_id else []
+    history_lines = [
+        f"{row.get('role')}: {compact_line(str(row.get('text') or ''), 220)}"
+        for row in history
+        if row.get("text")
+    ]
+    system_prompt = (
+        "Jesteś bezpiecznym routerem intencji dla prywatnego Telegram AI Council Bartka. "
+        "Zwracasz wyłącznie JSON bez markdown: "
+        '{"command": "...", "prompt": "...", "confidence": 0.0, "reason": "..."}.\n'
+        "Dozwolone command: /chat, @research, /xresearch, /flow, /council, /task, /status, /details, /facts, /next, /cost, /errors, /improvements.\n"
+        "Nigdy nie wybieraj write/append/patch/execute/rollback/approve/deny/delete/publish/contact/billing/auth/DNS. "
+        "Dla destrukcyjnych lub zewnętrznych próśb wybierz /chat i krótko wyjaśnij potrzebę approval. "
+        "Dla zwykłego small talku wybierz /chat. Dla live research wybierz @research lub /xresearch. "
+        "Dla dużych planów wybierz /flow. Dla multi-agent decyzji wybierz /council. "
+        "Dla follow-upów typu 'z tego', 'teraz plan', użyj historii rozmowy."
+    )
+    user_prompt = (
+        "Historia rozmowy:\n"
+        + ("\n".join(history_lines[-6:]) if history_lines else "brak")
+        + "\n\nWiadomość:\n"
+        + clean_text
+    )
+    payload = {
+        "model": cfg("AI_COUNCIL_LLM_ROUTER_MODEL", cfg("AI_COUNCIL_GROK_MODEL", "grok-4.3")),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+    }
+    data = request_json(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {cfg('XAI_API_KEY')}"},
+        method="POST",
+        payload=payload,
+        timeout=int_cfg("AI_COUNCIL_LLM_ROUTER_TIMEOUT", 20),
+    )
+    if data.get("ok") is False:
+        record_error("llm_router", message=str(data.get("error") or data.get("body_preview") or "router failed"), severity="warning")
+        return None
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    parsed = extract_json_object(str(content))
+    if not parsed:
+        return None
+    command = str(parsed.get("command") or "").strip()
+    try:
+        confidence = float(parsed.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if command not in LLM_ROUTER_ALLOWED_COMMANDS or confidence < float_cfg("AI_COUNCIL_LLM_ROUTER_MIN_CONF", 0.6):
+        return None
+    prompt = str(parsed.get("prompt") or clean_text).strip() or clean_text
+    route = route_text(f"{command} {prompt}" if command.startswith("/") else f"{command} {prompt}")
+    if route.get("command") != command:
+        return None
+    route["route_source"] = "llm"
+    route["confidence"] = confidence
+    route["route_reason"] = compact_line(str(parsed.get("reason") or ""), 220)
+    return route
+
+
 def natural_intent_route(stripped: str, lower: str) -> dict | None:
     if not stripped or stripped.startswith(("@", "/")):
         return None
@@ -4663,6 +4811,38 @@ def multiline_command_route(text: str) -> dict | None:
         "prompt": text,
         "routes": routes,
         "mode": "multi",
+    }
+
+
+def route_message(text: str, chat_id: str = "") -> dict:
+    stripped = text.strip()
+    lower = stripped.lower()
+    if not stripped:
+        route = route_text(text)
+        route.setdefault("route_source", "empty")
+        route.setdefault("confidence", 1.0)
+        return route
+    if stripped.startswith(("@", "/")) or "\n" in stripped:
+        route = route_text(text)
+        route.setdefault("route_source", "explicit")
+        route.setdefault("confidence", 1.0)
+        return route
+    natural = natural_intent_route(stripped, lower)
+    if natural:
+        natural.setdefault("route_source", "keyword")
+        natural.setdefault("confidence", 1.0)
+        return natural
+    llm = llm_route(stripped, chat_id=chat_id)
+    if llm:
+        return llm
+    return {
+        "command": "/chat",
+        "operators": ["host"],
+        "prompt": stripped,
+        "mode": "chat",
+        "intent": "natural",
+        "route_source": "fallback",
+        "confidence": 0.0,
     }
 
 
@@ -5100,7 +5280,7 @@ def poke_chat_fallback(prompt: str) -> str:
     )
 
 
-def poke_chat_llm_response(prompt: str) -> str | None:
+def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
     if not bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) or not cfg("XAI_API_KEY"):
         return None
     started = time.time()
@@ -5111,21 +5291,28 @@ def poke_chat_llm_response(prompt: str) -> str | None:
     text = prompt.strip()
     memory_context = memory_context_for_prompt(text)
     memory_block = f"\n\nKontekst z pamięci AI Council:\n{memory_context}" if memory_context else ""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Jesteś frontowym operatorem Bartek Agent OS w Telegramie, styl Poke-like. "
+                "Odpowiadasz po polsku, szybko, konkretnie i osobowo: bez ściany komend, bez logów, bez technicznego żargonu. "
+                "Jeśli pytanie jest zwykłe, odpowiedz normalnie. Jeśli wygląda na większe zadanie, nazwij najlepszy tryb: research, plan, Council, task albo approval. "
+                "Nie twierdź, że wykonałeś pliki, API, publikację albo kontakt, jeśli tego realnie nie wykonał system. "
+                "Maks 4 krótkie zdania albo 5 punktów. Na końcu podaj jeden najlepszy następny krok, gdy ma sens."
+            ),
+        }
+    ]
+    if chat_id:
+        for row in recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_CHAT_HISTORY_TURNS", 6)):
+            role = row.get("role") if row.get("role") in {"user", "assistant"} else "user"
+            content = str(row.get("text") or "").strip()
+            if content:
+                messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": f"{text}{memory_block}"})
     payload = {
         "model": cfg("AI_COUNCIL_POKE_CHAT_MODEL", cfg("AI_COUNCIL_GROK_MODEL", "grok-4.3")),
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Jesteś frontowym operatorem Bartek Agent OS w Telegramie, styl Poke-like. "
-                    "Odpowiadasz po polsku, szybko, konkretnie i osobowo: bez ściany komend, bez logów, bez technicznego żargonu. "
-                    "Jeśli pytanie jest zwykłe, odpowiedz normalnie. Jeśli wygląda na większe zadanie, nazwij najlepszy tryb: research, plan, Council, task albo approval. "
-                    "Nie twierdź, że wykonałeś pliki, API, publikację albo kontakt, jeśli tego realnie nie wykonał system. "
-                    "Maks 4 krótkie zdania albo 5 punktów. Na końcu podaj jeden najlepszy następny krok, gdy ma sens."
-                ),
-            },
-            {"role": "user", "content": f"{text}{memory_block}"},
-        ],
+        "messages": messages,
         "stream": False,
     }
     data = request_json(
@@ -5151,20 +5338,20 @@ def poke_chat_llm_response(prompt: str) -> str | None:
     return "[Council]\n" + answer[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)]
 
 
-def poke_chat_response(prompt: str) -> str:
+def poke_chat_response(prompt: str, chat_id: str = "") -> str:
     lower = normalize_intent_text(prompt)
     if lower in {"co umiesz", "co potrafisz", "co możesz", "co mozesz", "możliwości", "mozliwosci"}:
         return capabilities_response()
-    llm_response = poke_chat_llm_response(prompt)
+    llm_response = poke_chat_llm_response(prompt, chat_id=chat_id)
     if llm_response:
         return llm_response
     return poke_chat_fallback(prompt)
 
 
-def host_response(prompt: str) -> str:
+def host_response(prompt: str, chat_id: str = "") -> str:
     if not prompt:
         return poke_chat_fallback("")
-    return poke_chat_response(prompt)
+    return poke_chat_response(prompt, chat_id=chat_id)
 
 
 def build_response(route: dict, chat_id: str = "") -> str:
@@ -5178,7 +5365,7 @@ def build_response(route: dict, chat_id: str = "") -> str:
             child_command = child_route.get("command", "unknown")
             child_response = build_response(child_route, chat_id=chat_id)
             responses.append(f"[Council] {index}/{len(route.get('routes', []))}: {child_command}\n{child_response}")
-        return "\n\n".join(responses) if responses else host_response(prompt)
+        return "\n\n".join(responses) if responses else host_response(prompt, chat_id=chat_id)
     if command == "/stop":
         return "[Council] Stop przyjęty. Bounded listener zakończy ten przebieg po obsłudze aktualnej wiadomości."
     if command == "/status":
@@ -5193,7 +5380,7 @@ def build_response(route: dict, chat_id: str = "") -> str:
     if command == "/capabilities":
         return capabilities_response()
     if command == "/chat":
-        return poke_chat_response(prompt)
+        return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/cost":
         return cost_response()
     if command == "/errors":
@@ -5288,7 +5475,7 @@ def build_response(route: dict, chat_id: str = "") -> str:
         ]
         parts.append("[Council]\nKrótko: odpytano Codex, Claude i Grok. Jeśli chcesz decyzję/syntezę zamiast trzech głosów, napisz @research albo poproś o 'syntezę'.")
         return "\n\n".join(parts)
-    return host_response(prompt)
+    return host_response(prompt, chat_id=chat_id)
 
 
 def sanitize_for_audit(value):
@@ -5514,7 +5701,7 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         route = (
             {"command": "/capture", "operators": ["host"], "prompt": text or str((media or {}).get("kind") or ""), "mode": "capture"}
             if media
-            else route_text(text)
+            else route_message(text, chat_id=chat_id)
         )
         event = {
             "request_id": short_hash(f"{update.get('update_id')}:{text}:{(media or {}).get('file_unique_id', '')}"),
@@ -5528,6 +5715,9 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
             "dry_send_env": bool_cfg("AI_COUNCIL_DRY_SEND", True),
             "prompt_preview": route.get("prompt", "")[:160],
             "media_kind": (media or {}).get("kind", ""),
+            "route_source": route.get("route_source", ""),
+            "confidence": route.get("confidence", ""),
+            "route_reason": route.get("route_reason", ""),
         }
         if not allowed:
             event["status"] = "ignored_not_allowed"
@@ -5626,6 +5816,8 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         else:
             event["status"] = "duplicate" if duplicate else "dry_responded"
             print(response)
+        append_conversation_turn(chat_id, "user", text, route)
+        append_conversation_turn(chat_id, "assistant", response, route)
         audit(event)
         processed += 1
         if allowed and chat_id:
