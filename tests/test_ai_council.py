@@ -2150,7 +2150,8 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.34", response)
+        self.assertIn("Connectors L4.40", response)
+        self.assertIn("Drive document executor", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
@@ -2636,7 +2637,7 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("wymaga najpierw /approve", blocked_pending)
         self.assertIn("Approved provider write request checkpoint", approved)
         self.assertIn("wymagany confirm token", wrong_token)
-        self.assertIn("Write gate L4.34", executed)
+        self.assertIn("Write gate L4.40", executed)
         self.assertIn("external_write_performed: false", executed)
         self.assertIn("OK", verified)
         self.assertIn("provider write request dry-run verified", verified)
@@ -2806,7 +2807,7 @@ class L2LedgerTests(unittest.TestCase):
                 ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**latest, "status": "verify_failed", "updated_at": ai_council.utc_now()})
                 retry_after_verify_failed = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("GitHub issue executed L4.34", executed)
+        self.assertIn("GitHub issue executed L4.40", executed)
         self.assertIn("external_write_performed: true", executed)
         self.assertIn("https://github.com/Acoste616/AIagent/issues/7", executed)
         self.assertEqual(captured["url"], "https://api.github.com/repos/Acoste616/AIagent/issues")
@@ -2886,7 +2887,7 @@ class L2LedgerTests(unittest.TestCase):
                 dry_run = (duplicate_latest["payload"] or {}).get("provider_write_dry_run") or {}
                 dry_run_text = Path(dry_run["json_path"]).read_text(encoding="utf-8")
 
-        self.assertIn("GitHub issue executed L4.34", first_execute)
+        self.assertIn("GitHub issue executed L4.40", first_execute)
         self.assertIn("Write gate L4.38 dedupe", duplicate_execute)
         self.assertIn("external_write_performed: false", duplicate_execute)
         self.assertEqual(duplicate_latest["status"], "write_blocked")
@@ -2946,7 +2947,7 @@ class L2LedgerTests(unittest.TestCase):
                 verified = ai_council.provider_response(f"verify {request_id}")
                 retry = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("GitHub issue write failed L4.34", failed)
+        self.assertIn("GitHub issue write failed L4.40", failed)
         self.assertIn("manual_check:", failed)
         self.assertIn("external_write_performed: false", failed)
         self.assertNotIn("unit-token", failed)
@@ -3055,7 +3056,7 @@ class L2LedgerTests(unittest.TestCase):
                 decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8", errors="replace")
                 verified = ai_council.provider_response(f"verify {request_id}")
 
-        self.assertIn("Gmail draft executed L4.34", executed)
+        self.assertIn("Gmail draft executed L4.40", executed)
         self.assertIn("external_write_performed: true", executed)
         self.assertEqual(captured["url"], "https://gmail.googleapis.com/gmail/v1/users/me/drafts")
         self.assertEqual(captured["kwargs"]["method"], "POST")
@@ -3114,7 +3115,7 @@ class L2LedgerTests(unittest.TestCase):
                 verified = ai_council.provider_response(f"verify {request_id}")
                 retry = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("Gmail draft write failed L4.34", failed)
+        self.assertIn("Gmail draft write failed L4.40", failed)
         self.assertIn("manual_check:", failed)
         self.assertIn("external_write_performed: false", failed)
         self.assertIn("provider write failed; check provider manually", verified)
@@ -3215,7 +3216,7 @@ class L2LedgerTests(unittest.TestCase):
                 data = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
                 verified = ai_council.provider_response(f"verify {request_id}")
 
-        self.assertIn("Calendar event executed L4.34", executed)
+        self.assertIn("Calendar event executed L4.40", executed)
         self.assertIn("external_write_performed: true", executed)
         self.assertIn("/calendar/v3/calendars/primary/events?", captured["url"])
         self.assertIn("sendUpdates=none", captured["url"])
@@ -3275,7 +3276,7 @@ class L2LedgerTests(unittest.TestCase):
                 verified = ai_council.provider_response(f"verify {request_id}")
                 retry = ai_council.provider_response(f"execute {request_id} {token}")
 
-        self.assertIn("Calendar event write failed L4.34", failed)
+        self.assertIn("Calendar event write failed L4.40", failed)
         self.assertIn("manual_check:", failed)
         self.assertIn("external_write_performed: false", failed)
         self.assertIn("provider write failed; check provider manually", verified)
@@ -3369,13 +3370,12 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("external_write_performed: false", executed)
         self.assertEqual(latest["status"], "write_blocked")
 
-    def test_provider_write_request_blocks_drive_even_when_global_gate_enabled(self):
+    def test_drive_provider_write_blocks_when_drive_gate_disabled(self):
         with temp_dir() as tmp:
             root = Path(tmp)
             env = {
                 "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
-                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
-                "GITHUB_TOKEN": "unit-token",
+                "AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED": "false",
             }
             with patch.dict(os.environ, env, clear=False), patch.object(
                 ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
@@ -3384,8 +3384,8 @@ class L2LedgerTests(unittest.TestCase):
             ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
                 ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
             ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
-                ai_council, "github_token", return_value="unit-token"
-            ), patch.object(ai_council, "request_json", side_effect=AssertionError("provider API should not be called")):
+                ai_council, "request_multipart_related_json", side_effect=AssertionError("Drive API should not be called")
+            ):
                 action = ai_council.create_integration_draft_action("drive", "utwórz dokument o planie wdrożenia", risk="R3")
                 ai_council.approve_response(action["action_id"])
                 ai_council.execute_response(action["action_id"])
@@ -3408,10 +3408,83 @@ class L2LedgerTests(unittest.TestCase):
                 executed = ai_council.provider_response(f"execute {request_id} {token}")
                 latest = ai_council.get_latest_action(request_id)
 
-        self.assertIn("Write gate L4.34", executed)
-        self.assertIn("L4.34 executor supports github issue, gmail draft, and calendar event only", executed)
+        self.assertIn("Write gate L4.40", executed)
+        self.assertIn("AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=false", executed)
         self.assertIn("external_write_performed: false", executed)
         self.assertEqual(latest["status"], "write_blocked")
+
+    def test_drive_provider_write_request_executes_with_gates_and_verifies(self):
+        captured: dict[str, object] = {}
+
+        def fake_drive_upload(url: str, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return {
+                "id": "drive-file-123",
+                "name": kwargs["metadata"]["name"],
+                "mimeType": "application/vnd.google-apps.document",
+                "webViewLink": "https://docs.google.com/document/d/drive-file-123/edit",
+            }
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED": "true",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
+                ai_council, "google_access_token", return_value=("available", "google-token")
+            ), patch.object(
+                ai_council, "request_multipart_related_json", side_effect=fake_drive_upload
+            ) as drive_upload:
+                action = ai_council.create_integration_draft_action("drive", "utwórz dokument o L4.40", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "title": "L4.40 Drive executor test",
+                    "body": "Verify Drive provider executor flow.",
+                    "outline": ["Cel", "Zakres", "Weryfikacja"],
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                request_action = ai_council.get_latest_action(request_id)
+                token = (request_action["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                executed_action = ai_council.get_latest_action(request_id)
+                result = (executed_action["payload"] or {}).get("provider_write_result") or {}
+                data = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
+                verified = ai_council.provider_response(f"verify {request_id}")
+                latest = ai_council.get_latest_action(request_id)
+
+        self.assertIn("Drive document executed L4.40", executed)
+        self.assertIn("external_write_performed: true", executed)
+        self.assertIn("https://docs.google.com/document/d/drive-file-123/edit", executed)
+        self.assertIn("uploadType=multipart", captured["url"])
+        self.assertIn("fields=", captured["url"])
+        self.assertEqual(captured["kwargs"]["metadata"]["name"], "L4.40 Drive executor test")
+        self.assertEqual(captured["kwargs"]["metadata"]["mimeType"], "application/vnd.google-apps.document")
+        self.assertIn("Outline", captured["kwargs"]["media_text"])
+        self.assertIn("Verify Drive provider executor flow.", captured["kwargs"]["media_text"])
+        self.assertEqual(drive_upload.call_count, 1)
+        self.assertTrue(data["external_write_performed"])
+        self.assertEqual(data["provider_operation"], "drive.files.create")
+        self.assertEqual(data["html_url"], "https://docs.google.com/document/d/drive-file-123/edit")
+        self.assertIn("provider write request result verified", verified)
+        self.assertEqual(latest["status"], "verified")
 
     def test_github_provider_write_request_blocks_when_token_missing_at_execute(self):
         with temp_dir() as tmp:
