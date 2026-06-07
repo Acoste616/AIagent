@@ -137,6 +137,35 @@ class OperatorOutputTests(unittest.TestCase):
 
         self.assertEqual(ai_council.xai_response_text(data), "Pierwszy fakt.\nDrugi fakt.")
 
+    def test_grok_x_research_uses_x_and_web_search_with_current_date(self):
+        captured = {}
+
+        def fake_cfg(key: str, default: str = "") -> str:
+            if key == "XAI_API_KEY":
+                return "test-key"
+            return default
+
+        def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
+            captured["url"] = url
+            captured["payload"] = payload
+            return {"output": [{"type": "output_text", "text": "Research OK"}]}
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "use-test", "operator": "grok"})
+        ), patch.object(ai_council, "finalize_operator_call") as finalize, patch.object(
+            ai_council, "memory_context_for_prompt", return_value=""
+        ), patch.object(ai_council, "request_json", side_effect=fake_request_json):
+            response = ai_council.grok_x_research_response("Poke features", max_chars=500)
+
+        self.assertEqual(captured["url"], "https://api.x.ai/v1/responses")
+        tools = captured["payload"]["tools"]
+        self.assertEqual([tool["type"] for tool in tools], ["x_search", "web_search"])
+        self.assertEqual(tools[0]["from_date"], "2026-03-01")
+        self.assertEqual(tools[0]["to_date"], datetime.now(timezone.utc).date().isoformat())
+        self.assertIn(ai_council.GROK_RESEARCH_VERSION, response)
+        self.assertIn("Research OK", response)
+        finalize.assert_called_once()
+
     def test_response_reply_markup_for_pending_action(self):
         markup = ai_council.response_reply_markup("[Council] Pending action utworzona.\nid: act-20260606-120000-abcdef")
 
