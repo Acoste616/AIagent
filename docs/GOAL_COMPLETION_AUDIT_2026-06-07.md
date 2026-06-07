@@ -22,7 +22,7 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Claude long analysis | `docs/research/claude-opus48-poke-research-full-2026-06-06.md`, copied to desktop docs | Proven |
 | Claude tournament | `docs/research/claude-opus48-tournament-scorecard-2026-06-06.md`, copied to desktop docs | Proven |
 | Independent target synthesis | `docs/POKE_CLONE_TARGET.md` | Proven |
-| Windows deployment | L4.39 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, docs copied to desktop; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 18:40 | Proven |
+| Windows deployment | L4.40 copied to `D:\ai-council\ai_council.py`, `D:\ai-council\tests\test_ai_council.py`, docs copied to desktop; listener restarted through `windows-deploy` stop/start scripts at 2026-06-07 18:56 | Proven |
 | Telegram service running | Scheduled task `Bartek AI Council Telegram` state `Running`; one Python `serve --send` process | Proven |
 | Operators configured | Desktop health: Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK | Proven |
 | Long work non-blocking | Background jobs, task IDs, artifacts, delivery cards implemented and covered by tests | Proven |
@@ -30,18 +30,18 @@ Build a working Poke-like/OpenClaw-like AI Council on Windows Desktop:
 | Media/iPhone path | Telegram media capture, xAI STT, Grok vision, media-to-intent, optional Shortcuts ingress implemented | Proven |
 | Final delivery UX | L3.5 delivery cards with Status/Details/Facts/Next, no Cancel on completed tasks | Proven |
 | Status verification | Desktop `server-access-status.ps1`, `/health`, `/selftest` work | Proven |
-| Test verification | L4.39: Mac `216/216 OK` + py_compile + diff check; Windows Desktop `216 passed, 111 subtests passed` + py_compile | Proven |
+| Test verification | L4.40: Mac `217/217 OK` + py_compile + diff check; Windows Desktop `217 passed, 111 subtests passed` + py_compile | Proven |
 | Telegram outbound verification | Real Telegram `sendMessage` from desktop returned `telegram_send=True` | Proven |
 | Telegram fresh inbound verification | Audit log: `update_id=437154823`, `command=/selftest`, `status=responded`; service log: `telegram_sendMessage=ok`, `offset_saved=437154824` | Proven |
-| GitHub push to `Acoste616/AIagent` | L4.39 pushed: `9deb7f6..9ce8ed6 main -> main` | Proven |
+| GitHub push to `Acoste616/AIagent` | L4.40 pushed: `b58b439..3478ece main -> main` | Proven |
 
 ## Current Desktop State
 
 - Project: `D:\ai-council`
 - Scheduled task: `Bartek AI Council Telegram`
 - Process: scheduled task restarted successfully; state `Running`, `LastTaskResult=267009`.
-- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, L4.34 provider executors still gated until provider-specific env/auth are enabled.
-- Selftest: version now includes `L4.39 Poke Front Host Contract`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
+- Health: env OK, Codex OK, Claude OK, Claude Flow Opus 4.8 OK, Grok OK, L4.40 `drive_document_executor=gated`, L4.39 `host_contract=on`, L4.38 `provider_dedupe=on`, L4.37 `action_cards=on`, L4.36 `poke_gap=on`, L4.35 `safe_autostart=on`, provider executors still gated until provider-specific env/auth are enabled.
+- Selftest: version now includes `L4.40 Drive Document Executor`; docs OK, operators OK, Telegram configured, Shortcuts token not configured/not started.
 
 ## Completion Decision
 
@@ -51,12 +51,11 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.40 Drive document/file create with the same approval/confirm/verifier model.
-2. Provider-specific read-before-write for GitHub/Gmail/Calendar/Drive.
-3. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
-4. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
-5. Deeper source-backed integrations and proactive topic ownership.
-6. Broader execution verifier coverage beyond workspace write/append/patch and optional token-level streaming if it proves useful.
+1. L4.41 Provider-specific read-before-write for GitHub/Gmail/Calendar/Drive.
+2. iPhone Shortcuts runtime/service hardening if not already configured on the device side.
+3. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
+4. Deeper source-backed integrations and proactive topic ownership.
+5. Broader execution verifier coverage beyond workspace write/append/patch and optional token-level streaming if it proves useful.
 
 Completed layers in the current implementation state:
 
@@ -86,7 +85,8 @@ Completed layers in the current implementation state:
 - L4.37 Poke Action Cards: `/poke-gap` responses attach Telegram inline buttons for Agent, Improve, Poke research, and Health; `host:*` callbacks route to safe host actions; Poke research and empty-backlog Improve go through Action Planner instead of blocking or bypassing safety.
 - L4.38 Provider Write Dedupe: provider write requests now use SHA-256 dedupe over connector, provider operation, and canonical request body; duplicates are blocked before request creation and again before network execution, legacy rows without stored keys are still detected, `write_blocked`/`verify_failed` do not permanently shadow retries, and duplicate execution writes a dry-run artifact with `external_write_performed=false`.
 - L4.39 Poke Front Host Contract: `/poke-gap` and missed frustration fallback now return a shorter operator-style diagnosis with decision, facts, one next move, and no `/goal` redirect; `/chat` fallback can render the same diagnosis without writing `improvements.jsonl`, uses current task/error counts, and avoids false triggers such as `pokemon`.
+- L4.40 Drive Document Executor: `/provider execute <request_id> <confirm>` can create a Google Docs document through Drive `files.create` multipart upload only after request approval, only with `AI_COUNCIL_PROVIDER_WRITE_ENABLED=true`, `AI_COUNCIL_DRIVE_FILE_WRITE_ENABLED=true`, and Google OAuth; it validates title/body/outline/folder, stores provider result artifacts with Drive `webViewLink`, and verifies them through the existing provider result verifier.
 
 ## External Follow-up
 
-No current GitHub publishing blocker. The broader Poke parity goal remains active because iPhone/iMessage, Drive/provider read-before-write, and deeper integration-backed autonomy are not yet complete.
+No current GitHub publishing blocker. The broader Poke parity goal remains active because iPhone/iMessage, provider read-before-write, and deeper integration-backed autonomy are not yet complete.
