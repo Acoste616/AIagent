@@ -483,6 +483,7 @@ class RoutingTests(unittest.TestCase):
             "/health": ("/health", ["host"]),
             "/cancel task-1": ("/cancel", ["host"]),
             "/status task-1": ("/status", ["host"]),
+            "/progress task-1": ("/progress", ["host"]),
             "/details task-1": ("/details", ["host"]),
             "/facts task-1": ("/facts", ["host"]),
             "/next task-1": ("/next", ["host"]),
@@ -549,6 +550,8 @@ class RoutingTests(unittest.TestCase):
             "czemu bot nie odpowiada": "/front",
             "anuluj task-1": "/cancel",
             "status task-1": "/status",
+            "postęp task-1": "/progress",
+            "progress task-1": "/progress",
             "szczegóły task-1": "/details",
             "fakty task-1": "/facts",
             "next task-1": "/next",
@@ -2511,16 +2514,20 @@ class L25BackgroundTests(unittest.TestCase):
                 route = {"command": "/flow", "operators": ["claude-flow"], "prompt": "duży plan", "task_id": task_id}
                 response = ai_council.start_background_job(route, chat_id="553", task_id=task_id, send_progress=False)
                 latest = ai_council.get_latest_task(task_id)
+                progress = ai_council.latest_progress_events(task_id)
                 spec_path = ai_council.background_job_spec_path(task_id)
                 spec = ai_council.load_background_job_spec(task_id)
                 spec_exists = spec_path.exists()
 
         self.assertIn("ETAP: START", response)
+        self.assertIn("Postęp: ~5%", response)
         self.assertIn("Robię: /flow / claude-flow / duży plan", response)
         self.assertIn(f"Status: /status {task_id}", response)
+        self.assertIn(f"/progress {task_id}", response)
         self.assertIn(f"/details {task_id}", response)
         self.assertEqual(latest["status"], "running_background")
         self.assertEqual(latest["worker_pid"], 4321)
+        self.assertEqual(progress[-1]["stage"], "START")
         self.assertTrue(spec_exists)
         self.assertFalse(spec["send_running"])
         args, kwargs = popen.call_args
@@ -2668,6 +2675,9 @@ class L25BackgroundTests(unittest.TestCase):
                 route = {"command": "codex_default", "operators": ["codex"], "prompt": "Działasz?", "task_id": task_id}
                 ai_council.save_background_job_spec(route, "553", task_id, send_progress=True)
                 code = ai_council.run_background_job(task_id)
+                events = ai_council.latest_progress_events(task_id, limit=10)
+                status_text = ai_council.task_status_response(task_id)
+                progress_text = ai_council.progress_response(task_id)
 
         self.assertEqual(code, 0)
         self.assertEqual(send.call_count, 2)
@@ -2677,6 +2687,9 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("ETAP: RUNNING", running_text)
         self.assertIn(f"Status: /status {task_id}", running_text)
         self.assertIn("Tak, działam.", sent_text)
+        self.assertEqual([event["stage"] for event in events], ["PREPARING", "RUNNING", "COLLECTING", "DELIVERING", "COMPLETED"])
+        self.assertIn("progress:", status_text)
+        self.assertIn("COMPLETED 100%", progress_text)
         callback_data = [
             button["callback_data"]
             for row in sent_markup["inline_keyboard"]
