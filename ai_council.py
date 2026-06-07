@@ -115,6 +115,18 @@ MODEL_COMMANDS = {
     "@all",
     "/council",
 }
+FRONT_OPERATOR_COMMANDS = {
+    "codex_default",
+    "@codex",
+    "@claude",
+    "@claude-flow",
+    "/flow",
+    "@grok",
+    "@research",
+    "@xresearch",
+    "/xresearch",
+    "/poke-research",
+}
 SIDE_EFFECT_COMMANDS = {"/write", "/append", "/patch", "/propose"}
 BACKGROUND_COMMANDS = {
     "codex_default",
@@ -4423,10 +4435,10 @@ def capabilities_response() -> str:
     return (
         "[Council] Poke-like core online.\n"
         "Jak działa: piszesz normalnie. Krótkie rozmowy dostają szybką odpowiedź frontowego operatora; większe intencje idą przez Action Planner, który tworzy task, preview, ryzyko, koszt i next route, a dla typowych spraw wybiera live recipe.\n"
-        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
+        "Mogę teraz: zrobić research przez Groka/X, uruchomić Claude Flow Opus 4.8 dla dużych planów, odpalić Council Codex+Claude+Grok, użyć Action Plannera bez slashy, dobrać live recipes dla Gmail/Calendar/Drive/research/error-audit/evolution, tworzyć follow-up proposals po zakończonej recipe, zatrzymać modele i autonomiczne pętle przez /control, zapisać i śledzić taski, wysyłać START/RUNNING/final progress dla długich prac, odpowiadać jednym hostowym głosem dla operatorów, pokazać Details/Facts/Next, analizować voice/photo/document/video, pamiętać ustalenia, logować błędy, prowadzić backlog ulepszeń, wykrywać proaktywne nudges, przeszukiwać read-only sources, pokazać connector readiness/auth setup, indeksować lokalny connector cache, robić publiczny i tokenowy read-only GitHub search, robić read-only Google OAuth sync dla Gmail/Calendar/Drive do lokalnego indeksu, tworzyć source-backed connector briefy, przygotować lokalne write/patch/execute po approval i zapisać durable verifier evidence dla /verify oraz /rollback.\n"
         "Workspace: D:\\ai-council\\workspaces\\{codex,claude,grok,shared}; artefakty: D:\\ai-council\\artifacts.\n"
         "Przykłady bez slashy: `ogarnij mi research Poke`, `przygotuj mi raport z gmail`, `sprawdź pętle`, `pokaż kontrolę`, `pokaż follow-upy`, `start task-...`, `zrób plan ...`, `skonsultuj z council ...`, `zapisz task ...`, `pokaż źródła`, `pokaż konektory`, `sprawdź connector github`, `sync gmail Poke`, `szukaj w źródłach memory Poke`, `pokaż błędy`, `pokaż nudges`, `pokaż ulepszenia`, `status`, `co dalej task-...`, `anuluj task-...`.\n"
-        "To nadal nie jest pełny Poke: brakuje jednolitego frontowego operatora, pełnego token-level streamingu, mocniejszej pamięci projektowej, iPhone Shortcuts jako głównego wejścia i prywatnego iMessage bridge.\n"
+        "To nadal nie jest pełny Poke: brakuje pełnego token-level streamingu, mocniejszej pamięci projektowej, iPhone Shortcuts jako głównego wejścia, prywatnego iMessage bridge i głębszych write-capable integrations.\n"
         "Nadal zablokowane bez approval: shell execute, zapis poza workspace, kontakty, publikacja, kasowanie, pieniądze, DNS/auth/billing."
     )
 
@@ -4439,11 +4451,11 @@ def goal_response() -> str:
     return (
         "[Council] Goal: Bartek Agent OS = Poke-like + OpenClaw/Hermes execution.\n"
         "Status: NIE jest ukończony. Jeśli bot nie odpowiada jak Poke, to znaczy, że jesteśmy przed parity, nie po niej. Goal zostaje aktywny do Poke parity albo lepiej.\n"
-        "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, jednolitym głosem, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale frontowy orchestrator/proaktywność/integracje nie są jeszcze na tym poziomie.\n"
-        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
-        "Brakuje do Poke-level: jednolity frontowy orchestrator zamiast wielu widocznych operatorów, pełny token-level streaming, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations oraz natywna ścieżka GitHub CLI auth.\n"
+        "Dlaczego nie czuje się jeszcze jak Poke: Poke to messaging-first operator z proaktywnymi recipes, szybkim progress UX i głębokimi integracjami. U nas rdzeń działa, ale proaktywność, pamięć i integracje write-capable nie są jeszcze na tym poziomie.\n"
+        "Gotowe: Telegram 24/7 na desktopie, natural intent routing, Action Planner v1 z live recipe selection, Follow-up Runner L4.17, Budget Guard/Kill Switch L4.18, Verifier Evidence L4.19, Progress UX L4.20, Unified Front Orchestrator L4.21, szybki front chat, background jobs, cancel/status/details/facts/next, artifacts, memory, media capture/STT/OCR, Grok research/X search, Claude Opus 4.8 Flow, Codex/Claude/Grok Council, Risk Officer, workspace write/patch/execute po approval, recipes, error log, improvement backlog, real Council host synthesis, single-listener lock, Proactive Event Brain v1, Source Integrations read-only v0, Connector Bridge read-only v0, Connector Cache Index v0, GitHub public fallback, GitHub token/API read-only bridge, Google OAuth read-sync dla Gmail/Calendar/Drive.\n"
+        "Brakuje do Poke-level: pełny token-level streaming, długoterminowa pamięć projektowa, iPhone Shortcuts capture jako główne wejście, prywatny iMessage bridge, więcej source-backed integrations, write-capable connectors po approval oraz natywna ścieżka GitHub CLI auth.\n"
         f"Ryzyka teraz: errors_24h={len(recent_errors)}, open_improvements={len(improvements_open)}, open_nudges={len(nudges_open)}.\n"
-        "Najbliższy cel wdrożeniowy: L4.21 Unified Front Orchestrator - jedna rozmowa i jeden host, który ukrywa surowe różnice Codex/Claude/Grok i prowadzi zadanie jak operator."
+        "Najbliższy cel wdrożeniowy: L4.22 Project Memory Spine - trwała pamięć projektowa i source-grounded recall dla długich prac."
     )
 
 
@@ -4456,10 +4468,10 @@ def system_status_response() -> str:
     usage_text = ", ".join(usage_bits) if usage_bits else "brak wywołań dzisiaj"
     stuck_text = "brak" if not stuck else ", ".join(task.get("task_id", "") for task in stuck)
     return (
-        "[Council] Online na Desktopie 24/7. L4.20 Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
-        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @codex -> Codex read-only w tle; @claude -> Claude quick bez narzędzi; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @grok/@research -> Grok w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
+        "[Council] Online na Desktopie 24/7. L4.21 Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth Read Sync: Telegram media capture + text/image/STT analysis + media-to-intent routing, Action Planner task/preview/risk/cost/live_recipe, final delivery cards, START/RUNNING/final progress messages, host-wrapped operator responses, follow-up proposals, /control kill/pause/limits, optional token-gated iPhone Shortcuts ingress, inline buttons, recipes scheduler, autonomous error/evolution loops, proactive nudges, source registry, connector readiness/auth setup/cache/Google OAuth sync, GitHub public/token read-only fallback, Risk Officer R0-R4, workspace execute/verify/rollback z durable evidence, natural intent routing, memory auto-recall, actions, background jobs, artifact index, structured council v0, approved workspace write/append/patch, @claude-flow Opus 4.8, task status/cancel/cost/idempotency/stuck detection.\n"
+        "Domyślnie: zwykła wiadomość -> szybki front operator; action-like wiadomość -> Action Planner; długie zadanie -> START, potem RUNNING, potem final delivery card; @codex/@claude/@grok/@research -> jeden hostowy głos w Telegramie, raw output zostaje w artifacts; planner dobiera live recipes dla research/Gmail/Calendar/Drive/error-audit/evolution; zakończona recipe tworzy follow-up proposal; /verify zapisuje checked evidence dla workspace actions; /rollback działa po executed/verified/verify_failed; /control zatrzymuje modele i autonomiczne pętle; document/text -> local extraction -> route_text; photo/screenshot -> Grok vision/OCR -> route_text; voice/audio/video -> xAI STT REST -> route_text; @claude-flow lub /flow -> Claude Opus 4.8 plan workflow w tle; @xresearch lub /poke-research -> Grok X search w tle; /connector sync -> Gmail/Calendar/Drive read-only OAuth cache; /connector brief -> source-backed raport; /source search -> read-only źródła; /recipe run i scheduled recipes -> recipe w tle; /loops pokazuje error/evolution loops; Proactive Event Brain -> /nudges; brak shell/external actions bez approval.\n"
         f"Usage today: {usage_text}. Stuck: {stuck_text}.\n"
-        "Komendy L4.20: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
+        "Komendy L4.21: /control, /plan-action, /start-task, /followups, /loops, /recipe suggest <intent>, /health, /selftest, /goal, /sources, /source search <name> <query>, /connectors, /connector check|auth|ingest|sync|brief <name>, /nudges, /status <task_id>, /details <task_id>, /facts <task_id>, /next <task_id>, /cancel <task_id>, /cost, /risk, /execute, /verify, /rollback, /recipes, /recipe enable|disable <name>, /xresearch, /poke-research."
     )
 
 
@@ -4518,7 +4530,7 @@ def selftest_response() -> str:
     telegram_state = "configured" if cfg("TELEGRAM_BOT_TOKEN") and cfg("TELEGRAM_ALLOWED_CHAT_ID") else "missing_env"
     lines = [
         "[Council] Selftest",
-        "version: L4.20 Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
+        "version: L4.21 Unified Front Orchestrator + Progress UX + Verifier Evidence + Budget Guard/Kill Switch + Follow-up Runner + Live Recipes + Google OAuth read-sync",
         f"project: {PROJECT_DIR}",
         f"env: {'OK' if ENV_PATH.exists() else 'missing'}",
         f"telegram: {telegram_state}",
@@ -6384,6 +6396,21 @@ def execute_route_for_background(route: dict, chat_id: str, task_id: str) -> dic
         return run_recipe_background(str(route.get("prompt", "")), task_id=task_id)
     if command == "/improve":
         return run_improve_background(str(route.get("prompt", "")), task_id=task_id)
+    if command in FRONT_OPERATOR_COMMANDS:
+        raw = raw_operator_response(command, str(route.get("prompt", "")), task_id=task_id)
+        summary = front_operator_response(command, raw, task_id=task_id)
+        facts = extract_fact_lines(strip_operator_label(raw), limit=3)
+        return {
+            "decision": front_operator_title(command, raw) + ".",
+            "status": "failed" if operator_failed(raw) else "completed",
+            "facts": facts or ["Operator zwrócił wynik zapisany w szczegółach."],
+            "dispute": "Host ukrył surowy prefiks operatora w Telegramie; raw output zostaje w artifacts.",
+            "next_actions": default_next_actions(task_id, command),
+            "ask_user": "Sprawdź wynik i zdecyduj, czy mam kontynuować.",
+            "raw_output": raw,
+            "report": raw,
+            "summary": summary,
+        }
     response = build_response(worker_route, chat_id=chat_id)
     facts = extract_fact_lines(response, limit=3)
     direct_summary = f"{response}\n\n[AI Council]\ntask: {task_id}\nDetails: /details {task_id}"
@@ -8168,6 +8195,111 @@ def host_response(prompt: str, chat_id: str = "") -> str:
     return poke_chat_response(prompt, chat_id=chat_id)
 
 
+def raw_operator_response(command: str, prompt: str, task_id: str = "") -> str:
+    if command in {"@codex", "codex_default"}:
+        return codex_response(prompt, task_id=task_id)
+    if command == "@claude":
+        return claude_response(prompt, task_id=task_id)
+    if command in {"@claude-flow", "/flow"}:
+        return claude_flow_response(prompt, task_id=task_id)
+    if command == "@grok":
+        return grok_route_response(prompt, max_chars=int_cfg("AI_COUNCIL_MAX_CHARS", 900), task_id=task_id)
+    if command == "@research":
+        return grok_route_response(build_research_prompt(prompt), max_chars=int_cfg("AI_COUNCIL_RESEARCH_MAX_CHARS", 1800), task_id=task_id)
+    if command == "@xresearch":
+        return grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000), task_id=task_id)
+    if command == "/xresearch":
+        return grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000), task_id=task_id)
+    if command == "/poke-research":
+        return grok_x_research_response(build_poke_research_prompt(prompt), max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 7000), task_id=task_id)
+    return host_response(prompt)
+
+
+def strip_operator_label(raw: str) -> str:
+    text = clean_operator_output(redact_secrets(raw or "")).strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    first = lines[0].strip()
+    match = re.match(r"^\[(Codex|Claude|Claude Flow|Grok|Grok X Research|Council)\](?:\s*\([^)]*\))?(?:\s*(.*))?$", first)
+    if not match:
+        return text
+    rest = (match.group(2) or "").strip()
+    remaining = "\n".join(lines[1:]).strip()
+    if rest:
+        return "\n".join(part for part in [rest, remaining] if part).strip()
+    return remaining
+
+
+def operator_failed(raw: str) -> bool:
+    text = clean_operator_output(redact_secrets(raw or "")).strip()
+    if not text:
+        return True
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    lowered = first.lower()
+    match = re.match(r"^\[(codex|claude|claude flow|grok|grok x research|council)\](?:\s*\([^)]*\))?(?:\s*(.*))?$", lowered)
+    status = (match.group(2) if match else lowered).strip()
+    return status.startswith(("unavailable", "blocked", "error", "failed", "timeout"))
+
+
+def front_operator_title(command: str, raw: str) -> str:
+    if operator_failed(raw):
+        return "Operator nie wykonał zadania"
+    if command in {"@research", "@xresearch", "/xresearch", "/poke-research"}:
+        return "Research gotowy"
+    if command in {"@claude-flow", "/flow"}:
+        return "Plan workflow gotowy"
+    return "Odpowiedź gotowa"
+
+
+def front_next_line(command: str, task_id: str = "") -> str:
+    if task_id:
+        return f"NEXT: /details {task_id}, /facts {task_id}, /next {task_id}"
+    if command in {"@research", "@xresearch", "/xresearch", "/poke-research"}:
+        return "NEXT: jeśli mam działać dalej, napiszę plan albo utworzę task z tego researchu."
+    if command in {"@claude-flow", "/flow"}:
+        return "NEXT: wskaż, który punkt planu mam zamienić w bezpieczne action/task."
+    if command == "@all":
+        return "NEXT: jeśli chcesz decyzję wykonawczą, napiszę krótką syntezę i plan akcji."
+    return "NEXT: dopisz, czy mam to rozwinąć w research, plan, Council albo bezpieczną akcję."
+
+
+def front_operator_response(command: str, raw: str, task_id: str = "") -> str:
+    body = strip_operator_label(raw)
+    if not body:
+        body = "Brak treści odpowiedzi. Sprawdź /health albo uruchom zadanie ponownie."
+    limit = int_cfg("AI_COUNCIL_FRONT_OPERATOR_MAX_CHARS", 2200)
+    lines = [
+        "[Council]",
+        f"{front_operator_title(command, raw)}.",
+        "",
+        body[:limit],
+        "",
+        front_next_line(command, task_id=task_id),
+    ]
+    if task_id:
+        lines.append(f"Details: /details {task_id}")
+    return "\n".join(lines).strip()
+
+
+def front_all_response(parts: list[tuple[str, str]], task_id: str = "") -> str:
+    lines = [
+        "[Council]",
+        "Konsultacja gotowa.",
+        "",
+        "Wnioski:",
+    ]
+    for label, raw in parts:
+        cleaned = compact_line(strip_operator_label(raw), 260) or "brak treści"
+        lines.append(f"- {label}: {cleaned}")
+    lines.extend(["", front_next_line("@all", task_id=task_id)])
+    if task_id:
+        lines.append(f"Details: /details {task_id}")
+    return "\n".join(lines)
+
+
 def build_response(route: dict, chat_id: str = "") -> str:
     command = route.get("command")
     prompt = route.get("prompt", "")
@@ -8265,8 +8397,6 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return memory_response(prompt)
     if command == "/recipe":
         return recipe_response(prompt)
-    if command == "/flow":
-        return claude_flow_response(prompt, task_id=task_id)
     if command == "/council":
         return council_response_for_chat(prompt, chat_id=chat_id, task_id=task_id)
     if command == "/jobs":
@@ -8285,32 +8415,15 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return append_response(prompt)
     if command == "/patch":
         return patch_response(prompt)
-    if command == "@codex":
-        return codex_response(prompt, task_id=task_id)
-    if command == "codex_default":
-        return codex_response(prompt, task_id=task_id)
-    if command == "@claude":
-        return claude_response(prompt, task_id=task_id)
-    if command == "@claude-flow":
-        return claude_flow_response(prompt, task_id=task_id)
-    if command == "@grok":
-        return grok_route_response(prompt, max_chars=int_cfg("AI_COUNCIL_MAX_CHARS", 900), task_id=task_id)
-    if command == "@research":
-        return grok_route_response(build_research_prompt(prompt), max_chars=int_cfg("AI_COUNCIL_RESEARCH_MAX_CHARS", 1800), task_id=task_id)
-    if command == "@xresearch":
-        return grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000), task_id=task_id)
-    if command == "/xresearch":
-        return grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 5000), task_id=task_id)
-    if command == "/poke-research":
-        return grok_x_research_response(build_poke_research_prompt(prompt), max_chars=int_cfg("AI_COUNCIL_X_RESEARCH_MAX_CHARS", 7000), task_id=task_id)
+    if command in FRONT_OPERATOR_COMMANDS:
+        return front_operator_response(command, raw_operator_response(command, prompt, task_id=task_id), task_id=task_id)
     if command == "@all":
         parts = [
-            codex_response(prompt, task_id=task_id),
-            claude_response(prompt, task_id=task_id),
-            grok_route_response(prompt, max_chars=700, task_id=task_id),
+            ("Technicznie", codex_response(prompt, task_id=task_id)),
+            ("Plan", claude_response(prompt, task_id=task_id)),
+            ("Research", grok_route_response(prompt, max_chars=700, task_id=task_id)),
         ]
-        parts.append("[Council]\nKrótko: odpytano Codex, Claude i Grok. Jeśli chcesz decyzję/syntezę zamiast trzech głosów, napisz @research albo poproś o 'syntezę'.")
-        return "\n\n".join(parts)
+        return front_all_response(parts, task_id=task_id)
     return host_response(prompt, chat_id=chat_id)
 
 

@@ -409,10 +409,53 @@ class RoutingTests(unittest.TestCase):
         with patch.object(ai_council, "grok_response", side_effect=fake_grok):
             response = ai_council.build_response({"command": "@research", "prompt": "rynek kancelarii AI"})
 
-        self.assertEqual(response, "[Grok]\nok")
+        self.assertTrue(response.startswith("[Council]"))
+        self.assertIn("Research gotowy", response)
+        self.assertIn("ok", response)
+        self.assertNotIn("[Grok]", response)
         self.assertIn("brief research", captured["prompt"].lower())
         self.assertIn("po polsku", captured["prompt"].lower())
         self.assertIn("rynek kancelarii AI", captured["prompt"])
+
+    def test_direct_operator_response_uses_unified_front(self):
+        with patch.object(ai_council, "codex_response", return_value="[Codex] (123ms)\nTak, działam."):
+            response = ai_council.build_response({"command": "@codex", "operators": ["codex"], "prompt": "ping"})
+
+        self.assertTrue(response.startswith("[Council]"))
+        self.assertIn("Odpowiedź gotowa", response)
+        self.assertIn("Tak, działam.", response)
+        self.assertNotIn("[Codex]", response)
+
+    def test_all_operator_response_uses_unified_front(self):
+        with patch.object(ai_council, "codex_response", return_value="[Codex]\nfeasibility"), patch.object(
+            ai_council, "claude_response", return_value="[Claude]\nplan"
+        ), patch.object(ai_council, "grok_route_response", return_value="[Grok]\nresearch"):
+            response = ai_council.build_response({"command": "@all", "operators": ["codex", "claude", "grok"], "prompt": "ping"})
+
+        self.assertTrue(response.startswith("[Council]"))
+        self.assertIn("Konsultacja gotowa", response)
+        self.assertIn("Technicznie: feasibility", response)
+        self.assertIn("Plan: plan", response)
+        self.assertIn("Research: research", response)
+        self.assertNotIn("[Codex]", response)
+        self.assertNotIn("[Claude]", response)
+        self.assertNotIn("[Grok]", response)
+
+    def test_front_operator_title_ignores_failure_words_in_successful_body(self):
+        raw = "[Grok]\nResearch: errors, failed deployments and timeout reports are discussed in the source material."
+
+        response = ai_council.front_operator_response("@research", raw)
+
+        self.assertIn("Research gotowy", response)
+        self.assertNotIn("Operator nie wykonał zadania", response)
+
+    def test_front_operator_title_detects_status_prefix_failure(self):
+        raw = "[Grok] blocked: global kill switch active"
+
+        response = ai_council.front_operator_response("@research", raw)
+
+        self.assertIn("Operator nie wykonał zadania", response)
+        self.assertIn("blocked: global kill switch active", response)
 
     def test_task_command_routes_to_host_queue(self):
         route = ai_council.route_text("/task zrób research AI Council")
@@ -873,7 +916,9 @@ class RoutingTests(unittest.TestCase):
 
         self.assertIn("1/2: /status", response)
         self.assertIn("2/2: @claude-flow", response)
-        self.assertIn("[Claude Flow]\nok", response)
+        self.assertIn("Plan workflow gotowy", response)
+        self.assertIn("ok", response)
+        self.assertNotIn("[Claude Flow]", response)
 
     def test_llm_route_parses_strict_json_and_selects_research(self):
         def fake_cfg(key, default=""):
@@ -2404,8 +2449,21 @@ class L25BackgroundTests(unittest.TestCase):
         with patch.object(ai_council, "codex_response", return_value="[Codex]\nTak, działam."):
             result = ai_council.execute_route_for_background(route, chat_id="", task_id="task-1")
 
+        self.assertTrue(result["summary"].startswith("[Council]"))
         self.assertIn("Tak, działam.", result["summary"])
+        self.assertNotIn("[Codex]", result["summary"])
+        self.assertEqual(result["raw_output"], "[Codex]\nTak, działam.")
+        self.assertEqual(result["report"], "[Codex]\nTak, działam.")
         self.assertIn("Details: /details task-1", result["summary"])
+
+    def test_background_direct_operator_failure_sets_failed_status(self):
+        route = {"command": "codex_default", "operators": ["codex"], "prompt": "Działasz?"}
+        with patch.object(ai_council, "codex_response", return_value="[Codex] unavailable: timeout"):
+            result = ai_council.execute_route_for_background(route, chat_id="", task_id="task-1")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Operator nie wykonał zadania", result["summary"])
+        self.assertEqual(result["raw_output"], "[Codex] unavailable: timeout")
 
     def test_background_worker_sends_running_and_final_progress_messages(self):
         with temp_dir() as tmp:
@@ -2836,7 +2894,8 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("Dlaczego nie czuje się jeszcze jak Poke", response)
         self.assertIn("Brakuje do Poke-level", response)
         self.assertIn("Progress UX L4.20", response)
-        self.assertIn("L4.21 Unified Front Orchestrator", response)
+        self.assertIn("Unified Front Orchestrator L4.21", response)
+        self.assertIn("L4.22 Project Memory Spine", response)
 
     def test_selftest_response_is_available_without_model_calls(self):
         with temp_dir() as tmp:

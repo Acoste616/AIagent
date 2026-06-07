@@ -51,9 +51,9 @@ The broader user goal is not complete. Poke parity requires the assistant to fee
 
 Next required layers:
 
-1. L4.21 Unified Front Orchestrator: one host voice that hides raw Codex/Claude/Grok differences and drives the user through the task.
+1. L4.22 Project Memory Spine: durable project memory and source-grounded recall for long-running work.
 2. Stronger cost-ledger serialization/reservation before high-concurrency execution.
-3. Longer-term project memory and source-grounded operator recall.
+3. Token-level streaming or richer step progress for long model calls.
 4. iPhone Shortcuts as primary capture layer.
 5. Private iMessage/Apple Messages bridge only after the Telegram core is stable.
 6. Broader execution verifier coverage beyond workspace write/append/patch.
@@ -67,6 +67,7 @@ Completed layers in the current implementation state:
 - L4.18 Budget Guard/Kill Switch: `/control` can pause/kill model calls, scheduled recipes, and proactive scan; daily total and per-operator limits guard expensive calls.
 - L4.19 Verifier Evidence: `/verify` persists `verified` or `verify_failed` evidence with concrete checks; `/rollback` works after `executed`, `verified`, and `verify_failed`.
 - L4.20 Progress UX: background jobs now show START, RUNNING, and final delivery-card stages in Telegram instead of looking silent while work is running.
+- L4.21 Unified Front Orchestrator: direct operator routes now return one host-style Telegram response while raw Codex/Claude/Grok output stays available in artifacts/reports.
 
 ## External Follow-up
 
