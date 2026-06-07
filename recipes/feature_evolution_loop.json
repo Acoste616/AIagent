@@ -1,10 +1,12 @@
 {
   "name": "feature_evolution_loop",
-  "description": "Codzienny research Poke/Hermes/OpenClaw i plan kolejnej funkcji do wdrożenia.",
+  "recipe_version": "L4.43",
+  "cadence": "twice_daily",
+  "description": "Dwa razy dziennie robi research Poke/Hermes/OpenClaw i plan kolejnej funkcji do wdrożenia.",
   "enabled": true,
   "trigger": {
     "type": "schedule",
-    "cron": "15 10 * * *"
+    "cron": "15 10,22 * * *"
   },
   "risk": "R0",
   "approval_policy": "auto",

@@ -306,6 +306,23 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("202606060830", window)
         self.assertFalse(not_due)
 
+    def test_feature_evolution_loop_has_two_due_windows(self):
+        recipe = ai_council.default_recipes()["feature_evolution_loop"]
+        morning, _ = ai_council.recipe_due_window(recipe, now=datetime(2026, 6, 6, 10, 15, tzinfo=timezone.utc))
+        evening, _ = ai_council.recipe_due_window(recipe, now=datetime(2026, 6, 6, 22, 15, tzinfo=timezone.utc))
+        not_due, _ = ai_council.recipe_due_window(recipe, now=datetime(2026, 6, 6, 10, 16, tzinfo=timezone.utc))
+        next_windows = ai_council.recipe_next_windows(
+            recipe, now=datetime(2026, 6, 6, 10, 16, tzinfo=timezone.utc), limit=2
+        )
+        interval_windows = ai_council.recipe_next_windows({"trigger": {"type": "schedule", "interval_seconds": 60}})
+
+        self.assertTrue(morning)
+        self.assertTrue(evening)
+        self.assertFalse(not_due)
+        self.assertIn("2026-06-06 22:15", next_windows[0])
+        self.assertIn("2026-06-07 10:15", next_windows[1])
+        self.assertEqual(interval_windows, [])
+
     def test_run_due_recipes_starts_once_per_window(self):
         recipe = {
             "scheduled_digest": {
@@ -404,14 +421,67 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(error_recipe["trigger"]["cron"], "0 9,21 * * *")
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in error_recipe["steps"]))
         self.assertTrue(feature_recipe["enabled"])
+        self.assertEqual(feature_recipe["recipe_version"], "L4.43")
+        self.assertEqual(feature_recipe["cadence"], "twice_daily")
         self.assertTrue(feature_recipe["capture_improvement"])
         self.assertTrue(feature_recipe["planner_selectable"])
-        self.assertEqual(feature_recipe["trigger"]["cron"], "15 10 * * *")
+        self.assertEqual(feature_recipe["trigger"]["cron"], "15 10,22 * * *")
         self.assertTrue(any(step["command"] == "@xresearch" for step in feature_recipe["steps"]))
         self.assertTrue(any("{previous}" in step.get("prompt", "") for step in feature_recipe["steps"]))
         self.assertEqual(recipes["gmail_context_brief"]["source_connectors"], ["gmail"])
         self.assertTrue(any(step["prompt"].startswith("sync gmail") for step in recipes["gmail_context_brief"]["steps"]))
         self.assertTrue(recipes["drive_context_brief"]["planner_selectable"])
+
+    def test_default_loop_recipe_migration_updates_cadence_preserves_enabled(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            recipes_dir = root / "recipes"
+            recipes_dir.mkdir(parents=True, exist_ok=True)
+            (recipes_dir / "feature_evolution_loop.json").write_text(
+                json.dumps(
+                    {
+                        "name": "feature_evolution_loop",
+                        "description": "old",
+                        "enabled": False,
+                        "trigger": {"type": "schedule", "cron": "15 10 * * *"},
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (recipes_dir / "error_audit_twice_daily.json").write_text(
+                json.dumps(
+                    {
+                        "name": "error_audit_twice_daily",
+                        "description": "old",
+                        "enabled": True,
+                        "trigger": {"type": "schedule", "cron": "0 9 * * *"},
+                        "steps": [{"command": "/health", "prompt": ""}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(ai_council, "PROJECT_DIR", root), patch.object(
+                ai_council, "STATE_DIR", root / "state"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "WORKSPACES_DIR", root / "workspaces"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "REPORTS_DIR", root / "reports"
+            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "RECIPES_DIR", recipes_dir):
+                ai_council.ensure_default_recipes()
+                migrated = ai_council.load_recipe("feature_evolution_loop")
+                error_migrated = ai_council.load_recipe("error_audit_twice_daily")
+
+        self.assertFalse(migrated["enabled"])
+        self.assertEqual(migrated["recipe_version"], "L4.43")
+        self.assertEqual(migrated["cadence"], "twice_daily")
+        self.assertEqual(migrated["trigger"]["cron"], "15 10,22 * * *")
+        self.assertTrue(any(step["command"] == "@xresearch" for step in migrated["steps"]))
+        self.assertTrue(error_migrated["enabled"])
+        self.assertEqual(error_migrated["recipe_version"], "L4.43")
+        self.assertEqual(error_migrated["trigger"]["cron"], "0 9,21 * * *")
 
     def test_recipe_prompt_can_use_previous_step_output(self):
         prompt = ai_council.render_recipe_step_prompt("input={input}\nprevious={previous}", "temat", "wynik groka")
@@ -484,7 +554,7 @@ class RoutingTests(unittest.TestCase):
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
         self.assertEqual(route["command"], "/poke-gap")
-        self.assertIn("Poke Gap L4.42", response)
+        self.assertIn("Poke Gap L4.43", response)
         self.assertIn("DECYZJA: masz rację", response)
         self.assertIn("FAKTY:", response)
         self.assertIn("TERAZ:", response)
@@ -542,7 +612,7 @@ class RoutingTests(unittest.TestCase):
                 neutral = ai_council.poke_chat_fallback("pokemon jest spoko")
                 rows = ai_council.read_jsonl(root / "state" / "improvements.jsonl")
 
-        self.assertIn("Poke Gap L4.42", gap)
+        self.assertIn("Poke Gap L4.43", gap)
         self.assertIn("improvement=not_logged_chat_fallback", gap)
         self.assertIn("running_tasks=1", gap)
         self.assertIn("errors_24h=1", gap)
@@ -989,9 +1059,11 @@ class RoutingTests(unittest.TestCase):
                 ai_council.append_recipe_run("error_audit_twice_daily", "cron:test", "task-loop", "started")
                 response = ai_council.loops_response()
 
-        self.assertIn("Autonomous loops L4.18", response)
+        self.assertIn("Autonomous loops L4.43", response)
         self.assertIn("error_audit_twice_daily", response)
         self.assertIn("feature_evolution_loop", response)
+        self.assertIn("cadence=twice_daily", response)
+        self.assertIn("next=", response)
         self.assertIn("task-loop", response)
 
     def test_approve_planner_proposal_reports_checkpoint_next_step(self):

@@ -1,5 +1,7 @@
 {
   "name": "error_audit_twice_daily",
+  "recipe_version": "L4.43",
+  "cadence": "twice_daily",
   "description": "Dwa razy dziennie audytuje folder errors i proponuje naprawy kodu.",
   "enabled": true,
   "trigger": {
