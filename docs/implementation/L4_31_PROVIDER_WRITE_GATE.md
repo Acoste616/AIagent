@@ -43,7 +43,7 @@ Readiness required before `/provider request` succeeds:
 - connector auth is configured,
 - provider operation is known.
 
-The confirm token is stored in the request payload and shown to Bartek as a local intent-confirmation string. It prevents accidental execution, not malicious use by someone who can read the action log. Real provider execution in L4.32 should use a fresh stored token plus the same explicit approval path.
+The confirm token is stored in the request payload and shown to Bartek as a local intent-confirmation string. It prevents accidental execution, not malicious use by someone who can read the action log.
 
 ## Safety Contract
 
@@ -78,13 +78,14 @@ This is the right shape before real provider adapters: every future write must a
 
 ## Remaining Gap
 
-L4.31 is not full provider execution. The next layer is L4.32 Provider Executor v0:
+L4.31 is not full provider execution. L4.32 adds the first narrow executor:
 
-- choose one connector first,
-- implement real provider call behind env gate and confirm token,
-- verify provider result from source,
-- store provider object id/link,
-- define undo/rollback policy before enabling writes broadly.
+- one connector only: GitHub,
+- one operation only: `github.issues.create`,
+- separate env gate: `AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED`,
+- provider-specific result artifact and verifier.
+
+See `docs/implementation/L4_32_GITHUB_ISSUE_EXECUTOR.md`.
 
 ## Verification
 

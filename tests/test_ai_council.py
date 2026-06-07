@@ -1910,7 +1910,7 @@ class L2LedgerTests(unittest.TestCase):
             ):
                 response = ai_council.connectors_response()
 
-        self.assertIn("Connectors L4.31", response)
+        self.assertIn("Connectors L4.32", response)
         self.assertIn("github | auth_required", response)
         self.assertIn("Ready:", response)
         self.assertIn("/connector check", response)
@@ -2396,12 +2396,297 @@ class L2LedgerTests(unittest.TestCase):
         self.assertIn("wymaga najpierw /approve", blocked_pending)
         self.assertIn("Approved provider write request checkpoint", approved)
         self.assertIn("wymagany confirm token", wrong_token)
-        self.assertIn("Write gate L4.31", executed)
+        self.assertIn("Write gate L4.32", executed)
         self.assertIn("external_write_performed: false", executed)
         self.assertIn("OK", verified)
         self.assertIn("provider write request dry-run verified", verified)
         self.assertFalse(data["external_write_performed"])
         self.assertEqual(latest["status"], "verified")
+
+    def test_github_provider_write_request_executes_with_gates_and_verifies(self):
+        captured: dict[str, object] = {}
+
+        def fake_request_json(url: str, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return {
+                "id": 123456,
+                "number": 7,
+                "html_url": "https://github.com/Acoste616/AIagent/issues/7",
+                "url": "https://api.github.com/repos/Acoste616/AIagent/issues/7",
+                "title": kwargs["payload"]["title"],
+            }
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+                "GITHUB_TOKEN": "unit-token",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value="unit-token"), patch.object(
+                ai_council, "request_json", side_effect=fake_request_json
+            ) as request_json:
+                action = ai_council.create_integration_draft_action("github", "otwórz issue o L4.32 executorze", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "repo": "Acoste616/AIagent",
+                    "title": "L4.32 executor test",
+                    "body": "Verify provider executor flow.",
+                    "labels": ["ai-council"],
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                request_action = ai_council.get_latest_action(request_id)
+                token = (request_action["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                executed_action = ai_council.get_latest_action(request_id)
+                result = (executed_action["payload"] or {}).get("provider_write_result") or {}
+                data = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
+                verified = ai_council.provider_response(f"verify {request_id}")
+                latest = ai_council.get_latest_action(request_id)
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**latest, "status": "verify_failed", "updated_at": ai_council.utc_now()})
+                retry_after_verify_failed = ai_council.provider_response(f"execute {request_id} {token}")
+
+        self.assertIn("GitHub issue executed L4.32", executed)
+        self.assertIn("external_write_performed: true", executed)
+        self.assertIn("https://github.com/Acoste616/AIagent/issues/7", executed)
+        self.assertEqual(captured["url"], "https://api.github.com/repos/Acoste616/AIagent/issues")
+        self.assertEqual(captured["kwargs"]["method"], "POST")
+        self.assertEqual(captured["kwargs"]["payload"]["title"], "L4.32 executor test")
+        self.assertEqual(captured["kwargs"]["payload"]["labels"], ["ai-council"])
+        self.assertIn("Authorization", captured["kwargs"]["headers"])
+        self.assertEqual(request_json.call_count, 1)
+        self.assertTrue(data["external_write_performed"])
+        self.assertEqual(data["provider_operation"], "github.issues.create")
+        self.assertIn("provider write request result verified", verified)
+        self.assertEqual(latest["status"], "verified")
+        self.assertIn("wcześniejszy provider POST/result", retry_after_verify_failed)
+        self.assertEqual(request_json.call_count, 1)
+
+    def test_github_provider_write_failure_is_redacted_verified_and_not_retried(self):
+        def fake_request_json(url: str, **kwargs):
+            return {
+                "ok": False,
+                "error": "http_422",
+                "body_preview": f"validation failed for {kwargs['headers']['Authorization']}",
+            }
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+                "GITHUB_TOKEN": "unit-token",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value="unit-token"), patch.object(
+                ai_council, "request_json", side_effect=fake_request_json
+            ) as request_json:
+                action = ai_council.create_integration_draft_action("github", "otwórz issue z błędem API", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "repo": "Acoste616/AIagent",
+                    "title": "Failure branch test",
+                    "body": "This should fail.",
+                    "labels": [],
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                failed = ai_council.provider_response(f"execute {request_id} {token}")
+                failed_action = ai_council.get_latest_action(request_id)
+                result = (failed_action["payload"] or {}).get("provider_write_result") or {}
+                result_text = Path(result["json_path"]).read_text(encoding="utf-8")
+                verified = ai_council.provider_response(f"verify {request_id}")
+                retry = ai_council.provider_response(f"execute {request_id} {token}")
+
+        self.assertIn("GitHub issue write failed L4.32", failed)
+        self.assertIn("manual_check:", failed)
+        self.assertIn("external_write_performed: false", failed)
+        self.assertNotIn("unit-token", failed)
+        self.assertNotIn("unit-token", result_text)
+        self.assertIn("[redacted]", result_text)
+        self.assertIn("provider write failed; check GitHub manually", verified)
+        self.assertIn("wcześniejszy provider POST/result", retry)
+        self.assertEqual(request_json.call_count, 1)
+
+    def test_github_provider_write_blocks_too_long_title_before_network(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+                "GITHUB_TOKEN": "unit-token",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value="unit-token"), patch.object(
+                ai_council, "request_json", side_effect=AssertionError("provider API should not be called")
+            ):
+                action = ai_council.create_integration_draft_action("github", "otwórz issue z za długim tytułem", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "repo": "Acoste616/AIagent",
+                    "title": "T" * (ai_council.GITHUB_ISSUE_TITLE_LIMIT + 1),
+                    "body": "Should be blocked locally.",
+                    "labels": [],
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                latest = ai_council.get_latest_action(request_id)
+
+        self.assertIn("title too large", executed)
+        self.assertIn("external_write_performed: false", executed)
+        self.assertEqual(latest["status"], "write_blocked")
+
+    def test_provider_write_request_blocks_non_github_even_when_global_gate_enabled(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
+                "GITHUB_TOKEN": "unit-token",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "google_oauth_configured", return_value=True), patch.object(
+                ai_council, "github_token", return_value="unit-token"
+            ), patch.object(ai_council, "request_json", side_effect=AssertionError("provider API should not be called")):
+                action = ai_council.create_integration_draft_action("calendar", "umów spotkanie z zespołem jutro", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "summary": "Spotkanie zespołu",
+                    "start": "2026-06-08T10:00:00+02:00",
+                    "end": "2026-06-08T10:30:00+02:00",
+                    "attendees": ["team@example.com"],
+                    "description": "Plan wdrożenia AI Council",
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                latest = ai_council.get_latest_action(request_id)
+
+        self.assertIn("Write gate L4.32", executed)
+        self.assertIn("L4.32 executor supports github only", executed)
+        self.assertIn("external_write_performed: false", executed)
+        self.assertEqual(latest["status"], "write_blocked")
+
+    def test_github_provider_write_request_blocks_when_token_missing_at_execute(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            env = {
+                "AI_COUNCIL_PROVIDER_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED": "true",
+                "AI_COUNCIL_GITHUB_REPO": "Acoste616/AIagent",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value="unit-token"):
+                action = ai_council.create_integration_draft_action("github", "otwórz issue o brakującym tokenie", risk="R3")
+                ai_council.approve_response(action["action_id"])
+                ai_council.execute_response(action["action_id"])
+                ai_council.verify_response(action["action_id"])
+                ready = ai_council.get_latest_action(action["action_id"])
+                payload = {**(ready["payload"] or {})}
+                payload["missing_fields"] = []
+                payload["draft"] = {
+                    "repo": "Acoste616/AIagent",
+                    "title": "Token gate test",
+                    "body": "Should not execute without token at execute time.",
+                    "labels": [],
+                }
+                ai_council.append_jsonl(ai_council.ACTIONS_FILE, {**ready, "updated_at": ai_council.utc_now(), "payload": payload})
+                ai_council.provider_response(f"plan {action['action_id']}")
+                ai_council.provider_response(f"verify {action['action_id']}")
+                request = ai_council.provider_response(f"request {action['action_id']}")
+                request_id = re.search(r"id: (act-[A-Za-z0-9_.-]+)", request).group(1)
+                token = (ai_council.get_latest_action(request_id)["payload"] or {}).get("confirm_token")
+                ai_council.approve_response(request_id)
+
+            with patch.dict(os.environ, env, clear=False), patch.object(
+                ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"
+            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(ai_council, "github_token", return_value=""), patch.object(
+                ai_council, "request_json", side_effect=AssertionError("provider API should not be called")
+            ):
+                executed = ai_council.provider_response(f"execute {request_id} {token}")
+                latest = ai_council.get_latest_action(request_id)
+                dry_run = (latest["payload"] or {}).get("provider_write_dry_run") or {}
+                dry_run_exists = Path(dry_run["json_path"]).exists()
+
+        self.assertIn("GITHUB_TOKEN/GH_TOKEN missing", executed)
+        self.assertIn("external_write_performed: false", executed)
+        self.assertEqual(latest["status"], "write_blocked")
+        self.assertTrue(dry_run_exists)
 
     def test_provider_write_request_readiness_blocks_missing_fields_and_auth(self):
         with temp_dir() as tmp:
