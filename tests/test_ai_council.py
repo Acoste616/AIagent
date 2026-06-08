@@ -186,6 +186,111 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertEqual(started_route["command"], "/flow")
         self.assertIn(ai_council.POKE_RESEARCH_HANDOFF_VERSION, started_route["prompt"])
 
+    def test_claude_flow_after_poke_handoff_creates_delegate_followup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-delegate"
+            prompt = f"{ai_council.POKE_RESEARCH_HANDOFF_VERSION} Claude Flow handoff po Grok Poke research"
+            route = {"command": "/flow", "operators": ["claude-flow"], "prompt": prompt}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Claude Flow]\nPlan: implementuj minimalny krok"):
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertEqual(result["followup"]["command"], "/delegate")
+        self.assertEqual(len(actions), 1)
+        action = actions[0]
+        payload = action["payload"]
+        self.assertEqual(action["type"], "followup_proposal")
+        self.assertEqual(action["status"], "pending")
+        self.assertEqual(action["risk"], "R1")
+        self.assertEqual(payload["recommended_command"], "/delegate")
+        self.assertEqual(payload["recommended_route"]["operators"], ["grok", "claude-flow", "codex-worker", "host"])
+        self.assertIn(ai_council.CLAUDE_DELEGATE_HANDOFF_VERSION, payload["recommended_prompt"])
+        self.assertIn(str(root / "artifacts" / task_id / "report.md"), payload["recommended_prompt"])
+        self.assertIn("Follow-up ready: /approve", artifact["summary"])
+
+    def test_at_claude_flow_after_poke_handoff_creates_delegate_followup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-atflow"
+            prompt = f"{ai_council.POKE_RESEARCH_HANDOFF_VERSION} Claude Flow handoff po Grok Poke research"
+            route = {"command": "@claude-flow", "operators": ["claude-flow"], "prompt": prompt}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Claude Flow]\nPlan: implementuj minimalny krok"):
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertEqual(result["followup"]["command"], "/delegate")
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["payload"]["recommended_command"], "/delegate")
+        self.assertIn("Follow-up ready: /approve", artifact["summary"])
+
+    def test_approved_claude_delegate_handoff_creates_delegate_pack(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-delegok"
+            prompt = f"{ai_council.POKE_RESEARCH_HANDOFF_VERSION} Claude Flow handoff po Grok Poke research"
+            route = {"command": "/flow", "operators": ["claude-flow"], "prompt": prompt}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "raw_operator_response", return_value="[Claude Flow]\nPlan: implementuj minimalny krok"
+            ), patch.object(ai_council, "codex_worker_delegate_response", return_value="[Council] Codex Worker Delegation ready") as delegate:
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                response = ai_council.approve_response(artifact["followup_action_id"])
+
+        self.assertIn("follow-up executed", response)
+        delegate.assert_called_once()
+        self.assertIn(ai_council.CLAUDE_DELEGATE_HANDOFF_VERSION, delegate.call_args.args[0])
+
+    def test_plain_claude_flow_does_not_create_delegate_followup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-plain"
+            route = {"command": "/flow", "operators": ["claude-flow"], "prompt": "zrób plan"}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Claude Flow]\nPlan"):
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertNotIn("followup", result)
+        self.assertEqual(actions, [])
+
+    def test_failed_claude_flow_after_poke_handoff_does_not_create_delegate_followup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-flowbad"
+            prompt = f"{ai_council.POKE_RESEARCH_HANDOFF_VERSION} Claude Flow handoff po Grok Poke research"
+            route = {"command": "/flow", "operators": ["claude-flow"], "prompt": prompt}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Claude Flow] timeout after 120s"):
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("followup", result)
+        self.assertEqual(actions, [])
+
     def test_failed_poke_research_does_not_create_claude_handoff(self):
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -306,6 +411,21 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("details:task-20260608-120000-fedcba", callback_data)
         self.assertIn("facts:task-20260608-120000-fedcba", callback_data)
         self.assertIn("next:task-20260608-120000-fedcba", callback_data)
+
+    def test_background_delivery_markup_for_claude_flow_followup_has_approve_button(self):
+        markup = ai_council.background_delivery_reply_markup(
+            "Plan workflow gotowy.\nFollow-up ready: /approve act-20260608-120000-flowup albo /deny act-20260608-120000-flowup",
+            "task-20260608-120000-planok",
+        )
+        callback_data = [
+            button["callback_data"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+
+        self.assertIn("approve:act-20260608-120000-flowup", callback_data)
+        self.assertIn("deny:act-20260608-120000-flowup", callback_data)
+        self.assertIn("details:task-20260608-120000-planok", callback_data)
 
     def test_task_delivery_reply_markup_has_artifact_buttons_without_cancel(self):
         markup = ai_council.task_delivery_reply_markup("task-20260606-120000-abcdef")

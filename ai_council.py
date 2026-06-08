@@ -242,6 +242,7 @@ POKE_GAP_VERSION = "L4.48"
 POKE_NEXT_FRONT_VERSION = "L4.59"
 POKE_RESEARCH_PREPASS_VERSION = "L4.60"
 POKE_RESEARCH_HANDOFF_VERSION = "L4.61"
+CLAUDE_DELEGATE_HANDOFF_VERSION = "L4.62"
 AUTONOMOUS_LOOP_VERSION = "L4.55"
 SHORTCUTS_VERSION = "L4.48"
 AGENT_INBOX_VERSION = "L4.46"
@@ -368,6 +369,7 @@ FOLLOWUP_EXECUTABLE_COMMANDS = {
     "/xresearch",
     "/poke-research",
     "/recipe",
+    "/delegate",
     "/connector",
     "/source",
     "/chat",
@@ -4177,6 +4179,30 @@ def poke_research_handoff_followup(task_id: str, prompt: str) -> dict:
     }
 
 
+def claude_delegate_handoff_followup(task_id: str, prompt: str) -> dict:
+    artifact_dir = task_artifact_dir(task_id)
+    raw_ref = artifact_prompt_path(artifact_dir / "raw.md")
+    report_ref = artifact_prompt_path(artifact_dir / "report.md")
+    clean_prompt = compact_line(prompt.strip() or "Claude plan", 420)
+    delegate_prompt = (
+        f"{CLAUDE_DELEGATE_HANDOFF_VERSION} Codex worker handoff po Claude Flow plan.\n\n"
+        f"source_task_id: {task_id}\n"
+        f"claude_plan_artifact: {report_ref}\n"
+        f"raw_operator_artifact: {raw_ref}\n"
+        f"cel: {clean_prompt}\n\n"
+        "Przygotuj delegation pack dla najmniejszego wdrażalnego kroku z planu Claude. "
+        "Zakres: Bartek Agent OS, Poke parity, Telegram/iPhone UX, OpenClaw/Hermes local execution. "
+        "Wynik ma pozostać packiem dla host audit; nie uruchamiaj workera automatycznie."
+    )
+    return {
+        "command": "/delegate",
+        "prompt": delegate_prompt,
+        "intent": f"Codex worker handoff after Claude Flow {task_id}",
+        "risk": "R1",
+        "reason": f"{CLAUDE_DELEGATE_HANDOFF_VERSION}: local delegation pack only; worker remains gated",
+    }
+
+
 def followup_action_for_task(task_id: str) -> dict | None:
     latest = latest_by_id(ACTIONS_FILE, "action_id", limit=80)
     for action in latest:
@@ -4289,7 +4315,7 @@ def maybe_create_followup_action(task_id: str, route: dict, normalized: dict, re
     if not bool_cfg("AI_COUNCIL_FOLLOWUP_RUNNER", True):
         return None
     explicit = result.get("followup") if isinstance(result.get("followup"), dict) else {}
-    if route.get("command") != "/recipe" and not (route.get("command") == "/poke-research" and explicit):
+    if route.get("command") != "/recipe" and not (route.get("command") in {"/poke-research", "/flow", "@claude-flow"} and explicit):
         return None
     if str(result.get("status") or "") in {"blocked", "failed"}:
         return None
@@ -4362,7 +4388,7 @@ def save_task_artifacts(task_id: str, route: dict, result: dict) -> dict:
             normalized["next_actions"] = [followup_line, *normalized["next_actions"]][:8]
         normalized["followup_action_id"] = followup_action["action_id"]
     summary = str(result.get("summary") or format_telegram_summary(normalized, task_id))
-    if followup_action and command == "/poke-research" and followup_line not in summary:
+    if followup_action and command in {"/poke-research", "/flow", "@claude-flow"} and followup_line not in summary:
         summary = f"{summary.rstrip()}\n{followup_line}"
     paths = {
         "raw_path": artifact_dir / "raw.md",
@@ -7248,7 +7274,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: poke_handoff={POKE_RESEARCH_HANDOFF_VERSION} poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: claude_delegate={CLAUDE_DELEGATE_HANDOFF_VERSION} poke_handoff={POKE_RESEARCH_HANDOFF_VERSION} poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -8022,6 +8048,9 @@ def operators_for_command(command: str) -> list[str]:
         return ["grok"]
     if command in {"/flow", "@claude-flow"}:
         return ["claude-flow"]
+    if command == "/delegate":
+        # Metadata for the council lineage; build_response("/delegate") only builds the Codex worker pack.
+        return ["grok", "claude-flow", "codex-worker", "host"]
     if command == "/council":
         return ["codex", "claude", "grok"]
     return ["host"]
@@ -11663,6 +11692,10 @@ def execute_route_for_background(route: dict, chat_id: str, task_id: str) -> dic
         if command == "/poke-research" and not operator_failed(raw):
             result["followup"] = poke_research_handoff_followup(task_id, str(route.get("prompt", "")))
             result["ask_user"] = "Zatwierdź follow-up, jeśli Claude ma zamienić research w plan implementacji."
+        # The L4.61 marker identifies Grok-created Poke research handoffs; plain Flow plans do not auto-chain.
+        if command in {"/flow", "@claude-flow"} and not operator_failed(raw) and POKE_RESEARCH_HANDOFF_VERSION in str(route.get("prompt", "")):
+            result["followup"] = claude_delegate_handoff_followup(task_id, str(route.get("prompt", "")))
+            result["ask_user"] = "Zatwierdź delegate handoff, jeśli mam przygotować Codex worker pack."
         return result
     response = build_response(worker_route, chat_id=chat_id)
     facts = extract_fact_lines(response, limit=3)
@@ -12382,7 +12415,7 @@ def response_reply_markup(response: str) -> dict | None:
 
 def background_delivery_reply_markup(response: str, task_id: str) -> dict:
     followup_match = re.search(r"Follow-up ready:\s*/approve\s+(act-[A-Za-z0-9_.-]+)", response or "")
-    if followup_match and "Research gotowy" in (response or ""):
+    if followup_match and ("Research gotowy" in (response or "") or "Plan workflow gotowy" in (response or "")):
         return followup_task_delivery_reply_markup(followup_match.group(1), task_id)
     if f"Recipe Test Follow-up {RECIPE_TEST_FOLLOWUP_VERSION}" not in (response or ""):
         return task_delivery_reply_markup(task_id)
