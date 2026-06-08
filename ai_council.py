@@ -10195,7 +10195,13 @@ def build_morning_brief() -> str:
         facts = []
     if facts:
         head += "\nPamiętam: " + "; ".join(compact_line(str(f.get("value", "")), 45) for f in facts)
-    return head + "\n" + "\n".join("• " + s for s in sections) + "\nNEXT: /agent — pełny inbox."
+    cost_line = ""
+    try:  # L4.68: cost transparency — Poke's #1 complaint is opaque cost; we show it.
+        g = operator_limit_status("grok")
+        cost_line = f"\n💰 Grok dziś: {g.get('calls', 0)} calli, ~${float(g.get('estimated_usd', 0.0)):.3f}"
+    except Exception:
+        cost_line = ""
+    return head + "\n" + "\n".join("• " + s for s in sections) + cost_line + "\nNEXT: /agent — pełny inbox."
 
 
 def morning_brief_due(now=None) -> bool:
