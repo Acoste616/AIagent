@@ -187,6 +187,7 @@ READONLY_RECIPE_COMMANDS = {
     "/brief",
     "/remind",
     "/reminders",
+    "/gh",
     "/project-memory",
     "/chat",
     "@research",
@@ -8407,6 +8408,90 @@ def fs_undo(rel: str) -> str:
     return f"[Council] Cofnięto ✅ {result}."
 
 
+# --- L4.75 GitHub actions v2 (deeper integration via the working token) -------
+
+def gh_repo() -> str:
+    return cfg("GITHUB_REPO") or cfg("AI_COUNCIL_GITHUB_REPO") or "Acoste616/AIagent"
+
+
+def gh_write_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_PROVIDER_WRITE_ENABLED", False) and github_issue_write_enabled() and bool(github_token())
+
+
+def gh_api(path: str, method: str = "GET", body=None) -> dict:
+    tok = github_token()
+    if not tok:
+        return {"ok": False, "error": "no_github_token"}
+    return request_json(
+        f"https://api.github.com/repos/{gh_repo()}{path}",
+        method=method,
+        headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json", "User-Agent": "ai-council"},
+        payload=body,
+        timeout=int_cfg("AI_COUNCIL_GH_TIMEOUT", 20),
+    )
+
+
+def gh_list_issues(query: str = "", limit: int = 10) -> str:
+    if not github_token():
+        return "[Council] Brak GITHUB_TOKEN."
+    data = gh_api(f"/issues?state=open&per_page={max(1, min(limit, 30))}")
+    if isinstance(data, dict) and data.get("ok") is False:
+        return f"[Council] GitHub błąd: {compact_line(str(data.get('error') or data.get('body_preview')), 120)}"
+    items = data if isinstance(data, list) else (data.get("items") or [] if isinstance(data, dict) else [])
+    q = normalize_intent_text(query)
+    rows = []
+    for it in items:
+        if not isinstance(it, dict) or "pull_request" in it:
+            continue
+        title = str(it.get("title") or "")
+        if q and q not in normalize_intent_text(title):
+            continue
+        rows.append(f"#{it.get('number')} {compact_line(title, 70)}")
+        if len(rows) >= limit:
+            break
+    if not rows:
+        return f"[Council] Brak otwartych issues{(' dla `' + query + '`') if query else ''} w {gh_repo()}."
+    return f"[Council] Otwarte issues ({gh_repo()}):\n" + "\n".join("• " + r for r in rows)
+
+
+def gh_create_issue(title: str, body: str = "") -> str:
+    if not gh_write_enabled():
+        return "[Council] GitHub write wyłączony (AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED + PROVIDER_WRITE_ENABLED)."
+    if not title.strip():
+        return "[Council] Podaj tytuł: /gh issue <tytuł> | <opis>"
+    data = gh_api("/issues", "POST", {"title": title.strip()[:240], "body": (body or "").strip()[:8000]})
+    if data.get("ok") is False:
+        return f"[Council] GitHub błąd: {compact_line(str(data.get('error') or data.get('body_preview')), 120)}"
+    _audit_hands("gh_issue", title, decision="created", url=str(data.get("html_url") or ""))
+    return f"[Council] Issue utworzone ✅ #{data.get('number')}: {data.get('html_url')}"
+
+
+def gh_comment_issue(number: str, text: str) -> str:
+    if not gh_write_enabled():
+        return "[Council] GitHub write wyłączony."
+    if not str(number).strip().isdigit() or not text.strip():
+        return "[Council] Użyj: /gh comment <numer> <treść>"
+    data = gh_api(f"/issues/{int(number)}/comments", "POST", {"body": text.strip()[:8000]})
+    if data.get("ok") is False:
+        return f"[Council] GitHub błąd: {compact_line(str(data.get('error') or data.get('body_preview')), 120)}"
+    return f"[Council] Komentarz dodany ✅ do #{number}: {data.get('html_url')}"
+
+
+def gh_response(prompt: str) -> str:
+    parts = (prompt or "").strip().split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if sub in ("issues", "list", ""):
+        return gh_list_issues(rest)
+    if sub in ("issue", "create"):
+        title, _, body = rest.partition("|")
+        return gh_create_issue(title.strip(), body.strip())
+    if sub == "comment":
+        num, _, text = rest.partition(" ")
+        return gh_comment_issue(num.strip(), text.strip())
+    return "[Council] GitHub: /gh issues [filtr] | /gh issue <tytuł> | <opis> | /gh comment <numer> <treść>. Repo: " + gh_repo()
+
+
 def fs_response(prompt: str) -> str:
     parts = (prompt or "").strip().split(None, 1)
     sub = parts[0].lower() if parts else ""
@@ -14449,6 +14534,15 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "prompt": "read " + strip_intent_prefix(stripped, fs_read_prefixes),
             "mode": "fs", "intent": "natural",
         }
+    if lower in {"issues", "pokaż issues", "pokaz issues", "lista issues", "moje issues", "github issues"}:
+        return {"command": "/gh", "operators": ["host"], "prompt": "issues", "mode": "gh", "intent": "natural"}
+    gh_issue_prefixes = ["stwórz issue", "stworz issue", "utwórz issue", "utworz issue", "nowe issue", "zgłoś issue", "zglos issue"]
+    if any(lower.startswith(p) for p in gh_issue_prefixes):
+        return {
+            "command": "/gh", "operators": ["host"],
+            "prompt": "issue " + strip_intent_prefix(stripped, gh_issue_prefixes).lstrip(": "),
+            "mode": "gh", "intent": "natural",
+        }
 
     write_prefixes = ["zapisz plik", "utwórz plik", "utworz plik", "stwórz plik", "stworz plik", "write file", "zapisz workspace"]
     if any(lower.startswith(prefix) for prefix in write_prefixes):
@@ -14814,6 +14908,8 @@ def route_text(text: str) -> dict:
         return {"command": "/reminders", "operators": ["host"], "prompt": stripped[10:].strip() or "list", "mode": "remind"}
     if lower == "/remind" or lower.startswith("/remind "):
         return {"command": "/remind", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "remind"}
+    if lower == "/gh" or lower.startswith("/gh "):
+        return {"command": "/gh", "operators": ["host"], "prompt": stripped[3:].strip(), "mode": "gh"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
     if lower.startswith("/project-memory"):
@@ -15682,6 +15778,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         if not p or p.lower().startswith(("list", "cancel")):
             return reminders_response(p)
         return add_reminder(p)
+    if command == "/gh":
+        return gh_response(prompt)
     if command == "/reminders":
         return reminders_response(prompt)
     if command == "/project-memory":

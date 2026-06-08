@@ -2350,6 +2350,39 @@ class MorningBriefTests(unittest.TestCase):
         self.assertEqual(ai_council.route_text("/brief")["command"], "/brief")
 
 
+class GitHubActionsTests(unittest.TestCase):
+    def test_list_issues_filters_prs(self):
+        data = [{"number": 5, "title": "Bug w routerze"}, {"number": 6, "title": "PR jakiś", "pull_request": {}}]
+        with patch.object(ai_council, "github_token", return_value="ghp_x"), \
+             patch.object(ai_council, "request_json", return_value=data):
+            out = ai_council.gh_list_issues()
+            self.assertIn("#5 Bug w routerze", out)
+            self.assertNotIn("#6", out)
+
+    def test_list_issues_empty(self):
+        with patch.object(ai_council, "github_token", return_value="ghp_x"), \
+             patch.object(ai_council, "request_json", return_value=[]):
+            self.assertIn("Brak otwartych issues", ai_council.gh_list_issues())
+
+    def test_create_issue_gated_off(self):
+        with patch.object(ai_council, "gh_write_enabled", return_value=False):
+            self.assertIn("wyłączony", ai_council.gh_create_issue("test", "body"))
+
+    def test_create_issue_when_enabled(self):
+        with patch.object(ai_council, "gh_write_enabled", return_value=True), \
+             patch.object(ai_council, "github_token", return_value="ghp_x"), \
+             patch.object(ai_council, "request_json", return_value={"number": 9, "html_url": "https://github.com/x/y/issues/9"}):
+            out = ai_council.gh_create_issue("Nowy task", "opis")
+            self.assertIn("Issue utworzone", out)
+            self.assertIn("#9", out)
+
+    def test_gh_routing(self):
+        self.assertEqual(ai_council.route_text("/gh issues")["command"], "/gh")
+        self.assertEqual(ai_council.natural_intent_route("pokaż issues", "pokaż issues")["command"], "/gh")
+        r = ai_council.natural_intent_route("stwórz issue: napraw bug", "stwórz issue: napraw bug")
+        self.assertEqual((r["command"], r["prompt"]), ("/gh", "issue napraw bug"))
+
+
 class ReminderTests(unittest.TestCase):
     def setUp(self):
         self._tmp = temp_dir()
