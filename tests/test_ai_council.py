@@ -131,6 +131,79 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertTrue(ai_council.route_needs_task(route))
         self.assertTrue(ai_council.route_should_background(route))
 
+    def test_poke_research_background_creates_claude_handoff_followup(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-abcdef"
+            route = {"command": "/poke-research", "operators": ["grok"], "prompt": "sklonuj Poke"}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Grok X Research]\nPoke fact 1\nPoke fact 2"):
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertEqual(result["followup"]["command"], "/flow")
+        self.assertEqual(len(actions), 1)
+        action = actions[0]
+        payload = action["payload"]
+        self.assertEqual(action["type"], "followup_proposal")
+        self.assertEqual(action["status"], "pending")
+        self.assertEqual(payload["source_task_id"], task_id)
+        self.assertEqual(payload["source_command"], "/poke-research")
+        self.assertEqual(payload["recommended_command"], "/flow")
+        self.assertEqual(action["risk"], "R0")
+        self.assertEqual(payload["risk"], "R0")
+        self.assertIn(ai_council.POKE_RESEARCH_HANDOFF_VERSION, payload["recommended_prompt"])
+        self.assertIn(str(root / "artifacts" / task_id / "raw.md"), payload["recommended_prompt"])
+        self.assertIn(str(root / "artifacts" / task_id / "report.md"), payload["recommended_prompt"])
+        self.assertIn("Follow-up ready: /approve", artifact["summary"])
+        self.assertEqual(artifact["followup_action_id"], action["action_id"])
+
+    def test_approved_poke_research_handoff_starts_claude_flow(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-flowok"
+            route = {"command": "/poke-research", "operators": ["grok"], "prompt": "sklonuj Poke"}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
+            ), patch.object(ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"), patch.object(
+                ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Grok X Research]\nPoke fact"), patch.object(
+                ai_council, "start_background_job", return_value="[AI Council] Claude Flow started"
+            ) as start:
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                artifact = ai_council.save_task_artifacts(task_id, route, result)
+                response = ai_council.approve_response(artifact["followup_action_id"])
+
+        self.assertIn("follow-up started", response)
+        start.assert_called_once()
+        started_route = start.call_args.args[0]
+        self.assertEqual(started_route["command"], "/flow")
+        self.assertIn(ai_council.POKE_RESEARCH_HANDOFF_VERSION, started_route["prompt"])
+
+    def test_failed_poke_research_does_not_create_claude_handoff(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            task_id = "task-20260608-120000-badbad"
+            route = {"command": "/poke-research", "operators": ["grok"], "prompt": "sklonuj Poke"}
+            with patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
+                ai_council, "ARTIFACT_INDEX_FILE", root / "state" / "artifact_index.jsonl"
+            ), patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "MEMORY_DB", root / "state" / "memory.sqlite"
+            ), patch.object(ai_council, "raw_operator_response", return_value="[Grok X Research] error: unavailable"):
+                result = ai_council.execute_route_for_background(route, chat_id="553", task_id=task_id)
+                ai_council.save_task_artifacts(task_id, route, result)
+                actions = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("followup", result)
+        self.assertEqual(actions, [])
+
     def test_xresearch_natural_intent_routes_to_grok(self):
         route = ai_council.route_text("deep research x Poke Apple Messages")
 
@@ -216,6 +289,23 @@ class OperatorOutputTests(unittest.TestCase):
         self.assertIn("facts:task-20260606-120000-abcdef", callback_data)
         self.assertIn("next:task-20260606-120000-abcdef", callback_data)
         self.assertNotIn("cancel:task-20260606-120000-abcdef", callback_data)
+
+    def test_background_delivery_markup_for_followup_has_approve_and_task_buttons(self):
+        markup = ai_council.background_delivery_reply_markup(
+            "Research gotowy.\nFollow-up ready: /approve act-20260608-120000-abcdef albo /deny act-20260608-120000-abcdef",
+            "task-20260608-120000-fedcba",
+        )
+        callback_data = [
+            button["callback_data"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+
+        self.assertIn("approve:act-20260608-120000-abcdef", callback_data)
+        self.assertIn("deny:act-20260608-120000-abcdef", callback_data)
+        self.assertIn("details:task-20260608-120000-fedcba", callback_data)
+        self.assertIn("facts:task-20260608-120000-fedcba", callback_data)
+        self.assertIn("next:task-20260608-120000-fedcba", callback_data)
 
     def test_task_delivery_reply_markup_has_artifact_buttons_without_cancel(self):
         markup = ai_council.task_delivery_reply_markup("task-20260606-120000-abcdef")

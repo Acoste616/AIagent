@@ -241,6 +241,7 @@ POKE_FRONT_VERSION = "L4.44"
 POKE_GAP_VERSION = "L4.48"
 POKE_NEXT_FRONT_VERSION = "L4.59"
 POKE_RESEARCH_PREPASS_VERSION = "L4.60"
+POKE_RESEARCH_HANDOFF_VERSION = "L4.61"
 AUTONOMOUS_LOOP_VERSION = "L4.55"
 SHORTCUTS_VERSION = "L4.48"
 AGENT_INBOX_VERSION = "L4.46"
@@ -4136,9 +4137,44 @@ def default_next_actions(task_id: str, command: str = "") -> list[str]:
     actions = [f"Przejrzyj pełny wynik: /details {task_id}"]
     if command in {"/flow", "@claude-flow", "/council"}:
         actions.append("Wybierz jeden następny krok i poproś AI Council o wdrożenie albo plan akcji.")
+    elif command == "/poke-research":
+        actions.append("Zatwierdź follow-up Claude Flow, żeby zamienić research w plan wdrożenia.")
     else:
         actions.append("Daj krótką decyzję: kontynuować, zmienić kierunek, czy zatrzymać.")
     return actions
+
+
+def artifact_prompt_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(PROJECT_DIR))
+    except ValueError:
+        return str(path)
+
+
+def poke_research_handoff_followup(task_id: str, prompt: str) -> dict:
+    artifact_dir = task_artifact_dir(task_id)
+    raw_ref = artifact_prompt_path(artifact_dir / "raw.md")
+    report_ref = artifact_prompt_path(artifact_dir / "report.md")
+    clean_prompt = prompt.strip() or "Poke research"
+    followup_prompt = (
+        f"{POKE_RESEARCH_HANDOFF_VERSION} Claude Flow handoff po Grok Poke research.\n\n"
+        f"task_id: {task_id}\n"
+        f"oryginalny cel Bartka: {clean_prompt}\n"
+        f"raw research artifact: {raw_ref}\n"
+        f"report artifact: {report_ref}\n\n"
+        "Przeczytaj artefakty Groka, potem przygotuj operacyjny plan jednej najbliższej implementacji "
+        "dla Bartek Agent OS. Uwzględnij Poke parity, Telegram/iPhone UX, OpenClaw/Hermes local execution, "
+        "istniejący kod repo, testy, ryzyka, acceptance criteria i rollback. "
+        "Tylko plan tekstowy i analiza repo; zero side effects poza odpowiedzią planistyczną. "
+        "Zwróć: decyzja, scope, moduły/funkcje, testy, ryzyka, następny krok implementacji."
+    )
+    return {
+        "command": "/flow",
+        "prompt": followup_prompt,
+        "intent": f"Claude plan after Poke research {task_id}: {compact_line(clean_prompt, 220)}",
+        "risk": "R0",
+        "reason": f"{POKE_RESEARCH_HANDOFF_VERSION}: research-to-Claude planning handoff; no external write",
+    }
 
 
 def followup_action_for_task(task_id: str) -> dict | None:
@@ -4252,7 +4288,8 @@ def build_followup_payload(task_id: str, route: dict, normalized: dict, result: 
 def maybe_create_followup_action(task_id: str, route: dict, normalized: dict, result: dict) -> dict | None:
     if not bool_cfg("AI_COUNCIL_FOLLOWUP_RUNNER", True):
         return None
-    if route.get("command") != "/recipe":
+    explicit = result.get("followup") if isinstance(result.get("followup"), dict) else {}
+    if route.get("command") != "/recipe" and not (route.get("command") == "/poke-research" and explicit):
         return None
     if str(result.get("status") or "") in {"blocked", "failed"}:
         return None
@@ -4325,6 +4362,8 @@ def save_task_artifacts(task_id: str, route: dict, result: dict) -> dict:
             normalized["next_actions"] = [followup_line, *normalized["next_actions"]][:8]
         normalized["followup_action_id"] = followup_action["action_id"]
     summary = str(result.get("summary") or format_telegram_summary(normalized, task_id))
+    if followup_action and command == "/poke-research" and followup_line not in summary:
+        summary = f"{summary.rstrip()}\n{followup_line}"
     paths = {
         "raw_path": artifact_dir / "raw.md",
         "report_path": artifact_dir / "report.md",
@@ -7209,7 +7248,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: poke_handoff={POKE_RESEARCH_HANDOFF_VERSION} poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -11610,7 +11649,7 @@ def execute_route_for_background(route: dict, chat_id: str, task_id: str) -> dic
         raw = raw_operator_response(command, str(route.get("prompt", "")), task_id=task_id)
         summary = front_operator_response(command, raw, task_id=task_id)
         facts = extract_fact_lines(strip_operator_label(raw), limit=3)
-        return {
+        result = {
             "decision": front_operator_title(command, raw) + ".",
             "status": "failed" if operator_failed(raw) else "completed",
             "facts": facts or ["Operator zwrócił wynik zapisany w szczegółach."],
@@ -11621,6 +11660,10 @@ def execute_route_for_background(route: dict, chat_id: str, task_id: str) -> dic
             "report": raw,
             "summary": summary,
         }
+        if command == "/poke-research" and not operator_failed(raw):
+            result["followup"] = poke_research_handoff_followup(task_id, str(route.get("prompt", "")))
+            result["ask_user"] = "Zatwierdź follow-up, jeśli Claude ma zamienić research w plan implementacji."
+        return result
     response = build_response(worker_route, chat_id=chat_id)
     facts = extract_fact_lines(response, limit=3)
     direct_summary = f"{response}\n\n[AI Council]\ntask: {task_id}\nDetails: /details {task_id}"
@@ -12310,6 +12353,15 @@ def poke_action_reply_markup() -> dict:
     )
 
 
+def followup_task_delivery_reply_markup(action_id: str, task_id: str) -> dict:
+    return inline_keyboard(
+        [
+            [("Approve follow-up", f"approve:{action_id}"), ("Deny", f"deny:{action_id}")],
+            [("Details", f"details:{task_id}"), ("Facts", f"facts:{task_id}"), ("Next", f"next:{task_id}")],
+        ]
+    )
+
+
 def response_reply_markup(response: str) -> dict | None:
     action_match = re.search(r"\bid:\s*(act-[A-Za-z0-9_.-]+)", response or "")
     if action_match and "Pending" in response:
@@ -12329,6 +12381,9 @@ def response_reply_markup(response: str) -> dict | None:
 
 
 def background_delivery_reply_markup(response: str, task_id: str) -> dict:
+    followup_match = re.search(r"Follow-up ready:\s*/approve\s+(act-[A-Za-z0-9_.-]+)", response or "")
+    if followup_match and "Research gotowy" in (response or ""):
+        return followup_task_delivery_reply_markup(followup_match.group(1), task_id)
     if f"Recipe Test Follow-up {RECIPE_TEST_FOLLOWUP_VERSION}" not in (response or ""):
         return task_delivery_reply_markup(task_id)
     recipe_match = re.search(r"\bactivation:\s*recipe\s+([A-Za-z0-9_.-]+)", response or "")
