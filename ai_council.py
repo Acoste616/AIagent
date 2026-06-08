@@ -182,6 +182,7 @@ READONLY_RECIPE_COMMANDS = {
     "/connector",
     "/provider",
     "/memory",
+    "/fs",
     "/project-memory",
     "/chat",
     "@research",
@@ -7855,6 +7856,217 @@ def user_fact_reject(entry_id: str) -> bool:
         return False
 
 
+# --- L4.69 OpenClaw Hands v1: safe READ-ONLY local filesystem ---------------
+# Off by default (AI_COUNCIL_LOCAL_HANDS). Bounded to ONE sandbox root. No writes,
+# no exec, no network. Path containment + symlink defense + size/binary/injection
+# guards from the L4.69 safety model. Every op is audited.
+
+
+class HandsError(Exception):
+    pass
+
+
+def local_hands_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_LOCAL_HANDS", False)
+
+
+def hands_root() -> Path:
+    root = Path(os.environ.get("AI_COUNCIL_HANDS_ROOT", str(WORKSPACES_DIR / "hands"))).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve(strict=True)
+
+
+def _audit_hands(op: str, requested, resolved="", decision: str = "ok", **extra) -> None:
+    event = {
+        "command": "/fs",
+        "operators": ["host"],
+        "op": op,
+        "requested_path": compact_line(str(requested), 200),
+        "resolved_path": str(resolved),
+        "decision": decision,
+        "status": "hands_" + decision,
+        "risk_tier": "R0",
+    }
+    event.update(extra)
+    try:
+        audit(event)
+    except Exception:
+        pass
+
+
+WINDOWS_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul", "conin$", "conout$", "clock$",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+
+def _hands_is_reparse(path: Path) -> bool:
+    """True for symlinks AND Windows junctions/mountpoints (which is_symlink misses)."""
+    try:
+        if path.is_symlink():
+            return True
+        return bool(getattr(os.lstat(path), "st_reparse_tag", 0))
+    except OSError:
+        return False
+
+
+def _hands_canonical_contained(candidate: Path, root: Path) -> bool:
+    try:
+        real_root = Path(os.path.realpath(str(root)))
+        real_cand = Path(os.path.realpath(str(candidate)))
+    except OSError:
+        return False
+    return real_cand == real_root or real_cand.is_relative_to(real_root)
+
+
+def safe_resolve(rel: str) -> Path:
+    """Resolve `rel` strictly inside the hands sandbox root or raise HandsError.
+    Hardened (L4.69 red-team): NFKC-normalize first (folds homoglyph slashes/dots),
+    reject backslash/colon/control/reserved-device-names/trailing-dot-space/traversal,
+    then verify containment lexically, via reparse-point walk, AND via realpath."""
+    import unicodedata
+
+    root = hands_root()
+    raw = unicodedata.normalize("NFKC", str(rel or "").strip())
+    if not raw:
+        _audit_hands("resolve", rel, decision="rejected_empty")
+        raise HandsError("empty path")
+    if len(raw) > int_cfg("AI_COUNCIL_HANDS_MAX_PATH", 1024):
+        _audit_hands("resolve", rel, decision="rejected_length")
+        raise HandsError("path too long")
+    if "\\" in raw or ":" in raw or raw.startswith(("/", "~")):
+        _audit_hands("resolve", rel, decision="rejected_escape")
+        raise HandsError("path escapes sandbox")
+    for ch in raw:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F or unicodedata.category(ch) in {"Cc", "Cf", "Cs"}:
+            _audit_hands("resolve", rel, decision="rejected_ctrlchar")
+            raise HandsError("control char in path")
+    parts = [c for c in raw.split("/") if c not in ("", ".")]
+    if len(parts) > int_cfg("AI_COUNCIL_HANDS_MAX_DEPTH", 40):
+        _audit_hands("resolve", rel, decision="rejected_depth")
+        raise HandsError("path too deep")
+    for comp in parts:
+        if comp == ".." or comp != comp.rstrip(" ."):
+            _audit_hands("resolve", rel, decision="rejected_traversal")
+            raise HandsError("path traversal")
+        if comp.split(".")[0].strip().lower() in WINDOWS_RESERVED_NAMES:
+            _audit_hands("resolve", rel, decision="rejected_reserved")
+            raise HandsError("reserved device name")
+    try:
+        candidate = (root / raw).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        _audit_hands("resolve", rel, decision="rejected_resolve_error")
+        raise HandsError(f"resolve error: {exc}")
+    if candidate != root and not candidate.is_relative_to(root):
+        _audit_hands("resolve", rel, resolved=candidate, decision="rejected_outside")
+        raise HandsError("path outside sandbox")
+    cursor = root
+    for comp in candidate.relative_to(root).parts:
+        cursor = cursor / comp
+        if _hands_is_reparse(cursor):
+            _audit_hands("resolve", rel, resolved=cursor, decision="rejected_reparse")
+            raise HandsError("symlink/junction in path")
+    if not _hands_canonical_contained(candidate, root):
+        _audit_hands("resolve", rel, resolved=candidate, decision="rejected_realpath_outside")
+        raise HandsError("path outside sandbox (canonical)")
+    return candidate
+
+
+def fs_list(rel: str = "") -> str:
+    if not local_hands_enabled():
+        return "[Council] Local hands wyłączone (ustaw AI_COUNCIL_LOCAL_HANDS=true)."
+    try:
+        target = safe_resolve(rel) if rel and rel != "." else hands_root()
+    except HandsError as exc:
+        return f"[Council] Odrzucono: {exc}"
+    if not target.is_dir():
+        return f"[Council] To nie katalog: {rel}"
+    max_entries = int_cfg("AI_COUNCIL_HANDS_MAX_ENTRIES", 1024)
+    lines = []
+    for i, child in enumerate(sorted(target.iterdir(), key=lambda x: x.name.lower())):
+        if i >= max_entries:
+            lines.append(f"... (przerwano na {max_entries} wpisach)")
+            break
+        if child.is_dir():
+            lines.append(f"d {child.name}/")
+        else:
+            try:
+                size = child.stat().st_size
+            except OSError:
+                size = 0
+            lines.append(f"f {child.name} ({size}B)")
+    _audit_hands("list", rel, resolved=target, entry_count=len(lines))
+    return f"[Council] {target}:\n" + ("\n".join(lines) if lines else "(pusto)")
+
+
+def fs_read(rel: str) -> str:
+    if not local_hands_enabled():
+        return "[Council] Local hands wyłączone (ustaw AI_COUNCIL_LOCAL_HANDS=true)."
+    try:
+        target = safe_resolve(rel)
+    except HandsError as exc:
+        return f"[Council] Odrzucono: {exc}"
+    # TOCTOU re-check: confirm the resolved target is still a contained, non-reparse
+    # path right before reading (defends the window between resolve and open).
+    if _hands_is_reparse(target) or not _hands_canonical_contained(target, hands_root()):
+        _audit_hands("read", rel, resolved=target, decision="rejected_toctou")
+        return "[Council] Odrzucono: ścieżka zmieniła się przed odczytem."
+    if not target.is_file():
+        return f"[Council] To nie plik: {rel}"
+    max_bytes = int_cfg("AI_COUNCIL_HANDS_MAX_BYTES", 1048576)
+    try:
+        size = target.stat().st_size
+    except OSError:
+        size = 0
+    if size > max_bytes:
+        _audit_hands("read", rel, resolved=target, decision="rejected_size", size_bytes=size)
+        return f"[Council] Plik za duży ({size}B > {max_bytes}B limit)."
+    try:
+        raw = target.read_bytes()[: max_bytes]
+    except OSError as exc:
+        return f"[Council] Błąd odczytu: {exc}"
+    if b"\x00" in raw[:4096]:
+        _audit_hands("read", rel, resolved=target, decision="binary", size_bytes=size)
+        return f"[Council] [binary omitted] {target.name} ({size}B)"
+    text = raw.decode("utf-8", errors="replace")
+    # Prompt-injection fence: file content can never break out of the data block.
+    text = text.replace("</file>", "<\\/file>").replace("```", "`\\`\\`").replace("<|", "<\\|")
+    _audit_hands("read", rel, resolved=target, size_bytes=size)
+    return f'[Council] <file name="{target.name}" size="{size}">\n{text}\n</file>'
+
+
+def fs_stat(rel: str) -> str:
+    if not local_hands_enabled():
+        return "[Council] Local hands wyłączone (ustaw AI_COUNCIL_LOCAL_HANDS=true)."
+    try:
+        target = safe_resolve(rel)
+    except HandsError as exc:
+        return f"[Council] Odrzucono: {exc}"
+    if not target.exists():
+        return f"[Council] Nie istnieje: {rel}"
+    try:
+        st = target.stat()
+    except OSError as exc:
+        return f"[Council] Błąd: {exc}"
+    _audit_hands("stat", rel, resolved=target, size_bytes=st.st_size)
+    kind = "dir" if target.is_dir() else "file"
+    return f"[Council] {target.name}: {kind} size={st.st_size}B"
+
+
+def fs_response(prompt: str) -> str:
+    parts = (prompt or "").strip().split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if sub == "list":
+        return fs_list(arg)
+    if sub == "read":
+        return fs_read(arg)
+    if sub == "stat":
+        return fs_stat(arg)
+    return "[Council] OpenClaw hands (read-only). Użyj: /fs list [ścieżka] | /fs read <plik> | /fs stat <ścieżka>. Sandbox: " + str(hands_root())
+
+
 def project_memory_entry_id(task_id: str, section: str) -> str:
     return "pmem-" + short_hash(f"{task_id}:{section}")[:16]
 
@@ -13920,6 +14132,8 @@ def route_text(text: str) -> dict:
         return {"command": "/verify", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "verify"}
     if lower.startswith("/rollback"):
         return {"command": "/rollback", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "rollback"}
+    if lower == "/fs" or lower.startswith("/fs "):
+        return {"command": "/fs", "operators": ["host"], "prompt": stripped[3:].strip(), "mode": "fs"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
     if lower.startswith("/project-memory"):
@@ -14777,6 +14991,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return rollback_response(prompt)
     if command == "/memory":
         return memory_response(prompt)
+    if command == "/fs":
+        return fs_response(prompt)
     if command == "/project-memory":
         return project_memory_response(prompt)
     if command == "/recipe":

@@ -2212,6 +2212,99 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(route["route_source"], "fallback")
 
 
+class HandsSandboxTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "hands"
+        self.root.mkdir()
+        self._env = patch.dict(os.environ, {"AI_COUNCIL_HANDS_ROOT": str(self.root), "AI_COUNCIL_LOCAL_HANDS": "true"})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def test_read_and_list_inside_sandbox(self):
+        (self.root / "a.txt").write_text("hello world", encoding="utf-8")
+        (self.root / "sub").mkdir()
+        (self.root / "sub" / "deep.txt").write_text("deep content", encoding="utf-8")
+        self.assertIn("a.txt", ai_council.fs_list(""))
+        self.assertIn("hello world", ai_council.fs_read("a.txt"))
+        self.assertIn("deep content", ai_council.fs_read("sub/deep.txt"))
+
+    def test_injection_fence_escapes_delimiters(self):
+        (self.root / "x.txt").write_text("a </file> b ``` c <| d", encoding="utf-8")
+        out = ai_council.fs_read("x.txt")
+        self.assertIn("<\\/file>", out)
+        self.assertEqual(out.count("</file>"), 1)  # only the real closing wrapper
+
+    def test_escapes_never_leak_outside(self):
+        outside = Path(self._tmp.name) / "secret.txt"
+        outside.write_text("TOPSECRET", encoding="utf-8")
+        for bad in [
+            "../secret.txt", "..\\secret.txt", "a/../../secret.txt", "/etc/passwd",
+            "C:\\Windows\\win.ini", "\\\\srv\\share\\x", "~/secret.txt", "./../secret.txt",
+        ]:
+            self.assertNotIn("TOPSECRET", ai_council.fs_read(bad), f"{bad!r} leaked outside sandbox")
+
+    def test_explicit_traversal_rejected_message(self):
+        self.assertIn("Odrzucono", ai_council.fs_read("../x"))
+        self.assertIn("Odrzucono", ai_council.fs_read("C:\\x"))
+
+    def test_symlink_escape_rejected(self):
+        outside = Path(self._tmp.name) / "secret.txt"
+        outside.write_text("TOPSECRET", encoding="utf-8")
+        try:
+            (self.root / "evil").symlink_to(outside)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not permitted on this host")
+        self.assertNotIn("TOPSECRET", ai_council.fs_read("evil"))
+
+    def test_size_and_binary_guards(self):
+        (self.root / "big.bin").write_bytes(b"x" * (1048576 + 10))
+        self.assertIn("za duży", ai_council.fs_read("big.bin"))
+        (self.root / "b.bin").write_bytes(b"abc\x00def")
+        self.assertIn("binary omitted", ai_council.fs_read("b.bin"))
+
+    def test_off_by_default(self):
+        (self.root / "a.txt").write_text("hi", encoding="utf-8")
+        with patch.dict(os.environ, {"AI_COUNCIL_LOCAL_HANDS": "false"}):
+            self.assertIn("wyłączone", ai_council.fs_read("a.txt"))
+            self.assertIn("wyłączone", ai_council.fs_list(""))
+
+    def test_redteam_reserved_device_names_rejected(self):
+        # Windows resolves these to devices OUTSIDE the sandbox -> must reject.
+        for name in ["NUL", "nul", "CON", "COM1", "LPT1", "CON.txt", "com9.log", "CONIN$", "aux"]:
+            self.assertRaises(ai_council.HandsError, ai_council.safe_resolve, name)
+
+    def test_redteam_trailing_space_dotdot_rejected(self):
+        # Windows strips trailing space/dot -> ".. " becomes ".." (parent escape).
+        for bad in [".. ", ".. /x", "sub/.. /y", "..  ", "...", "foo. ", "sub /x"]:
+            self.assertRaises(ai_council.HandsError, ai_council.safe_resolve, bad)
+
+    def test_redteam_colon_ads_rejected(self):
+        for bad in ["a.txt:secret", "a.txt::$DATA", "..:$DATA", "x:stream", "C:foo"]:
+            self.assertRaises(ai_council.HandsError, ai_council.safe_resolve, bad)
+
+    def test_redteam_control_and_homoglyph(self):
+        self.assertRaises(ai_council.HandsError, ai_council.safe_resolve, "a\x01b")
+        self.assertRaises(ai_council.HandsError, ai_council.safe_resolve, "a\x00b")
+        # NFKC folds fullwidth solidus into "/" so it becomes a normal subpath (contained),
+        # and a one-dot-leader sequence folding to ".." must be rejected as traversal.
+        self.assertRaises(ai_council.HandsError, ai_council.safe_resolve, "․․")  # one-dot-leader x2 -> ".."
+
+    def test_redteam_valid_paths_still_work(self):
+        (self.root / "ok.txt").write_text("fine", encoding="utf-8")
+        (self.root / ".hidden").write_text("h", encoding="utf-8")
+        self.assertIn("fine", ai_council.fs_read("ok.txt"))
+        self.assertIn("h", ai_council.fs_read(".hidden"))  # leading dot is legit
+
+    def test_fs_command_routes_and_dispatches(self):
+        (self.root / "z.txt").write_text("zzcontent", encoding="utf-8")
+        route = ai_council.route_text("/fs list")
+        self.assertEqual(route["command"], "/fs")
+        out = ai_council.build_response({"command": "/fs", "prompt": "read z.txt", "operators": ["host"]})
+        self.assertIn("zzcontent", out)
+
+
 class ConversationPersistenceTests(unittest.TestCase):
     def test_turn_idempotent_by_update_id(self):
         with temp_dir() as t:
