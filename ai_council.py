@@ -8479,19 +8479,63 @@ def gh_comment_issue(number: str, text: str) -> str:
     return f"[Council] Komentarz dodany ✅ do #{number}: {data.get('html_url')}"
 
 
+def gh_read_file(path: str) -> str:
+    if not github_token():
+        return "[Council] Brak GITHUB_TOKEN."
+    p = (path or "").strip().lstrip("/")
+    if not p or ".." in p.replace("\\", "/").split("/"):
+        return "[Council] Zła ścieżka."
+    data = gh_api(f"/contents/{quote(p)}")
+    if isinstance(data, dict) and data.get("ok") is False:
+        return f"[Council] GitHub błąd: {compact_line(str(data.get('error') or data.get('body_preview')), 100)}"
+    if not isinstance(data, dict) or "content" not in data:
+        return f"[Council] To nie plik albo nie istnieje: {p}"
+    try:
+        raw = base64.b64decode(data.get("content") or "")
+    except Exception:
+        return "[Council] Błąd dekodowania."
+    if len(raw) > int_cfg("AI_COUNCIL_GH_FILE_MAX", 60000):
+        return f"[Council] Plik za duży ({len(raw)}B)."
+    if b"\x00" in raw[:4096]:
+        return f"[Council] [binary omitted] {p}"
+    text = raw.decode("utf-8", errors="replace").replace("</file>", "<\\/file>").replace("```", "`\\`\\`")
+    return f'[Council] <file name="{p}" size="{data.get("size")}">\n{text[:8000]}\n</file>'
+
+
+def gh_list_prs(limit: int = 10) -> str:
+    if not github_token():
+        return "[Council] Brak GITHUB_TOKEN."
+    data = gh_api(f"/pulls?state=open&per_page={max(1, min(limit, 30))}")
+    if isinstance(data, dict) and data.get("ok") is False:
+        return f"[Council] GitHub błąd: {compact_line(str(data.get('error') or data.get('body_preview')), 100)}"
+    items = data if isinstance(data, list) else []
+    rows = [it for it in items if isinstance(it, dict)][:limit]
+    if not rows:
+        return f"[Council] Brak otwartych PR w {gh_repo()}."
+    lines = [f"[Council] Otwarte PR ({gh_repo()}):"]
+    for it in rows:
+        lines.append(f"• #{it.get('number')} {compact_line(str(it.get('title') or ''), 64)} ({(it.get('user') or {}).get('login', '?')})")
+    return "\n".join(lines)
+
+
 def gh_response(prompt: str) -> str:
     parts = (prompt or "").strip().split(None, 1)
     sub = parts[0].lower() if parts else ""
     rest = parts[1].strip() if len(parts) > 1 else ""
     if sub in ("issues", "list", ""):
         return gh_list_issues(rest)
+    if sub == "file":
+        return gh_read_file(rest)
+    if sub in ("prs", "pulls", "pr"):
+        return gh_list_prs()
     if sub in ("issue", "create"):
         title, _, body = rest.partition("|")
         return gh_create_issue(title.strip(), body.strip())
     if sub == "comment":
         num, _, text = rest.partition(" ")
         return gh_comment_issue(num.strip(), text.strip())
-    return "[Council] GitHub: /gh issues [filtr] | /gh issue <tytuł> | <opis> | /gh comment <numer> <treść>. Repo: " + gh_repo()
+    return ("[Council] GitHub: /gh issues [filtr] | /gh prs | /gh file <ścieżka> | "
+            "/gh issue <tytuł> | <opis> | /gh comment <numer> <treść>. Repo: " + gh_repo())
 
 
 def fs_response(prompt: str) -> str:

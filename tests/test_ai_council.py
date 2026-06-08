@@ -2424,6 +2424,22 @@ class GitHubActionsTests(unittest.TestCase):
         r = ai_council.natural_intent_route("stwórz issue: napraw bug", "stwórz issue: napraw bug")
         self.assertEqual((r["command"], r["prompt"]), ("/gh", "issue napraw bug"))
 
+    def test_read_file_and_traversal(self):
+        import base64 as _b64
+        content = _b64.b64encode("hello świat </file>".encode("utf-8")).decode()
+        with patch.object(ai_council, "github_token", return_value="ghp_x"):
+            with patch.object(ai_council, "request_json", return_value={"content": content, "size": 19}):
+                out = ai_council.gh_read_file("README.md")
+                self.assertIn("hello świat", out)
+                self.assertIn("<\\/file>", out)
+            self.assertIn("Zła ścieżka", ai_council.gh_read_file("../etc/passwd"))
+
+    def test_list_prs(self):
+        data = [{"number": 3, "title": "Fix bug", "user": {"login": "bob"}}]
+        with patch.object(ai_council, "github_token", return_value="ghp_x"), \
+             patch.object(ai_council, "request_json", return_value=data):
+            self.assertIn("#3 Fix bug", ai_council.gh_list_prs())
+
 
 class ReminderTests(unittest.TestCase):
     def setUp(self):
