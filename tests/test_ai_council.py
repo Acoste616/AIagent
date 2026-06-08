@@ -2271,8 +2271,11 @@ class MemoryDecayAndExtractionTests(unittest.TestCase):
         self.assertFalse(ai_council.looks_fact_bearing("@grok ping"))
         self.assertFalse(ai_council.looks_fact_bearing("jaka jest pogoda"))
 
-    def test_auto_extract_off_by_default(self):
-        with patch.object(ai_council, "MEMORY_DB", self._db), patch.object(ai_council, "request_json") as rj:
+    def test_auto_extract_off_when_flag_disabled(self):
+        # Force the flag off regardless of ambient host env (host may have it enabled).
+        with patch.object(ai_council, "MEMORY_DB", self._db), \
+             patch.object(ai_council, "cfg", side_effect=lambda k, d="": "" if k in ("AI_COUNCIL_FACT_AUTO_EXTRACT", "AI_COUNCIL_FACT_EXTRACTION") else d), \
+             patch.object(ai_council, "request_json") as rj:
             ai_council.maybe_auto_extract_facts("wolę krótkie odpowiedzi proszę", chat_id="1")
             rj.assert_not_called()
 
@@ -2302,6 +2305,49 @@ class MemoryDecayAndExtractionTests(unittest.TestCase):
             self.assertIn(eid, ai_council.outcome_response("list"))
             self.assertIn("DONE", ai_council.outcome_response(f"done {eid}"))
             self.assertEqual(ai_council.route_text("/outcome list")["command"], "/outcome")
+
+
+class MorningBriefTests(unittest.TestCase):
+    def test_quiet_hours_night_vs_day(self):
+        self.assertTrue(ai_council.in_quiet_hours(datetime(2026, 6, 8, 2, 0, tzinfo=timezone.utc)))
+        self.assertFalse(ai_council.in_quiet_hours(datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)))
+
+    def test_brief_empty_when_nothing_pending(self):
+        with patch.object(ai_council, "pending_user_facts", return_value=[]), \
+             patch.object(ai_council, "open_improvements", return_value=[]), \
+             patch.object(ai_council, "stuck_tasks", return_value=[]), \
+             patch.object(ai_council, "latest_by_id", return_value=[]), \
+             patch.object(ai_council, "error_rows", return_value=[]):
+            self.assertEqual(ai_council.build_morning_brief(), "")
+
+    def test_brief_has_content_when_facts_pending(self):
+        with patch.object(ai_council, "pending_user_facts", return_value=[{"entry_id": "m1", "value": "lot wtorek", "confidence": 0.9}]), \
+             patch.object(ai_council, "open_improvements", return_value=[]), \
+             patch.object(ai_council, "stuck_tasks", return_value=[]), \
+             patch.object(ai_council, "latest_by_id", return_value=[]), \
+             patch.object(ai_council, "error_rows", return_value=[]), \
+             patch.object(ai_council, "active_user_facts", return_value=[]):
+            out = ai_council.build_morning_brief()
+            self.assertIn("Poranny brief", out)
+            self.assertIn("faktów do potwierdzenia", out)
+
+    def test_brief_off_by_default(self):
+        self.assertFalse(ai_council.morning_brief_due(datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)))
+
+    def test_brief_sends_once_then_marks(self):
+        noon = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
+        with temp_dir() as t:
+            with patch.object(ai_council, "STATE_DIR", Path(t)), \
+                 patch.object(ai_council, "proactive_brief_enabled", return_value=True), \
+                 patch.object(ai_council, "control_paused_reason", return_value=""), \
+                 patch.object(ai_council, "build_morning_brief", return_value="brief text"), \
+                 patch.object(ai_council, "telegram_send_message_with_markup", return_value=True) as send:
+                self.assertEqual(ai_council.maybe_send_morning_brief(send=True, chat_id="553", now=noon), 1)
+                self.assertEqual(ai_council.maybe_send_morning_brief(send=True, chat_id="553", now=noon), 0)
+                self.assertEqual(send.call_count, 1)
+
+    def test_brief_command_routes(self):
+        self.assertEqual(ai_council.route_text("/brief")["command"], "/brief")
 
 
 class HandsSandboxTests(unittest.TestCase):
@@ -3870,7 +3916,7 @@ class L2LedgerTests(unittest.TestCase):
     def test_source_search_github_requires_auth_when_gh_invalid(self):
         with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
             ai_council, "request_json", return_value={"ok": False, "error": "url_error"}
-        ):
+        ), patch.object(ai_council, "cfg", side_effect=lambda k, d="": "" if k in ("GITHUB_TOKEN", "GH_TOKEN") else d):
             status, results = ai_council.source_search("github", "issue", limit=3)
 
         self.assertIn("auth_required", status)
@@ -3890,7 +3936,7 @@ class L2LedgerTests(unittest.TestCase):
         }
         with patch.object(ai_council, "command_status", return_value=(False, "token invalid")), patch.object(
             ai_council, "request_json", return_value=payload
-        ):
+        ), patch.object(ai_council, "cfg", side_effect=lambda k, d="": "" if k in ("GITHUB_TOKEN", "GH_TOKEN") else d):
             status, results = ai_council.source_search("github", "connector", limit=3)
 
         self.assertIn("auth_required", status)

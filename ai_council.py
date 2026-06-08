@@ -184,6 +184,7 @@ READONLY_RECIPE_COMMANDS = {
     "/memory",
     "/fs",
     "/outcome",
+    "/brief",
     "/project-memory",
     "/chat",
     "@research",
@@ -10012,6 +10013,8 @@ def run_proactive_scan(send: bool = False, chat_id: str = "") -> int:
         return 0
     if control_paused_reason("proactive"):
         return 0
+    if send and in_quiet_hours():
+        send = False  # L4.72 DND: still detect+record events, but don't ping at night
     chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
     existing = nudge_keys()
     created = 0
@@ -10026,6 +10029,109 @@ def run_proactive_scan(send: bool = False, chat_id: str = "") -> int:
         existing.add(key)
         created += 1
     return created
+
+
+def in_quiet_hours(now=None) -> bool:
+    """L4.72 DND: no proactive pings at night. Default 21:00-05:00 UTC (~23-07 CEST)."""
+    now = now or datetime.now(timezone.utc)
+    start = int_cfg("AI_COUNCIL_QUIET_START_UTC", 21)
+    end = int_cfg("AI_COUNCIL_QUIET_END_UTC", 5)
+    h = now.hour
+    return (start <= h < end) if start <= end else (h >= start or h < end)
+
+
+def _brief_marker_load() -> str:
+    try:
+        data = json.loads((STATE_DIR / "morning_brief.json").read_text(encoding="utf-8"))
+        return str(data.get("last_brief_day") or "")
+    except (OSError, json.JSONDecodeError, AttributeError, ValueError):
+        return ""
+
+
+def _brief_marker_save(day: str) -> None:
+    p = STATE_DIR / "morning_brief.json"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps({"last_brief_day": day, "updated_at": utc_now()}), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def proactive_brief_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_PROACTIVE_BRIEF", False)
+
+
+def build_morning_brief() -> str:
+    """L4.72: compose a once-daily brief from INTERNAL state only (no external auth).
+    Returns '' when there is nothing worth saying ('wait' — never spam an empty brief)."""
+    sections = []
+    try:
+        pending_actions = [a for a in latest_by_id(ACTIONS_FILE, "action_id", limit=40) if a.get("status") == "pending"]
+    except Exception:
+        pending_actions = []
+    if pending_actions:
+        sections.append(f"⏳ {len(pending_actions)} akcji czeka na decyzję — /drafts")
+    try:
+        pf = pending_user_facts(limit=30)
+    except Exception:
+        pf = []
+    if pf:
+        sections.append(f"🧠 {len(pf)} faktów do potwierdzenia — /memory pending")
+    try:
+        imp = open_improvements(limit=10)
+    except Exception:
+        imp = []
+    if imp:
+        sections.append(f"💡 {len(imp)} otwartych improvementów — /improve")
+    try:
+        stuck = stuck_tasks(limit=10)
+    except Exception:
+        stuck = []
+    if stuck:
+        sections.append(f"⚠️ {len(stuck)} tasków stuck — /agent")
+    try:
+        act_err = len(actionable_error_rows(error_rows(days=1)))
+    except Exception:
+        act_err = 0
+    if act_err:
+        sections.append(f"🔴 {act_err} błędów wymagających akcji — /errors")
+    if not sections:
+        return ""
+    head = f"☀️ [Council] Poranny brief — {today_utc()}"
+    try:
+        facts = active_user_facts(limit=3)
+    except Exception:
+        facts = []
+    if facts:
+        head += "\nPamiętam: " + "; ".join(compact_line(str(f.get("value", "")), 45) for f in facts)
+    return head + "\n" + "\n".join("• " + s for s in sections) + "\nNEXT: /agent — pełny inbox."
+
+
+def morning_brief_due(now=None) -> bool:
+    if not proactive_brief_enabled():
+        return False
+    now = now or datetime.now(timezone.utc)
+    if now.hour < int_cfg("AI_COUNCIL_BRIEF_HOUR_UTC", 6):
+        return False
+    return _brief_marker_load() != today_utc()
+
+
+def maybe_send_morning_brief(send: bool = False, chat_id: str = "", now=None) -> int:
+    if not morning_brief_due(now):
+        return 0
+    if control_paused_reason("proactive"):
+        return 0
+    chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    _brief_marker_save(today_utc())  # mark first so we never retry/spam, even if empty or send fails
+    text = build_morning_brief()
+    if not text:
+        return 0  # 'wait' — nothing worth saying today
+    if send and chat_id:
+        telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
+    audit({"command": "/brief", "operators": ["host"], "status": "sent", "duration_ms": 0, "output_preview": text[:300]})
+    return 1
 
 
 def maybe_send_action_nudges(chat_id: str, send: bool) -> int:
@@ -14498,6 +14604,8 @@ def route_text(text: str) -> dict:
         return {"command": "/fs", "operators": ["host"], "prompt": stripped[3:].strip(), "mode": "fs"}
     if lower == "/outcome" or lower.startswith("/outcome "):
         return {"command": "/outcome", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "outcome"}
+    if lower == "/brief" or lower.startswith("/brief "):
+        return {"command": "/brief", "operators": ["host"], "prompt": "", "mode": "brief"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
     if lower.startswith("/project-memory"):
@@ -15359,6 +15467,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return fs_response(prompt)
     if command == "/outcome":
         return outcome_response(prompt)
+    if command == "/brief":
+        return build_morning_brief() or "[Council] Nic pilnego — brief pusty (cisza). Wszystko ogarnięte ✅."
     if command == "/project-memory":
         return project_memory_response(prompt)
     if command == "/recipe":
@@ -15880,6 +15990,9 @@ def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int
             nudges = run_proactive_scan(send=send)
             if nudges:
                 print(f"proactive_nudges_created={nudges}")
+            brief = maybe_send_morning_brief(send=send)
+            if brief:
+                print(f"morning_brief_sent={brief}")
             code = listen_once(send=send, limit=limit, verbose=False)
             if code != 0:
                 print(f"serve_poll_error code={code}")
