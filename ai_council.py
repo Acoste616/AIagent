@@ -10263,6 +10263,13 @@ def build_morning_brief() -> str:
         act_err = 0
     if act_err:
         sections.append(f"🔴 {act_err} błędów wymagających akcji — /errors")
+    try:  # L4.86: Bartek's 4a brief spec — surface active reminders
+        reminders = active_reminders()
+    except Exception:
+        reminders = []
+    if reminders:
+        nxt = compact_line(str(reminders[0].get("text", "")), 50)
+        sections.append(f"⏰ {len(reminders)} przypomnień (np. {nxt}) — /reminders")
     if not sections:
         return ""
     head = f"☀️ [Council] Poranny brief — {today_utc()}"

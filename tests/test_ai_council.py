@@ -2317,8 +2317,21 @@ class MorningBriefTests(unittest.TestCase):
              patch.object(ai_council, "open_improvements", return_value=[]), \
              patch.object(ai_council, "stuck_tasks", return_value=[]), \
              patch.object(ai_council, "latest_by_id", return_value=[]), \
+             patch.object(ai_council, "active_reminders", return_value=[]), \
              patch.object(ai_council, "error_rows", return_value=[]):
             self.assertEqual(ai_council.build_morning_brief(), "")
+
+    def test_brief_includes_reminders(self):
+        with patch.object(ai_council, "pending_user_facts", return_value=[]), \
+             patch.object(ai_council, "open_improvements", return_value=[]), \
+             patch.object(ai_council, "stuck_tasks", return_value=[]), \
+             patch.object(ai_council, "latest_by_id", return_value=[]), \
+             patch.object(ai_council, "error_rows", return_value=[]), \
+             patch.object(ai_council, "active_user_facts", return_value=[]), \
+             patch.object(ai_council, "active_reminders", return_value=[{"text": "zadzwoń do mamy", "time": "18:00"}]):
+            out = ai_council.build_morning_brief()
+            self.assertIn("przypomnień", out)
+            self.assertIn("zadzwoń do mamy", out)
 
     def test_brief_has_content_when_facts_pending(self):
         with patch.object(ai_council, "pending_user_facts", return_value=[{"entry_id": "m1", "value": "lot wtorek", "confidence": 0.9}]), \
