@@ -14245,6 +14245,73 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
     return route
 
 
+# L4.80 — deterministic research fast-path. Cuts the double Grok call (route+answer).
+# When a message is an obvious live-research / web-search request, we route it
+# straight to @research (or @xresearch for X/Twitter) using cheap keyword matching,
+# so we DON'T spend a separate Grok classification call in llm_route() on top of the
+# Grok answer call. Markers are deliberately specific ("sprawdź w internecie", not a
+# bare "sprawdź") so ambiguous phrasings still fall through to the LLM router.
+RESEARCH_X_MARKERS = (
+    "co piszą na x",
+    "co pisza na x",
+    "co na twitterze",
+    "co na twitter",
+    "sprawdź na x ",
+    "sprawdz na x ",
+    "na twitterze o",
+    "x search",
+    "twitter search",
+)
+RESEARCH_WEB_MARKERS = (
+    "sprawdź w internecie",
+    "sprawdz w internecie",
+    "sprawdź w sieci",
+    "sprawdz w sieci",
+    "sprawdź w google",
+    "sprawdz w google",
+    "poszukaj w internecie",
+    "poszukaj w sieci",
+    "poszukaj informacji o",
+    "wyszukaj w internecie",
+    "wyszukaj w sieci",
+    "wygoogluj",
+    "wygugluj",
+    "co piszą o ",
+    "co pisza o ",
+    "co mówią o ",
+    "co mowia o ",
+    "najnowsze newsy o",
+    "najnowsze informacje o",
+    "najnowsze wiadomości o",
+    "najnowsze wiadomosci o",
+    "aktualności o ",
+    "aktualnosci o ",
+    "znajdź informacje o",
+    "znajdz informacje o",
+)
+
+
+def deterministic_research_route(stripped: str, lower: str) -> dict | None:
+    """Route obvious live-research requests without an LLM classification call."""
+    if any(marker in lower for marker in RESEARCH_X_MARKERS):
+        return {
+            "command": "/xresearch",
+            "operators": ["grok"],
+            "prompt": stripped,
+            "mode": "research_deterministic",
+            "intent": "natural",
+        }
+    if any(marker in lower for marker in RESEARCH_WEB_MARKERS):
+        return {
+            "command": "@research",
+            "operators": ["grok"],
+            "prompt": stripped,
+            "mode": "research_deterministic",
+            "intent": "natural",
+        }
+    return None
+
+
 def natural_intent_route(stripped: str, lower: str) -> dict | None:
     if not stripped or stripped.startswith(("@", "/")):
         return None
@@ -14863,6 +14930,15 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    # L4.80: catch MID-SENTENCE live-research intent the prefix blocks above miss
+    # (e.g. "co piszą o nowym modelu", "sprawdź to w internecie"). Runs after the
+    # specific startswith routes so /xresearch + /poke-research still win. The win is
+    # cost+latency: these route straight to one Grok answer instead of paying an
+    # extra Grok classification call in llm_route().
+    research_route = deterministic_research_route(stripped, lower)
+    if research_route:
+        return research_route
+
     if action_planner_trigger(stripped):
         return {
             "command": "/plan-action",
@@ -15291,16 +15367,22 @@ def claude_flow_response(prompt: str, task_id: str = "") -> str:
     )
 
 
-def grok_response(prompt: str, max_chars: int | None = None, task_id: str = "") -> str:
+def grok_response(prompt: str, max_chars: int | None = None, task_id: str = "", inject_memory: bool = False) -> str:
     started = time.time()
     allowed, reason, reservation = reserve_operator_call("grok", task_id=task_id, detail="chat")
     if not allowed:
         return f"[Grok] blocked: {reason}"
     if not prompt:
         prompt = "Odpowiedz krótko: AI Council Grok online."
-    memory_context = memory_context_for_prompt(prompt)
-    if memory_context:
-        prompt = f"{prompt}\n\nKontekst z pamięci AI Council:\n{memory_context}"
+    # L4.79 — Grok isolation. The research/operator Grok (@grok, @research, council
+    # judge) must stay clean and source-based: it does NOT inherit personal
+    # conversation facts (e.g. "lot w piątek"). Those belong ONLY to the front chat
+    # operator (poke_chat_llm_response). Leaking them here contaminated research
+    # with unrelated private context. Default is now isolated; callers must opt in.
+    if inject_memory and bool_cfg("AI_COUNCIL_GROK_RESEARCH_MEMORY", False):
+        memory_context = memory_context_for_prompt(prompt)
+        if memory_context:
+            prompt = f"{prompt}\n\nKontekst z pamięci AI Council:\n{memory_context}"
     key = cfg("XAI_API_KEY")
     payload = {
         "model": "grok-4.3",
@@ -15416,9 +15498,9 @@ def grok_x_research_response(prompt: str, max_chars: int | None = None, task_id:
         finalize_operator_call(reservation, status="failed", duration_ms=0, estimated_usd=0.0, detail="missing XAI_API_KEY")
         return "[Grok X Research] error: missing XAI_API_KEY"
     research_prompt = build_x_research_prompt(prompt)
-    memory_context = memory_context_for_prompt(research_prompt)
-    if memory_context:
-        research_prompt = f"{research_prompt}\n\nKontekst z pamięci AI Council:\n{memory_context}"
+    # L4.79 — Grok X/web research is fully isolated from personal conversation
+    # memory. The whole point of this operator is clean, source-cited research;
+    # injecting private facts (the "lot w piątek" contamination) poisoned results.
     payload = {
         "model": cfg("AI_COUNCIL_GROK_X_MODEL", "grok-4.3"),
         "input": [
@@ -15468,6 +15550,27 @@ def build_research_prompt(prompt: str) -> str:
         "Bądź konkretny i oznacz, gdy czegoś nie da się potwierdzić bez źródeł live.\n\n"
         f"Temat: {topic}"
     )
+
+
+# L4.78 — Master host contract. One canonical "voice" for the front operator so it
+# reads like Poke: short, decisive, status-first. Every answer carries a clear state
+# verb (ROBIĘ / ZROBIŁEM / POTRZEBUJĘ ZGODY / NIE MOGĘ) and one next step — never a
+# wall of commands, logs, jargon or small talk. Truthful about system state; external
+# side effects always route to POTRZEBUJĘ ZGODY.
+MASTER_HOST_CONTRACT = (
+    "Jesteś frontowym operatorem Bartek Agent OS w Telegramie — styl Poke. Mówisz po polsku.\n"
+    "GŁOS: krótko i decyzyjnie. Maks 3 zdania albo 4 punkty. Zero ściany komend, logów, żargonu i small talku ('co u Ciebie').\n"
+    "STATUS-FIRST: zaczynaj od jednego stanu, gdy coś robisz lub coś trzeba zrobić:\n"
+    "  • ROBIĘ: … — gdy realnie startujesz bezpieczny krok/task teraz.\n"
+    "  • ZROBIŁEM: … — tylko gdy system faktycznie to wykonał (żadnego zmyślania plików, API, publikacji, kontaktu).\n"
+    "  • POTRZEBUJĘ ZGODY: … — dla akcji zewnętrznych/nieodwracalnych (mail, kalendarz, GitHub write, publikacja, płatność, usuwanie, deploy).\n"
+    "  • NIE MOGĘ: … — gdy czegoś nie wolno/nie da się; powiedz to wprost i podaj alternatywę.\n"
+    "Dla zwykłego pytania po prostu odpowiedz krótko — bez sztucznego nagłówka statusu.\n"
+    "PAMIĘĆ WĄTKU: Telegram to jeden ciągły kontakt. Używaj historii rozmowy; nie proś o powtórzenie kontekstu, jeśli już był.\n"
+    "PRAWDA O STANIE: jeśli Bartek pyta o cel/Poke parity/health — mów prawdę: system nie jest ukończony, brakuje pełnych connectorów oraz iPhone/iMessage layer. "
+    "Nigdy 'wszystko działa' bez sprawdzenia health.\n"
+    "TRYB: jeśli wiadomość to większe zadanie, nazwij najlepszy tryb (research, plan, Council, task albo approval) i zaproponuj jeden następny krok."
+)
 
 
 def poke_chat_llm_configured() -> bool:
@@ -15649,15 +15752,7 @@ def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
     messages = [
         {
             "role": "system",
-            "content": (
-                "Jesteś frontowym operatorem Bartek Agent OS w Telegramie, styl Poke-like. "
-                "Odpowiadasz po polsku, szybko, konkretnie i operacyjnie: bez ściany komend, bez logów, bez technicznego żargonu i bez small talku typu 'co u Ciebie'. "
-                "Traktuj Telegram jak jeden ciągły kontakt: używaj poprzednich wiadomości w wątku i nie proś Bartka o powtórzenie kontekstu, jeśli jest w historii. "
-                "Jeśli pytanie jest zwykłe, odpowiedz normalnie. Jeśli wygląda na większe zadanie, nazwij najlepszy tryb: research, plan, Council, task albo approval. "
-                "Jeśli Bartek pyta o stan systemu, cel albo Poke parity, powiedz prawdę: system nie jest jeszcze ukończony i brakuje pełnych connectorów oraz iPhone/iMessage layer. "
-                "Nie twierdź, że wykonałeś pliki, API, publikację albo kontakt, jeśli tego realnie nie wykonał system. "
-                "Nie mów 'wszystko działa' bez sprawdzenia health. Maks 4 krótkie zdania albo 5 punktów. Na końcu podaj jeden najlepszy następny krok, gdy ma sens."
-            ),
+            "content": MASTER_HOST_CONTRACT,
         }
     ]
     if chat_id:
@@ -15800,16 +15895,35 @@ def front_operator_response(command: str, raw: str, task_id: str = "") -> str:
     return "\n".join(lines).strip()
 
 
-def front_all_response(parts: list[tuple[str, str]], task_id: str = "") -> str:
+def front_all_response(parts: list[tuple[str, str]], task_id: str = "", verdict: dict | None = None) -> str:
     lines = [
         "[Council]",
         "Konsultacja gotowa.",
         "",
-        "Wnioski:",
+        "Głosy:",
     ]
     for label, raw in parts:
-        cleaned = compact_line(strip_operator_label(raw), 260) or "brak treści"
+        cleaned = compact_line(strip_operator_label(raw), 240) or "brak treści"
         lines.append(f"- {label}: {cleaned}")
+    # L4.81 — close with ONE verdict, not three parallel answers. The Council ends on
+    # a decision + facts + the live dispute + a single next step (Poke-style), so
+    # Bartek gets a ruling instead of homework. Verdict is synthesized deterministically
+    # from the three votes (no extra Grok call) unless a caller passes one in.
+    if verdict:
+        lines.append("")
+        lines.append(f"WERDYKT: {compact_line(str(verdict.get('decision') or ''), 240) or 'brak rozstrzygnięcia'}")
+        facts = [f for f in (verdict.get("facts") or []) if str(f).strip()][:3]
+        if facts:
+            lines.append("FAKTY:")
+            for fact in facts:
+                lines.append(f"- {compact_line(str(fact), 180)}")
+        dispute = compact_line(str(verdict.get("dispute") or ""), 240)
+        if dispute:
+            lines.append(f"SPÓR: {dispute}")
+        next_actions = [a for a in (verdict.get("next_actions") or []) if str(a).strip()]
+        next_step = next_actions[0] if next_actions else ""
+        if next_step:
+            lines.append(f"NASTĘPNY KROK: {compact_line(str(next_step), 200)}")
     lines.extend(["", front_next_line("@all", task_id=task_id)])
     if task_id:
         lines.append(f"Details: /details {task_id}")
@@ -15971,12 +16085,24 @@ def build_response(route: dict, chat_id: str = "") -> str:
     if command in FRONT_OPERATOR_COMMANDS:
         return front_operator_response(command, raw_operator_response(command, prompt, task_id=task_id), task_id=task_id)
     if command == "@all":
+        codex_out = codex_response(prompt, task_id=task_id)
+        claude_out = claude_response(prompt, task_id=task_id)
+        grok_out = grok_route_response(prompt, max_chars=700, task_id=task_id)
         parts = [
-            ("Technicznie", codex_response(prompt, task_id=task_id)),
-            ("Plan", claude_response(prompt, task_id=task_id)),
-            ("Research", grok_route_response(prompt, max_chars=700, task_id=task_id)),
+            ("Technicznie", codex_out),
+            ("Plan", claude_out),
+            ("Research", grok_out),
         ]
-        return front_all_response(parts, task_id=task_id)
+        # L4.81: synthesize a single verdict from the three votes (deterministic,
+        # no extra Grok call) so @all ends on a ruling, not parallel answers.
+        verdict = fallback_council_synthesis(
+            prompt.strip() or "Konsultacja @all",
+            claude_out,
+            grok_out,
+            codex_out,
+            task_id=task_id,
+        )
+        return front_all_response(parts, task_id=task_id, verdict=verdict)
     return host_response(prompt, chat_id=chat_id)
 
 

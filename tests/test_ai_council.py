@@ -8072,5 +8072,198 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertIn("delegate_loop=L4.49:gated", health)
 
 
+class GrokIsolationTests(unittest.TestCase):
+    """L4.79: research/operator Grok must NOT inherit personal conversation memory."""
+
+    def _fake_cfg(self, key, default=""):
+        return {"XAI_API_KEY": "xai-test"}.get(key, default)
+
+    def test_grok_response_does_not_inject_personal_memory_by_default(self):
+        captured = {}
+
+        def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": "czysta odpowiedź"}}]}
+
+        with patch.object(ai_council, "cfg", side_effect=self._fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "memory_context_for_prompt", return_value="Co wiem o Tobie:\n- lot jest w piątek"
+        ) as mem, patch.object(ai_council, "request_json", side_effect=fake_request_json):
+            ai_council.grok_response("najnowsze newsy o modelu X")
+
+        user_content = captured["payload"]["messages"][-1]["content"]
+        self.assertNotIn("lot jest w piątek", user_content)
+        self.assertNotIn("Kontekst z pamięci", user_content)
+        # Isolation should not even pay for a memory lookup.
+        mem.assert_not_called()
+
+    def test_grok_response_injects_memory_only_when_opted_in_and_flagged(self):
+        captured = {}
+
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_GROK_RESEARCH_MEMORY": "true"}.get(key, default)
+
+        def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "memory_context_for_prompt", return_value="Co wiem o Tobie:\n- lot jest w piątek"
+        ), patch.object(ai_council, "request_json", side_effect=fake_request_json):
+            ai_council.grok_response("przypomnij mój lot", inject_memory=True)
+
+        user_content = captured["payload"]["messages"][-1]["content"]
+        self.assertIn("lot jest w piątek", user_content)
+
+    def test_grok_x_research_never_injects_personal_memory(self):
+        captured = {}
+
+        def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
+            captured["payload"] = payload
+            return {"output": [{"type": "output_text", "text": "Research OK"}]}
+
+        with patch.object(ai_council, "cfg", side_effect=self._fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1", "operator": "grok"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "memory_context_for_prompt", return_value="Co wiem o Tobie:\n- lot jest w piątek"
+        ) as mem, patch.object(ai_council, "request_json", side_effect=fake_request_json):
+            ai_council.grok_x_research_response("Poke features", max_chars=500)
+
+        blob = json.dumps(captured["payload"], ensure_ascii=False)
+        self.assertNotIn("lot jest w piątek", blob)
+        self.assertNotIn("Kontekst z pamięci", blob)
+        mem.assert_not_called()
+
+    def test_front_chat_still_keeps_personal_memory(self):
+        # Personal memory belongs to the front chat operator (Poke-style), unchanged.
+        captured = {}
+
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+
+        def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": "pamiętam"}}]}
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "recent_conversation", return_value=[]
+        ), patch.object(
+            ai_council, "memory_context_for_prompt", return_value="Co wiem o Tobie:\n- lot jest w piątek"
+        ), patch.object(ai_council, "request_json", side_effect=fake_request_json):
+            ai_council.poke_chat_llm_response(
+                "Wyjaśnij proszę dokładnie i konkretnie jak najlepiej zaplanować mój tydzień pod ten wyjazd.",
+                chat_id="553",
+            )
+
+        blob = json.dumps(captured["payload"], ensure_ascii=False)
+        self.assertIn("lot jest w piątek", blob)
+
+
+class MasterHostContractTests(unittest.TestCase):
+    """L4.78: one canonical Poke voice with status verbs."""
+
+    def test_contract_has_status_verbs(self):
+        contract = ai_council.MASTER_HOST_CONTRACT
+        for verb in ("ROBIĘ", "ZROBIŁEM", "POTRZEBUJĘ ZGODY", "NIE MOGĘ"):
+            self.assertIn(verb, contract)
+
+    def test_poke_chat_uses_master_contract_as_system(self):
+        captured = {}
+
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+
+        def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "recent_conversation", return_value=[]
+        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
+            ai_council, "request_json", side_effect=fake_request_json
+        ):
+            ai_council.poke_chat_llm_response(
+                "Wyjaśnij proszę dokładnie i konkretnie jak najlepiej rozplanować pracę nad tym projektem w tym tygodniu.",
+                chat_id="553",
+            )
+
+        system_msg = captured["payload"]["messages"][0]
+        self.assertEqual(system_msg["role"], "system")
+        self.assertEqual(system_msg["content"], ai_council.MASTER_HOST_CONTRACT)
+
+
+class DeterministicResearchRouteTests(unittest.TestCase):
+    """L4.80: mid-sentence research routes deterministically (no extra Grok call)."""
+
+    def test_mid_sentence_web_research_routes_without_llm(self):
+        with patch.object(ai_council, "llm_route") as llm:
+            route = ai_council.route_message("ej, sprawdź w internecie co nowego u OpenAI", chat_id="553")
+        self.assertEqual(route["command"], "@research")
+        self.assertEqual(route["route_source"], "keyword")
+        llm.assert_not_called()
+
+    def test_co_pisza_o_routes_to_research_without_llm(self):
+        with patch.object(ai_council, "llm_route") as llm:
+            route = ai_council.route_message("ciekawi mnie co piszą o nowym Grok 5", chat_id="553")
+        self.assertEqual(route["command"], "@research")
+        llm.assert_not_called()
+
+    def test_x_marker_routes_to_xresearch(self):
+        route = ai_council.deterministic_research_route(
+            "zobacz co na twitterze o premierze", "zobacz co na twitterze o premierze"
+        )
+        self.assertEqual(route["command"], "/xresearch")
+
+    def test_existing_xresearch_prefix_still_wins(self):
+        # Regression: the specific startswith /xresearch route must beat the new
+        # mid-sentence detector.
+        route = ai_council.route_text("deep research x Poke Apple Messages")
+        self.assertEqual(route["command"], "/xresearch")
+
+    def test_ambiguous_message_still_falls_through_to_llm(self):
+        # "sprawdź to szerzej" has no web/research marker -> must reach the LLM router.
+        sentinel = {"command": "@research", "operators": ["grok"], "prompt": "x", "route_source": "llm", "confidence": 0.9}
+        with patch.object(ai_council, "llm_route", return_value=sentinel) as llm:
+            route = ai_council.route_message("sprawdź to szerzej", chat_id="553")
+        llm.assert_called_once()
+        self.assertEqual(route["route_source"], "llm")
+
+
+class CouncilAllVerdictTests(unittest.TestCase):
+    """L4.81: @all ends on one verdict, not three parallel answers."""
+
+    def test_front_all_response_renders_verdict_block(self):
+        parts = [("Technicznie", "[Codex] x"), ("Plan", "[Claude] y"), ("Research", "[Grok] z")]
+        verdict = {
+            "decision": "Zrób mały weryfikowalny krok A.",
+            "facts": ["fakt jeden", "fakt dwa"],
+            "dispute": "Grok vs Codex o kolejność.",
+            "next_actions": ["Uruchom test A", "potem B"],
+        }
+        out = ai_council.front_all_response(parts, task_id="task-1", verdict=verdict)
+        self.assertIn("WERDYKT: Zrób mały weryfikowalny krok A.", out)
+        self.assertIn("FAKTY:", out)
+        self.assertIn("fakt jeden", out)
+        self.assertIn("SPÓR:", out)
+        self.assertIn("NASTĘPNY KROK: Uruchom test A", out)
+
+    def test_all_command_synthesizes_single_verdict(self):
+        with patch.object(ai_council, "codex_response", return_value="[Codex] wykonalne"), patch.object(
+            ai_council, "claude_response", return_value="[Claude] plan w 3 krokach"
+        ), patch.object(ai_council, "grok_route_response", return_value="[Grok] research: brak blokerów"):
+            out = ai_council.build_response({"command": "@all", "prompt": "co zrobić z X", "task_id": "task-9"})
+
+        self.assertIn("Głosy:", out)
+        self.assertIn("WERDYKT:", out)
+        self.assertIn("NASTĘPNY KROK:", out)
+
+
 if __name__ == "__main__":
     unittest.main()
