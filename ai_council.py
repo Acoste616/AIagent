@@ -10166,7 +10166,10 @@ def send_proactive_nudge(chat_id: str, event: dict) -> bool:
         f"next: {event.get('next_action')}\n"
         "inbox: /nudges"
     )
-    return telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
+    ok = telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
+    if ok:
+        mirror_proactive_to_imessage(text)  # L4.84: mirror nudge to iMessage (gated)
+    return ok
 
 
 def run_proactive_scan(send: bool = False, chat_id: str = "") -> int:
@@ -10297,6 +10300,7 @@ def maybe_send_morning_brief(send: bool = False, chat_id: str = "", now=None) ->
         return 0  # 'wait' — nothing worth saying today
     if send and chat_id:
         telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
+        mirror_proactive_to_imessage(text)  # L4.84: proactively reach Bartek over iMessage too (gated)
     audit({"command": "/brief", "operators": ["host"], "status": "sent", "duration_ms": 0, "output_preview": text[:300]})
     return 1
 
@@ -16027,6 +16031,30 @@ def imessage_outbox_ack(msg_id: str, status: str, detail: str = "") -> dict:
     return row
 
 
+def proactive_imessage_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_IMESSAGE_PROACTIVE", False)
+
+
+def mirror_proactive_to_imessage(text: str) -> bool:
+    """Also queue a proactive message to iMessage (to self), if enabled.
+
+    Off by default. The host (Windows) only ENQUEUES; the Mac runner does the
+    actual send. This is what makes the assistant proactively reach Bartek over
+    iMessage (core Poke behavior) once the channel is live — Telegram still gets
+    its copy regardless. Best-effort: never breaks the Telegram path.
+    """
+    if not proactive_imessage_enabled():
+        return False
+    body = (text or "").strip()
+    if not body:
+        return False
+    try:
+        imessage_outbox_enqueue(body, to="", kind="proactive")
+        return True
+    except Exception:
+        return False
+
+
 def imessage_drain_rows(rows: list[dict], send_fn, ack_fn) -> list[dict]:
     """Send each outbox row via send_fn and ack via ack_fn. Used by the Mac runner.
 
@@ -16074,6 +16102,7 @@ def setup_response() -> str:
         f"{_setup_mark(llm_router_enabled())} Router intencji (Grok) — {'on' if llm_router_enabled() else 'off (AI_COUNCIL_LLM_ROUTER)'}",
         f"{_setup_mark(proactive_brief_enabled())} Poranny brief — {'on' if proactive_brief_enabled() else 'off (AI_COUNCIL_PROACTIVE_BRIEF)'}",
         f"{_setup_mark(fact_extraction_enabled())} Pamięć / auto-fakty — {'on' if fact_extraction_enabled() else 'off (AI_COUNCIL_FACT_EXTRACTION)'}",
+        f"{_setup_mark(proactive_imessage_enabled())} Proaktywny iMessage — {'on (brief+nudge → iMessage)' if proactive_imessage_enabled() else 'off (AI_COUNCIL_IMESSAGE_PROACTIVE)'}",
         "",
         "Legenda: ✅ działa · 🔒 gotowe, czeka na Twój 1 ruch · ⚪ niepodłączone",
     ]

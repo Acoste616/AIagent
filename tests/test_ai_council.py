@@ -8416,6 +8416,20 @@ class IMessageOutboxTests(unittest.TestCase):
         self.assertIn("zakolejkowane", out)
         self.assertEqual(len(ai_council.imessage_outbox_pending()), 1)
 
+    def test_proactive_mirror_off_by_default(self):
+        # conftest forces AI_COUNCIL_IMESSAGE_PROACTIVE off.
+        self.assertFalse(ai_council.mirror_proactive_to_imessage("brief poranny"))
+        self.assertEqual(ai_council.imessage_outbox_pending(), [])
+
+    def test_proactive_mirror_enqueues_when_enabled(self):
+        with patch.object(ai_council, "proactive_imessage_enabled", return_value=True):
+            ok = ai_council.mirror_proactive_to_imessage("☀️ Brief: 2 akcje czekają")
+        self.assertTrue(ok)
+        pending = ai_council.imessage_outbox_pending()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["kind"], "proactive")
+        self.assertEqual(pending[0]["to"], "")
+
 
 class SetupOnboardingTests(unittest.TestCase):
     """L4.83: /setup onboarding checklist (read-only status)."""
