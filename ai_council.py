@@ -449,6 +449,45 @@ def load_env(path: Path = ENV_PATH) -> dict[str, str]:
     return values
 
 
+# L4.91 — safe secret rotation. Updates ONE allowlisted secret in the real .env
+# from a value supplied on stdin (never via chat/args), so a leaked token can be
+# rotated without ever printing it again. Returns only key + length, never value.
+ROTATABLE_SECRET_KEYS = {
+    "TELEGRAM_BOT_TOKEN", "XAI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+    "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN",
+}
+
+
+def update_env_secret(key: str, value: str, path: Path = ENV_PATH) -> dict:
+    key = (key or "").strip()
+    value = (value or "").strip()
+    if key not in ROTATABLE_SECRET_KEYS:
+        return {"ok": False, "error": f"key not rotatable: {key}"}
+    if not value:
+        return {"ok": False, "error": "empty value"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    if path.exists():
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    replaced = False
+    out = []
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped and stripped.split("=", 1)[0].strip() == key:
+            out.append(f'{key}="{value}"')
+            replaced = True
+        else:
+            out.append(raw)
+    if not replaced:
+        out.append(f'{key}="{value}"')
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return {"ok": True, "key": key, "chars": len(value), "replaced": replaced}
+
+
 def operator_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
@@ -17248,6 +17287,8 @@ def main() -> int:
     imo_ack.add_argument("--status", required=True)
     imo_ack.add_argument("--detail", default="")
     sub.add_parser("seed-profile", help="Persist Bartek's durable profile/preferences to memory")
+    set_secret = sub.add_parser("set-secret", help="Rotate one allowlisted secret in .env from STDIN (value never echoed)")
+    set_secret.add_argument("--key", required=True)
     args = parser.parse_args()
 
     if args.cmd == "doctor":
@@ -17295,6 +17336,13 @@ def main() -> int:
         saved = seed_bartek_profile()
         print(f"profile_facts_saved={saved}")
         return 0
+    if args.cmd == "set-secret":
+        value = sys.stdin.read().strip()
+        result = update_env_secret(args.key, value)
+        # Never echo the value — only key + length + status.
+        result.pop("value", None)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
     return 2
 
 

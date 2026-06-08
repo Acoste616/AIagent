@@ -8609,5 +8609,45 @@ class IMessageInboundScaffoldTests(unittest.TestCase):
         self.assertIn("Full Disk Access", out)
 
 
+class SecretRotationTests(unittest.TestCase):
+    """L4.91: safe secret rotation into .env (value never echoed)."""
+
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self._env = Path(self._tmp.name) / ".env"
+        self._env.write_text(
+            'TELEGRAM_BOT_TOKEN="oldtoken"\nXAI_API_KEY="oldxai"\nAI_COUNCIL_LLM_ROUTER=true\n',
+            encoding="utf-8",
+        )
+
+    def test_rotates_existing_key_and_preserves_others(self):
+        res = ai_council.update_env_secret("XAI_API_KEY", "NEWxai123", path=self._env)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["replaced"])
+        self.assertEqual(res["chars"], len("NEWxai123"))
+        self.assertNotIn("value", res)  # never returns the secret
+        text = self._env.read_text(encoding="utf-8")
+        self.assertIn('XAI_API_KEY="NEWxai123"', text)
+        self.assertIn('TELEGRAM_BOT_TOKEN="oldtoken"', text)  # untouched
+        self.assertIn("AI_COUNCIL_LLM_ROUTER=true", text)
+
+    def test_appends_when_key_absent(self):
+        res = ai_council.update_env_secret("GITHUB_TOKEN", "ghp_new", path=self._env)
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["replaced"])
+        self.assertIn('GITHUB_TOKEN="ghp_new"', self._env.read_text(encoding="utf-8"))
+
+    def test_rejects_non_allowlisted_key(self):
+        res = ai_council.update_env_secret("AI_COUNCIL_LLM_ROUTER", "false", path=self._env)
+        self.assertFalse(res["ok"])
+        # the .env must be unchanged
+        self.assertIn("AI_COUNCIL_LLM_ROUTER=true", self._env.read_text(encoding="utf-8"))
+
+    def test_rejects_empty_value(self):
+        res = ai_council.update_env_secret("XAI_API_KEY", "   ", path=self._env)
+        self.assertFalse(res["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
