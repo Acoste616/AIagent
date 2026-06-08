@@ -13555,7 +13555,7 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
-    memory_save_prefixes = ["zapamiętaj", "zapamietaj", "zapisz do pamięci", "zapisz do pamieci", "dodaj do pamięci", "dodaj do pamieci", "memory save"]
+    memory_save_prefixes = ["zapamiętaj", "zapamietaj", "pamiętaj", "pamietaj", "zanotuj", "zapisz do pamięci", "zapisz do pamieci", "zapisz że", "zapisz ze", "dodaj do pamięci", "dodaj do pamieci", "memory save", "remember that"]
     if any(lower.startswith(prefix) for prefix in memory_save_prefixes):
         body = strip_intent_prefix(stripped, memory_save_prefixes)
         return {

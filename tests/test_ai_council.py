@@ -2352,6 +2352,21 @@ class MemoryUserFactTests(unittest.TestCase):
             self.assertTrue(any("krótkie" in f["value"] for f in facts))
             self.assertFalse(any(f["value"].startswith("że") for f in facts))
 
+    def test_natural_pamietaj_prefix_saves_and_supersedes(self):
+        # iPhone smoke gap: "pamiętaj" (without "za-") must also save a durable fact.
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            r1 = ai_council.natural_intent_route(
+                "zapamiętaj że mój lot jest w piątek", "zapamiętaj że mój lot jest w piątek"
+            )
+            ai_council.memory_response(r1["prompt"])
+            r2 = ai_council.natural_intent_route("pamiętaj że lot jest w środę", "pamiętaj że lot jest w środę")
+            self.assertEqual(r2["command"], "/memory")
+            self.assertTrue(r2["prompt"].startswith("fact"))
+            ai_council.memory_response(r2["prompt"])
+            facts = ai_council.active_user_facts()
+            self.assertEqual(len(facts), 1)
+            self.assertIn("środę", facts[0]["value"])
+
     def test_recall_eval_surfaces_right_fact_among_many(self):
         # L4.66 recall harness: with many facts, the query-relevant one must surface.
         facts_and_queries = [
