@@ -2258,8 +2258,39 @@ class MemoryDecayAndExtractionTests(unittest.TestCase):
             self.assertEqual(ai_council.active_user_facts(limit=50), [])  # never auto-trusted
 
     def test_scan_off_by_default(self):
-        with patch.object(ai_council, "MEMORY_DB", self._db):
+        # Force the flag off regardless of ambient host env (the host may have it enabled).
+        with patch.object(ai_council, "MEMORY_DB", self._db), \
+             patch.object(ai_council, "cfg", side_effect=lambda k, d="": ""):
             self.assertIn("wyłączona", ai_council.memory_response("scan coś o mnie"))
+
+    def test_looks_fact_bearing_heuristic(self):
+        self.assertTrue(ai_council.looks_fact_bearing("wolę krótkie odpowiedzi proszę"))
+        self.assertTrue(ai_council.looks_fact_bearing("mój lot jest we wtorek rano"))
+        self.assertFalse(ai_council.looks_fact_bearing("hej"))
+        self.assertFalse(ai_council.looks_fact_bearing("/status"))
+        self.assertFalse(ai_council.looks_fact_bearing("@grok ping"))
+        self.assertFalse(ai_council.looks_fact_bearing("jaka jest pogoda"))
+
+    def test_auto_extract_off_by_default(self):
+        with patch.object(ai_council, "MEMORY_DB", self._db), patch.object(ai_council, "request_json") as rj:
+            ai_council.maybe_auto_extract_facts("wolę krótkie odpowiedzi proszę", chat_id="1")
+            rj.assert_not_called()
+
+    def test_auto_extract_when_enabled_quarantines(self):
+        content = '{"facts":[{"fact":"użytkownik woli krótkie odpowiedzi","confidence":0.9}]}'
+
+        def fcfg(key, default=""):
+            return {
+                "XAI_API_KEY": "x", "AI_COUNCIL_FACT_EXTRACTION": "true", "AI_COUNCIL_FACT_AUTO_EXTRACT": "true",
+            }.get(key, default)
+
+        with patch.object(ai_council, "MEMORY_DB", self._db), patch.object(ai_council, "cfg", side_effect=fcfg), \
+             patch.object(ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r"})), \
+             patch.object(ai_council, "finalize_operator_call", return_value=None), \
+             patch.object(ai_council, "request_json", return_value={"choices": [{"message": {"content": content}}]}):
+            ai_council.maybe_auto_extract_facts("wolę krótkie odpowiedzi proszę", chat_id="1")
+            self.assertEqual(len(ai_council.pending_user_facts()), 1)
+            self.assertEqual(ai_council.active_user_facts(limit=50), [])  # quarantined, not auto-trusted
 
     def test_outcome_create_list_done(self):
         with patch.object(ai_council, "MEMORY_DB", self._db):

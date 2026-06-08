@@ -7925,6 +7925,41 @@ def capture_extracted_facts(text: str, chat_id: str = "") -> list[dict]:
     return saved
 
 
+FACT_BEARING_MARKERS = (
+    "jestem", "mam ", "mój", "moj", "moja", "moje", "moim", "wolę", "wole", "lubię", "lubie",
+    "nie lubię", "nie lubie", "mieszkam", "pracuję", "pracuje", "nazywam", "urodzi", "planuję",
+    "planuje", "zwykle", "codziennie", "i am ", "i have", "i like", "i prefer", "my ", "i live", "i work",
+)
+
+
+def looks_fact_bearing(text: str) -> bool:
+    """Cheap heuristic gate for auto-extraction: only spend a Grok call on messages
+    that plausibly state a durable fact. False negatives are fine (user can /memory scan)."""
+    s = (text or "").strip()
+    if not s or s.startswith(("/", "@")) or is_smalltalk(s):
+        return False
+    if len(s) < int_cfg("AI_COUNCIL_FACT_AUTO_MIN_CHARS", 12):
+        return False
+    low = normalize_intent_text(s)
+    return any(marker in low for marker in FACT_BEARING_MARKERS)
+
+
+def fact_auto_extract_enabled() -> bool:
+    # Needs the master extraction flag AND the auto flag (extra gate). Off by default.
+    return bool_cfg("AI_COUNCIL_FACT_AUTO_EXTRACT", False) and fact_extraction_enabled()
+
+
+def maybe_auto_extract_facts(text: str, chat_id: str = "") -> None:
+    """L4.65.2: best-effort, post-send fact capture from ordinary messages -> quarantine.
+    Heuristic-gated + double-flag-gated + budget-guarded; never raises into the loop."""
+    if not fact_auto_extract_enabled() or not looks_fact_bearing(text):
+        return
+    try:
+        capture_extracted_facts(text, chat_id)
+    except Exception:
+        pass
+
+
 def pending_user_facts(limit: int = 20) -> list[dict]:
     init_memory_db()
     try:
@@ -15775,6 +15810,8 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
             print(response)
         append_conversation_turn(chat_id, "assistant", response, route, update_id=update.get("update_id"))
         audit(event)
+        # L4.65.2: post-send (no response latency), gated + heuristic auto fact capture -> quarantine.
+        maybe_auto_extract_facts(text, chat_id)
         processed += 1
         if allowed and chat_id:
             maybe_send_action_nudges(chat_id, send)

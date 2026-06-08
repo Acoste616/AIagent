@@ -26,6 +26,8 @@ Three roadmap loops shipped together and verified live on `D:\ai-council`.
 - Live demos on production for all four (write hands, outcome, scan/extraction, decay automatic).
 - Flags enabled on host (`.env`, surgical edit, secrets verified intact): `AI_COUNCIL_LOCAL_HANDS_WRITE=true`, `AI_COUNCIL_FACT_EXTRACTION=true`.
 
+## L4.65.2 — auto-extract on inbound messages (LANDED, enabled)
+Post-send (zero response latency), gated by BOTH `AI_COUNCIL_FACT_EXTRACTION` and `AI_COUNCIL_FACT_AUTO_EXTRACT` (both now on host). `maybe_auto_extract_facts(text, chat)` runs only when `looks_fact_bearing(text)` (heuristic: not a command/smalltalk, ≥12 chars, contains a first-person/fact marker) — so most messages cost nothing. Extracted facts go to **quarantine** (never auto-trusted); user confirms via `/memory pending` → `/memory confirm <id>`. Hooked in `listen_once` after the assistant turn + audit. Tests: `looks_fact_bearing` heuristic, off-by-default, enabled-quarantines. Live-verified on host: fact-bearing message → Grok → 2 quarantined → rejected. **Cost note:** ~$0.0023 per fact-bearing message; disable with `AI_COUNCIL_FACT_AUTO_EXTRACT=false`.
+
 ## Follow-up
-- L4.65.2: auto-extract on inbound messages (currently `/memory scan` is explicit to avoid per-message latency/cost).
 - L4.70.1: wire `/outcome` send to a configured provider once auth is set (host/approval).
