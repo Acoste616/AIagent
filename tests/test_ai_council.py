@@ -2440,6 +2440,11 @@ class GitHubActionsTests(unittest.TestCase):
              patch.object(ai_council, "request_json", return_value=data):
             self.assertIn("#3 Fix bug", ai_council.gh_list_prs())
 
+    def test_search(self):
+        with patch.object(ai_council, "github_token", return_value="ghp_x"), \
+             patch.object(ai_council, "request_json", return_value={"items": [{"number": 4, "title": "router bug"}]}):
+            self.assertIn("#4 [issue] router bug", ai_council.gh_search("router"))
+
 
 class ReminderTests(unittest.TestCase):
     def setUp(self):

@@ -8518,6 +8518,30 @@ def gh_list_prs(limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+def gh_search(query: str, limit: int = 8) -> str:
+    if not github_token():
+        return "[Council] Brak GITHUB_TOKEN."
+    if not (query or "").strip():
+        return "[Council] Podaj frazę: /gh search <fraza>"
+    q = quote(f"repo:{gh_repo()} {query.strip()}")
+    data = request_json(
+        f"https://api.github.com/search/issues?q={q}&per_page={max(1, min(limit, 20))}",
+        method="GET",
+        headers={"Authorization": f"Bearer {github_token()}", "Accept": "application/vnd.github+json", "User-Agent": "ai-council"},
+        timeout=int_cfg("AI_COUNCIL_GH_TIMEOUT", 20),
+    )
+    if isinstance(data, dict) and data.get("ok") is False:
+        return f"[Council] GitHub błąd: {compact_line(str(data.get('error') or data.get('body_preview')), 100)}"
+    items = data.get("items") if isinstance(data, dict) else []
+    if not items:
+        return f"[Council] Brak wyników dla `{query}`."
+    lines = [f"[Council] GitHub search `{query}`:"]
+    for it in items[:limit]:
+        kind = "PR" if it.get("pull_request") else "issue"
+        lines.append(f"• #{it.get('number')} [{kind}] {compact_line(str(it.get('title') or ''), 64)}")
+    return "\n".join(lines)
+
+
 def gh_response(prompt: str) -> str:
     parts = (prompt or "").strip().split(None, 1)
     sub = parts[0].lower() if parts else ""
@@ -8528,13 +8552,15 @@ def gh_response(prompt: str) -> str:
         return gh_read_file(rest)
     if sub in ("prs", "pulls", "pr"):
         return gh_list_prs()
+    if sub == "search":
+        return gh_search(rest)
     if sub in ("issue", "create"):
         title, _, body = rest.partition("|")
         return gh_create_issue(title.strip(), body.strip())
     if sub == "comment":
         num, _, text = rest.partition(" ")
         return gh_comment_issue(num.strip(), text.strip())
-    return ("[Council] GitHub: /gh issues [filtr] | /gh prs | /gh file <ścieżka> | "
+    return ("[Council] GitHub: /gh issues [filtr] | /gh prs | /gh file <ścieżka> | /gh search <fraza> | "
             "/gh issue <tytuł> | <opis> | /gh comment <numer> <treść>. Repo: " + gh_repo())
 
 
