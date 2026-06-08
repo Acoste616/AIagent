@@ -8609,6 +8609,50 @@ class IMessageInboundScaffoldTests(unittest.TestCase):
         self.assertIn("Full Disk Access", out)
 
 
+class IMessageInboundReaderTests(unittest.TestCase):
+    """L4.92: attributedBody decoder + self-thread dedup (loop-safety)."""
+
+    @staticmethod
+    def _ab(text: str) -> bytes:
+        body = text.encode("utf-8")
+        prefix = b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString"
+        marker = b"NSString\x01\x94\x84\x01\x2b"
+        if len(body) < 0x80:
+            length = bytes([len(body)])
+        else:
+            length = b"\x81" + len(body).to_bytes(2, "little")
+        return prefix + marker + length + body + b"\x86\x84"
+
+    def test_decode_short_message(self):
+        self.assertEqual(ai_council.imessage_decode_attributed_body(self._ab("hej, co tam?")), "hej, co tam?")
+
+    def test_decode_long_message_extended_length(self):
+        msg = "x" * 200  # >= 128 -> extended 0x81 + 2-byte length
+        self.assertEqual(ai_council.imessage_decode_attributed_body(self._ab(msg)), msg)
+
+    def test_decode_unicode_message(self):
+        self.assertEqual(ai_council.imessage_decode_attributed_body(self._ab("zażółć gęślą 🚀")), "zażółć gęślą 🚀")
+
+    def test_decode_empty_or_garbage(self):
+        self.assertEqual(ai_council.imessage_decode_attributed_body(b""), "")
+        self.assertEqual(ai_council.imessage_decode_attributed_body(b"no marker here"), "")
+
+    def test_message_text_prefers_text_column(self):
+        self.assertEqual(ai_council.imessage_message_text("plain text", self._ab("from blob")), "plain text")
+        self.assertEqual(ai_council.imessage_message_text(None, self._ab("from blob")), "from blob")
+        self.assertEqual(ai_council.imessage_message_text("", self._ab("from blob")), "from blob")
+
+    def test_assistant_echo_dedup(self):
+        sent = ["Poranny brief: ...", "ZROBIŁEM: task started"]
+        # exact + whitespace/case-insensitive match -> echo (skip)
+        self.assertTrue(ai_council.imessage_is_assistant_echo("poranny   brief: ...", sent))
+        self.assertTrue(ai_council.imessage_is_assistant_echo("ZROBIŁEM: task started", sent))
+        # a genuine user message -> not an echo (process)
+        self.assertFalse(ai_council.imessage_is_assistant_echo("jaka jest pogoda?", sent))
+        # empty is never processed
+        self.assertTrue(ai_council.imessage_is_assistant_echo("", sent))
+
+
 class SecretRotationTests(unittest.TestCase):
     """L4.91: safe secret rotation into .env (value never echoed)."""
 

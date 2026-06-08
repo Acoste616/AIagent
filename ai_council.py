@@ -16073,6 +16073,55 @@ def apple_date_to_unix(value) -> float:
     return float(v) + APPLE_EPOCH_OFFSET
 
 
+def imessage_decode_attributed_body(blob) -> str:
+    """Extract message text from a Messages `attributedBody` typedstream blob.
+    Modern macOS stores the text here when the `text` column is NULL. Format:
+    `NSString` + class-chain + 0x2b marker + length (1 byte, or 0x81+2 LE / 0x82+4 LE)
+    + UTF-8 bytes. Validated 93/93 exact vs the `text` column on the live chat.db."""
+    if not blob:
+        return ""
+    try:
+        b = bytes(blob)
+    except Exception:
+        return ""
+    i = b.find(b"NSString")
+    if i < 0:
+        return ""
+    j = b.find(b"\x2b", i + 8)  # '+' marker precedes the length-prefixed UTF-8 string
+    if j < 0 or j + 1 >= len(b):
+        return ""
+    p = j + 1
+    n = b[p]
+    p += 1
+    if n == 0x81:        # extended: next 2 bytes little-endian
+        n = int.from_bytes(b[p:p + 2], "little"); p += 2
+    elif n == 0x82:      # 4-byte length (rare)
+        n = int.from_bytes(b[p:p + 4], "little"); p += 4
+    return b[p:p + n].decode("utf-8", errors="replace")
+
+
+def imessage_message_text(text, attributed_body) -> str:
+    """Best text for a chat.db message row: the `text` column if present, else decode
+    `attributedBody`."""
+    if text:
+        return str(text)
+    return imessage_decode_attributed_body(attributed_body)
+
+
+def imessage_norm_text(text: str) -> str:
+    return " ".join(str(text or "").split()).strip().lower()
+
+
+def imessage_is_assistant_echo(text: str, sent_texts) -> bool:
+    """Loop-safety: in a note-to-self thread the assistant's OWN sent messages also
+    appear as is_from_me=1, so we must not treat them as user input. True if `text`
+    matches (normalized) one of the recently-sent assistant texts."""
+    norm = imessage_norm_text(text)
+    if not norm:
+        return True  # empty -> never process
+    return norm in {imessage_norm_text(t) for t in (sent_texts or [])}
+
+
 def imessage_inbound_status() -> str:
     fda = imessage_full_disk_access()
     lines = [
@@ -17289,6 +17338,8 @@ def main() -> int:
     sub.add_parser("seed-profile", help="Persist Bartek's durable profile/preferences to memory")
     set_secret = sub.add_parser("set-secret", help="Rotate one allowlisted secret in .env from STDIN (value never echoed)")
     set_secret.add_argument("--key", required=True)
+    respb64 = sub.add_parser("respond-b64", help="respond() to a base64 message and print ONLY the reply (quote-safe iMessage inbound relay)")
+    respb64.add_argument("--b64", required=True)
     args = parser.parse_args()
 
     if args.cmd == "doctor":
@@ -17335,6 +17386,17 @@ def main() -> int:
     if args.cmd == "seed-profile":
         saved = seed_bartek_profile()
         print(f"profile_facts_saved={saved}")
+        return 0
+    if args.cmd == "respond-b64":
+        try:
+            msg = base64.b64decode(args.b64).decode("utf-8", errors="replace")
+        except Exception:
+            print("[Council] (decode error)")
+            return 1
+        cid = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+        route = route_message(msg, chat_id=cid)
+        # Print ONLY the reply so the iMessage inbound relay can capture it cleanly.
+        print(build_response(route, chat_id=cid))
         return 0
     if args.cmd == "set-secret":
         value = sys.stdin.read().strip()
