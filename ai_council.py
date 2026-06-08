@@ -579,10 +579,48 @@ def compact_line(value: str, limit: int = 100) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _reconcile_append_sidecars(path: Path) -> None:
+    """Merge any pending per-process sidecar lines into `path`. The caller MUST
+    already hold the file lock. Sidecars exist only when a prior append hit a
+    lock timeout (see append_jsonl); this self-heals them in order."""
+    try:
+        sidecars = sorted(path.parent.glob(path.name + ".sidecar-*.jsonl"))
+    except OSError:
+        return
+    for sidecar in sidecars:
+        try:
+            data = sidecar.read_text(encoding="utf-8", errors="replace")
+            if data.strip():
+                if not data.endswith("\n"):
+                    data += "\n"
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(data)
+            sidecar.unlink()
+        except OSError:
+            pass
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
+    # L4.64: serialize cross-process appends with a per-file lock so the listener
+    # and detached workers can't interleave bytes. On lock timeout, fail SAFE:
+    # write the row to a per-process sidecar (never interleave, never drop); it is
+    # reconciled under the lock on a later successful append. Must NOT call
+    # record_error here (that re-enters append_jsonl).
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(sanitize_for_audit(payload), ensure_ascii=False) + "\n")
+    line = json.dumps(sanitize_for_audit(payload), ensure_ascii=False)
+    lock_path = path.with_name(path.name + ".lock")
+    try:
+        with BlockingFileLock(lock_path, timeout=float_cfg("AI_COUNCIL_APPEND_LOCK_TIMEOUT", 5.0)):
+            _reconcile_append_sidecars(path)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except TimeoutError:
+        try:
+            sidecar = path.with_name(f"{path.name}.sidecar-{os.getpid()}.jsonl")
+            with sidecar.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -714,6 +752,15 @@ def error_rows(days: int = 7) -> list[dict]:
     return filtered
 
 
+BENIGN_ERROR_SEVERITIES = {"warning", "info"}
+
+
+def actionable_error_rows(rows: list[dict]) -> list[dict]:
+    """L4.67: errors that likely need action — excludes benign warning/info noise.
+    A row with no severity is treated as actionable (conservative)."""
+    return [row for row in rows if str(row.get("severity") or "error").lower() not in BENIGN_ERROR_SEVERITIES]
+
+
 def front_quality_enabled() -> bool:
     return bool_cfg("AI_COUNCIL_FRONT_QUALITY_GUARD", True)
 
@@ -807,9 +854,18 @@ def errors_response(prompt: str = "") -> str:
     return "\n".join(lines)
 
 
-def append_conversation_turn(chat_id: str, role: str, text: str, route: dict | None = None) -> dict:
+def append_conversation_turn(
+    chat_id: str, role: str, text: str, route: dict | None = None, update_id=None
+) -> dict:
     ensure_council_dirs()
     clean_role = role if role in {"user", "assistant", "system"} else "user"
+    uid = "" if update_id is None else str(update_id)
+    # L4.64: idempotent per (update_id, role) so a replayed update never
+    # double-appends the same turn (lets us persist the user turn early/safely).
+    if uid:
+        for row in recent_conversation(chat_id, limit=12):
+            if str(row.get("update_id") or "") == uid and row.get("role") == clean_role:
+                return row
     turn = {
         "turn_id": f"turn-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{chat_id}:{role}:{text}:{time.time()}')[:6]}",
         "created_at": utc_now(),
@@ -819,6 +875,7 @@ def append_conversation_turn(chat_id: str, role: str, text: str, route: dict | N
         "command": (route or {}).get("command", ""),
         "route_source": (route or {}).get("route_source", ""),
         "confidence": (route or {}).get("confidence", ""),
+        "update_id": uid,
     }
     append_jsonl(CONVERSATIONS_FILE, turn)
     return turn
@@ -828,6 +885,16 @@ def recent_conversation(chat_id: str, limit: int = 6) -> list[dict]:
     chat_hash = short_hash(str(chat_id))
     rows = [row for row in read_jsonl(CONVERSATIONS_FILE) if row.get("chat_id_hash") == chat_hash]
     return rows[-max(0, limit) :]
+
+
+def conversation_liveness() -> dict:
+    """L4.64: health signal proving conversation memory is actually persisting."""
+    rows = read_jsonl(CONVERSATIONS_FILE)
+    if not rows:
+        return {"last_turn_at": "", "turns_today": 0}
+    today = today_utc()
+    turns_today = sum(1 for row in rows if str(row.get("created_at") or "")[:10] == today)
+    return {"last_turn_at": str(rows[-1].get("created_at") or ""), "turns_today": turns_today}
 
 
 def latest_conversation_hint(chat_id: str, current_text: str = "", limit: int = 8) -> str:
@@ -4885,6 +4952,8 @@ def front_runtime_snapshot() -> dict:
         "grok_blocked": int(grok.get("blocked") or 0),
         "grok_estimated_usd": float(grok.get("estimated_usd") or 0.0),
         "errors_24h": len(recent_errors),
+        "errors_24h_actionable": len(actionable_error_rows(recent_errors)),
+        "conversation": conversation_liveness(),
         "send_failed_24h": sum(1 for row in recent_errors if row.get("context") == "telegram_response_send"),
         "front_quality_24h": len(front_quality_rows),
         "front_quality_latest": front_quality_rows[-1] if front_quality_rows else {},
@@ -4946,8 +5015,9 @@ def front_reliability_response(prompt: str = "") -> str:
         f"3. outbound: sent={latest.get('sent_count')} failed={latest.get('failed_count')} dry={latest.get('dry_count')}",
         f"4. models: kill={snap['kill']} paused={snap['models_paused']} llm_router={'on' if snap['llm_router'] else 'off'} poke_chat_llm={'gated' if snap['poke_chat_llm'] else 'off'}",
         f"5. grok_today: calls={snap['grok_calls']} blocked={snap['grok_blocked']} est=${snap['grok_estimated_usd']:.4f}",
-        f"6. errors_24h: {snap['errors_24h']} | telegram_send_failed_errors: {snap['send_failed_24h']}",
+        f"6. errors_24h: {snap['errors_24h']} (actionable: {snap['errors_24h_actionable']}) | telegram_send_failed_errors: {snap['send_failed_24h']}",
         f"7. front_quality_24h: {snap['front_quality_24h']} | latest: {latest_quality_message}",
+        f"8. memory: turns_today={snap['conversation']['turns_today']} last_turn={snap['conversation']['last_turn_at'] or 'none'}",
         "NEXT: jeśli właśnie napisałeś i `last_telegram_update` się nie zmienia, problem jest przed botem: zły chat/bot albo Telegram nie dostarczył update. Jeśli update rośnie, a failed=0, odpowiedź powinna wrócić.",
         "DO CIEBIE: wyślij `/selftest` w Telegramie; jeśli audit nie pokaże nowego update, piszesz nie do tego bota albo Telegram nie dostarcza wiadomości.",
     ]
@@ -7339,10 +7409,29 @@ def init_memory_db() -> None:
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
                 source TEXT NOT NULL,
-                task_id TEXT
+                task_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                norm_key TEXT NOT NULL DEFAULT '',
+                chat_id_hash TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        # L4.65: additive migration so pre-existing memory DBs gain the
+        # user-fact columns without data loss.
+        try:
+            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
+            for col_ddl in (
+                "status TEXT NOT NULL DEFAULT 'active'",
+                "confidence REAL NOT NULL DEFAULT 1.0",
+                "norm_key TEXT NOT NULL DEFAULT ''",
+                "chat_id_hash TEXT NOT NULL DEFAULT ''",
+            ):
+                col = col_ddl.split()[0]
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {col_ddl}")
+        except sqlite3.Error:
+            pass
         try:
             conn.execute(
                 """
@@ -7490,13 +7579,22 @@ def memory_context_for_prompt(prompt: str, limit: int = 3) -> str:
         return ""
     lines = []
     seen: set[str] = set()
+    facts = active_user_facts(limit=limit + 3, query=prompt)
+    if facts:
+        lines.append("Co wiem o Tobie:")
+        for fact_row in facts:
+            seen.add(str(fact_row.get("entry_id") or ""))
+            lines.append(f"- {compact_line(fact_row.get('value', ''), 160)}")
     if project_rows:
         lines.append("Project memory:")
     for row in project_rows:
         seen.add(str(row.get("entry_id") or ""))
         source = compact_line(str(row.get("source") or row.get("task_id") or ""), 72)
         lines.append(f"- {compact_line(row.get('key', ''), 48)}: {compact_line(row.get('value', ''), 180)} | source={source}")
-    regular_rows = [row for row in rows if str(row.get("entry_id") or "") not in seen]
+    regular_rows = [
+        row for row in rows
+        if str(row.get("entry_id") or "") not in seen and row.get("kind") != "user_fact"
+    ]
     if regular_rows:
         if lines:
             lines.append("Memory:")
@@ -7529,6 +7627,28 @@ def memory_response(prompt: str) -> str:
                 f"- {row['entry_id']} | {row['agent']} | {compact_line(row['key'], 36)}: {compact_line(row['value'], 90)}"
             )
         return "\n".join(lines)
+    if lower.startswith("facts") or lower in {"fakty", "co wiesz o mnie"}:
+        facts = active_user_facts(limit=20)
+        if not facts:
+            return "[Council] Nie mam jeszcze zapisanych faktów o Tobie. Napisz np. „zapamiętaj, że mój lot jest we wtorek”."
+        lines = ["[Council] Co wiem o Tobie:"]
+        for fact_row in facts:
+            lines.append(f"- {fact_row['entry_id']} | {compact_line(fact_row['value'], 90)}")
+        return "\n".join(lines)
+    if lower.startswith("forget") or lower.startswith("zapomnij"):
+        parts = stripped.split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+        forgotten = user_fact_forget(target)
+        if forgotten:
+            return f"[Council] Zapomniane: {forgotten} fakt(ów) pasujących do `{target}`."
+        return f"[Council] Nie znalazłem aktywnego faktu pasującego do `{target}`."
+    if lower.startswith("fact"):
+        body = stripped[4:].strip()
+        body = re.sub(r"^[\s,:;.\-]*(że|ze|that)\s+", "", body, flags=re.IGNORECASE).strip()
+        row = user_fact_save(body, source="telegram_user")
+        if not row:
+            return "[Council] Nie zapisałem — pusta treść faktu."
+        return f"[Council] Zapamiętane ✅ {compact_line(row['value'], 90)}"
     if lower.startswith("save"):
         body = stripped[4:].strip()
         if "=" in body:
@@ -7538,6 +7658,201 @@ def memory_response(prompt: str) -> str:
         row = memory_save(key, value)
         return f"[Council] Memory saved: {row['entry_id']} | {compact_line(row['key'], 60)}."
     return "[Council] Memory: użyj /memory recent, /memory search <tekst>, /memory save klucz = treść."
+
+
+# --- L4.65 Durable User-Fact Memory (Hermes core) --------------------------
+
+USER_FACT_SYNONYMS = {
+    "żona": "malzonek", "zona": "malzonek", "mąż": "malzonek", "maz": "malzonek",
+    "spouse": "malzonek", "wife": "malzonek", "husband": "malzonek",
+    "partnerka": "malzonek", "partner": "malzonek",
+    "flight": "lot", "samolot": "lot",
+    "robota": "praca", "job": "praca", "work": "praca",
+}
+
+USER_FACT_FILLERS = {
+    "ze", "że", "moj", "mój", "moja", "moje", "mojego", "mam", "miałem", "mialem",
+    "jest", "są", "sa", "to", "w", "we", "na", "do", "o", "oraz", "i", "a", "z",
+    "the", "is", "are", "am", "my", "me", "that", "of", "at", "in", "on", "an",
+    "teraz", "dzis", "dziś", "jutro", "wczoraj", "rano", "wieczorem",
+}
+
+
+def derive_user_fact_norm_key(value: str) -> str:
+    """Deterministic subject head of a user fact (no LLM): first salient token,
+    synonym-mapped. Used for supersede-on-conflict so the latest human-stated
+    fact about the same subject wins."""
+    norm = normalize_intent_text(value or "")
+    for raw in norm.split():
+        tok = "".join(ch for ch in raw if ch.isalnum())
+        if not tok or len(tok) < 2 or tok in USER_FACT_FILLERS:
+            continue
+        return USER_FACT_SYNONYMS.get(tok, tok)
+    return ""
+
+
+def _user_fact_is_human(source: str) -> bool:
+    return str(source) in {"telegram_user", "host_user", "user"}
+
+
+def user_fact_save(
+    value: str,
+    *,
+    source: str = "telegram_user",
+    chat_id_hash: str = "",
+    confidence: float = 1.0,
+    status: str = "active",
+) -> dict:
+    """Store a durable user fact. An active human-sourced fact supersedes prior
+    active facts with the same norm_key (latest wins). LLM-extracted facts must
+    pass status='quarantine' and are never auto-trusted (anti-poisoning)."""
+    init_memory_db()
+    clean_value = redact_secrets((value or "").strip())
+    if not clean_value:
+        return {}
+    norm = derive_user_fact_norm_key(clean_value)
+    is_human = _user_fact_is_human(source)
+    if status == "active" and norm:
+        try:
+            with sqlite3.connect(MEMORY_DB) as conn:
+                params = [norm]
+                scope = ""
+                if chat_id_hash:
+                    scope = " AND chat_id_hash = ?"
+                    params.append(chat_id_hash)
+                conn.execute(
+                    "UPDATE memory_entries SET status='superseded' "
+                    "WHERE kind='user_fact' AND status='active' AND norm_key=?" + scope,
+                    params,
+                )
+        except sqlite3.Error:
+            pass
+    row = memory_save(
+        norm or "fact",
+        clean_value,
+        kind="user_fact",
+        agent="user" if is_human else "llm",
+        source=source,
+    )
+    try:
+        with sqlite3.connect(MEMORY_DB) as conn:
+            conn.execute(
+                "UPDATE memory_entries SET status=?, confidence=?, norm_key=?, chat_id_hash=? WHERE entry_id=?",
+                (status, float(confidence), norm, chat_id_hash, row["entry_id"]),
+            )
+    except sqlite3.Error:
+        pass
+    row.update({"status": status, "confidence": float(confidence), "norm_key": norm, "chat_id_hash": chat_id_hash})
+    return row
+
+
+def active_user_facts(limit: int = 12, query: str = "") -> list[dict]:
+    """Active, trusted user facts. When ``query`` is given and there are more
+    facts than ``limit``, the most relevant ones (token overlap with the query)
+    are surfaced first, then padded with the most recent — so recall returns the
+    RIGHT fact for the question while still keeping the assistant's core context."""
+    init_memory_db()
+    try:
+        min_conf = float_cfg("AI_COUNCIL_USER_FACT_MIN_CONF", 0.75)
+        with sqlite3.connect(MEMORY_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            recent = conn.execute(
+                "SELECT entry_id, created_at, key, value, source, confidence, norm_key "
+                "FROM memory_entries WHERE kind='user_fact' AND status='active' AND confidence >= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (min_conf, max(limit, 32)),
+            ).fetchall()
+        rows = [dict(r) for r in recent]
+        q = normalize_intent_text(query or "")
+        if q and len(rows) > limit:
+            qtokens = {t for t in q.split() if len(t) >= 3}
+
+            def relevance(row: dict) -> int:
+                blob = normalize_intent_text(f"{row.get('norm_key', '')} {row.get('value', '')}")
+                return sum(1 for tok in qtokens if tok in blob)
+
+            relevant = sorted(
+                (row for row in rows if relevance(row) > 0),
+                key=relevance,
+                reverse=True,
+            )[:limit]
+            if len(relevant) < limit:
+                seen = {row["entry_id"] for row in relevant}
+                for row in rows:
+                    if row["entry_id"] not in seen:
+                        relevant.append(row)
+                        if len(relevant) >= limit:
+                            break
+            return relevant[:limit]
+        return rows[:limit]
+    except sqlite3.Error:
+        return []
+
+
+def user_fact_forget(target: str) -> int:
+    t = (target or "").strip()
+    if not t:
+        return 0
+    norm = derive_user_fact_norm_key(t)
+    init_memory_db()
+    try:
+        with sqlite3.connect(MEMORY_DB) as conn:
+            cur = conn.execute(
+                "UPDATE memory_entries SET status='superseded' "
+                "WHERE kind='user_fact' AND status='active' AND (entry_id=? OR norm_key=? OR value LIKE ?)",
+                (t, norm, f"%{t}%"),
+            )
+            return cur.rowcount or 0
+    except sqlite3.Error:
+        return 0
+
+
+def user_fact_promote(entry_id: str) -> bool:
+    """Promote a quarantined LLM fact to active after explicit human confirm."""
+    eid = (entry_id or "").strip()
+    if not eid:
+        return False
+    init_memory_db()
+    try:
+        with sqlite3.connect(MEMORY_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT norm_key, chat_id_hash FROM memory_entries WHERE entry_id=? AND kind='user_fact'",
+                (eid,),
+            ).fetchone()
+            if not row:
+                return False
+            if row["norm_key"]:
+                params = [row["norm_key"]]
+                scope = ""
+                if row["chat_id_hash"]:
+                    scope = " AND chat_id_hash = ?"
+                    params.append(row["chat_id_hash"])
+                conn.execute(
+                    "UPDATE memory_entries SET status='superseded' "
+                    "WHERE kind='user_fact' AND status='active' AND norm_key=?" + scope,
+                    params,
+                )
+            conn.execute("UPDATE memory_entries SET status='active', confidence=1.0 WHERE entry_id=?", (eid,))
+            return True
+    except sqlite3.Error:
+        return False
+
+
+def user_fact_reject(entry_id: str) -> bool:
+    eid = (entry_id or "").strip()
+    if not eid:
+        return False
+    init_memory_db()
+    try:
+        with sqlite3.connect(MEMORY_DB) as conn:
+            cur = conn.execute(
+                "UPDATE memory_entries SET status='rejected' WHERE entry_id=? AND kind='user_fact'",
+                (eid,),
+            )
+            return (cur.rowcount or 0) > 0
+    except sqlite3.Error:
+        return False
 
 
 def project_memory_entry_id(task_id: str, section: str) -> str:
@@ -7719,6 +8034,28 @@ def risk_level_for_text(text: str) -> tuple[str, str]:
             "wyslij mail",
             "wyślij email",
             "wyslij email",
+            "send email to",
+            "wyślij maila",
+            "wyslij maila",
+            "remove",
+            "wipe",
+            "erase",
+            "transfer money",
+            "wire transfer",
+            "send money",
+            "przelej",
+            "pay the",
+            "pay invoice",
+            "make payment",
+            "zapłać",
+            "zaplac",
+            "faktur",
+            "deploy",
+            "wdroż",
+            "wdróż",
+            "do produkcji",
+            "to prod",
+            "on prod",
         ]
     ):
         return "R4", "money/publish/contact/delete/DNS/auth/billing risk"
@@ -12206,8 +12543,19 @@ def read_offset() -> int | None:
 
 
 def write_offset(offset: int) -> None:
+    # L4.64: atomic write (temp + os.replace) so a crash/concurrent write can
+    # never leave a half-written/empty offset file -> no full-backlog replay.
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    OFFSET_FILE.write_text(str(offset), encoding="utf-8")
+    tmp = OFFSET_FILE.with_name(f"{OFFSET_FILE.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+    try:
+        tmp.write_text(str(int(offset)), encoding="utf-8")
+        os.replace(tmp, OFFSET_FILE)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def telegram_get_me() -> bool:
@@ -12620,40 +12968,85 @@ def llm_router_enabled() -> bool:
     return bool_cfg("AI_COUNCIL_LLM_ROUTER", False)
 
 
-def llm_router_should_try(text: str) -> bool:
-    if not llm_router_enabled() or not cfg("XAI_API_KEY"):
-        return False
+SMALLTALK_PHRASES = {
+    "hej",
+    "heja",
+    "hejka",
+    "czesc",
+    "cześć",
+    "siema",
+    "elo",
+    "yo",
+    "hello",
+    "hi",
+    "hey",
+    "witaj",
+    "witam",
+    "dzien dobry",
+    "dzień dobry",
+    "dobry",
+    "dzieki",
+    "dzięki",
+    "dziekuje",
+    "dziękuję",
+    "thx",
+    "thanks",
+    "spoko",
+    "ok",
+    "oki",
+    "okej",
+    "okay",
+    "k",
+    "git",
+    "jasne",
+    "rozumiem",
+    "super",
+    "swietnie",
+    "świetnie",
+    "extra",
+    "dobra",
+    "wporzadku",
+    "pa",
+    "narazie",
+    "na razie",
+    "trzymaj sie",
+    "trzymaj się",
+    "haha",
+    "hahaha",
+    "lol",
+    "xd",
+    "xdd",
+    "aha",
+    "mhm",
+    "no",
+}
+
+
+def is_smalltalk(text: str) -> bool:
     clean = normalize_intent_text(text)
     if not clean:
         return False
-    triggers = [
-        "z tego",
-        "teraz",
-        "kontynuuj",
-        "co dalej",
-        "ogarnij",
-        "sprawdz",
-        "sprawdź",
-        "poszukaj",
-        "zbadaj",
-        "research",
-        "plan",
-        "zaplanuj",
-        "przygotuj",
-        "podsumuj",
-        "znajdz",
-        "znajdź",
-        "kalendarz",
-        "gmail",
-        "drive",
-        "github",
-        "źródł",
-        "zrodl",
-        "pamięć",
-        "pamiec",
-        "poke",
-    ]
-    return any(marker in clean for marker in triggers)
+    if clean in SMALLTALK_PHRASES:
+        return True
+    words = clean.split()
+    if len(words) <= 2 and all(word in SMALLTALK_PHRASES for word in words):
+        return True
+    return False
+
+
+def llm_router_should_try(text: str) -> bool:
+    # Flag + key are the enable switch; the allowlist + min-confidence in
+    # llm_route() are the safety boundary. This function is only a cost gate:
+    # skip cheap smalltalk and ultra-short noise so ordinary natural messages
+    # (even novel phrasings without a fixed keyword) can still reach the router.
+    if not llm_router_enabled() or not cfg("XAI_API_KEY"):
+        return False
+    clean = normalize_intent_text(text)
+    if not clean or is_smalltalk(clean):
+        return False
+    if len(clean) < int_cfg("AI_COUNCIL_LLM_ROUTER_MIN_CHARS", 4):
+        return False
+    return True
 
 
 def extract_json_object(text: str) -> dict | None:
@@ -12740,6 +13133,14 @@ def llm_route(text: str, chat_id: str = "") -> dict | None:
     if command not in LLM_ROUTER_ALLOWED_COMMANDS or confidence < float_cfg("AI_COUNCIL_LLM_ROUTER_MIN_CONF", 0.6):
         return None
     prompt = str(parsed.get("prompt") or clean_text).strip() or clean_text
+    # L4.64 router risk fence (defense-in-depth): an allowlisted read/think command
+    # must never carry a destructive/external-side-effect intent into an auto-started
+    # task. If command+prompt+message classifies R3/R4, fall back to /chat (the
+    # allowlist already blocks write/execute commands; this also blocks an allowlisted
+    # command riding a destructive free-text prompt).
+    fence_risk, _ = risk_level_for_text(f"{command} {prompt} {clean_text}")
+    if fence_risk in {"R3", "R4"}:
+        return None
     route = route_text(f"{command} {prompt}" if command.startswith("/") else f"{command} {prompt}")
     if route.get("command") != command:
         return None
@@ -13157,12 +13558,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     memory_save_prefixes = ["zapamiętaj", "zapamietaj", "zapisz do pamięci", "zapisz do pamieci", "dodaj do pamięci", "dodaj do pamieci", "memory save"]
     if any(lower.startswith(prefix) for prefix in memory_save_prefixes):
         body = strip_intent_prefix(stripped, memory_save_prefixes)
-        if "=" not in body:
-            body = "note = " + body
         return {
             "command": "/memory",
             "operators": ["host"],
-            "prompt": "save " + body,
+            "prompt": "fact " + body,
             "mode": "memory",
             "intent": "natural",
         }
@@ -14761,6 +15160,14 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
                 maybe_send_action_nudges(chat_id, send)
             continue
 
+        # L4.64: persist the inbound user turn BEFORE building/sending the
+        # response, so a send failure or later exception can never drop it.
+        # Idempotent by update_id, so this is safe even if the update replays.
+        try:
+            append_conversation_turn(chat_id, "user", text, route, update_id=update.get("update_id"))
+        except Exception:
+            pass
+
         task = None
         duplicate = None
         background_started = False
@@ -14819,8 +15226,7 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         else:
             event["status"] = "duplicate" if duplicate else "dry_responded"
             print(response)
-        append_conversation_turn(chat_id, "user", text, route)
-        append_conversation_turn(chat_id, "assistant", response, route)
+        append_conversation_turn(chat_id, "assistant", response, route, update_id=update.get("update_id"))
         audit(event)
         processed += 1
         if allowed and chat_id:

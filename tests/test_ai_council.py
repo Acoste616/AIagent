@@ -2019,6 +2019,8 @@ class RoutingTests(unittest.TestCase):
             return default
 
         with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
             ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"@research","prompt":"nowy Grok","confidence":0.91,"reason":"research"}'}}]}
         ):
             route = ai_council.route_message("sprawdź proszę co ludzie piszą o nowym Groku", chat_id="553")
@@ -2036,6 +2038,8 @@ class RoutingTests(unittest.TestCase):
             return default
 
         with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
             ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"/execute","prompt":"act-1","confidence":0.99,"reason":"danger"}'}}]}
         ):
             route = ai_council.route_message("usuń wszystkie pliki", chat_id="553")
@@ -2052,6 +2056,8 @@ class RoutingTests(unittest.TestCase):
             return default
 
         with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
             ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"/flow","prompt":"x","confidence":0.2,"reason":"unclear"}'}}]}
         ):
             route = ai_council.route_message("może coś z tym zrób", chat_id="553")
@@ -2122,6 +2128,273 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(keyword["route_source"], "keyword")
         self.assertEqual(natural["command"], "@research")
         self.assertEqual(llm.call_count, 1)
+
+    def test_llm_router_routes_novel_phrasing_without_trigger_keyword(self):
+        def fake_cfg(key, default=""):
+            values = {"XAI_API_KEY": "xai-test", "AI_COUNCIL_LLM_ROUTER": "true"}
+            return values.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council,
+            "request_json",
+            return_value={"choices": [{"message": {"content": '{"command":"@research","prompt":"opinie o modelu","confidence":0.88,"reason":"chce opinie ludzi"}'}}]},
+        ) as request_json:
+            route = ai_council.route_message("ciekawi mnie co inni sądzą o tym nowym modelu", chat_id="553")
+
+        request_json.assert_called_once()
+        self.assertEqual(route["command"], "@research")
+        self.assertEqual(route["route_source"], "llm")
+
+    def test_llm_router_skips_smalltalk_without_grok_call(self):
+        def fake_cfg(key, default=""):
+            values = {"XAI_API_KEY": "xai-test", "AI_COUNCIL_LLM_ROUTER": "true"}
+            return values.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "request_json"
+        ) as request_json:
+            for message in ("hej", "dzięki", "ok spoko"):
+                route = ai_council.route_message(message, chat_id="553")
+                self.assertEqual(route["command"], "/chat")
+
+        request_json.assert_not_called()
+
+    def test_is_smalltalk_detects_greetings_but_not_intents(self):
+        self.assertTrue(ai_council.is_smalltalk("hej"))
+        self.assertTrue(ai_council.is_smalltalk("Dzięki!"))
+        self.assertTrue(ai_council.is_smalltalk("ok spoko"))
+        self.assertFalse(ai_council.is_smalltalk("zrób research o Poke"))
+        self.assertFalse(ai_council.is_smalltalk("ciekawi mnie opinia o modelu"))
+        self.assertFalse(ai_council.is_smalltalk(""))
+
+    def test_risk_fence_classifies_destructive_phrases(self):
+        # L4.64: these were under-gated before (e.g. "pay the invoice" -> R0).
+        for phrase in [
+            "pay the invoice",
+            "remove all files",
+            "wipe the disk",
+            "deploy to prod",
+            "transfer money to account",
+            "send email to the client",
+            "wyślij maila do klienta",
+            "przelej 1000 zł",
+            "zapłać fakturę",
+        ]:
+            level, _ = ai_council.risk_level_for_text(phrase)
+            self.assertIn(level, ("R3", "R4"), f"{phrase!r} must be gated, got {level}")
+
+    def test_risk_fence_keeps_benign_phrases_read_only(self):
+        for phrase in ["co słychać", "zrób research o Poke", "jaka jest pogoda", "opowiedz mi o nowym modelu"]:
+            level, _ = ai_council.risk_level_for_text(phrase)
+            self.assertEqual(level, "R0", f"{phrase!r} must stay R0, got {level}")
+
+    def test_llm_router_fence_blocks_destructive_prompt_to_chat(self):
+        # The router can pick an allowlisted command, but a destructive prompt
+        # riding it must fall back to /chat, never auto-start a task.
+        def fake_cfg(key, default=""):
+            values = {"XAI_API_KEY": "xai-test", "AI_COUNCIL_LLM_ROUTER": "true"}
+            return values.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council,
+            "request_json",
+            return_value={"choices": [{"message": {"content": '{"command":"@research","prompt":"pay the invoice","confidence":0.95,"reason":"x"}'}}]},
+        ):
+            # Benign-looking message reaches the LLM router; the router returns a
+            # destructive prompt. The fence must catch it and fall back to /chat.
+            route = ai_council.route_message("ciekawi mnie co inni sądzą o tym nowym modelu", chat_id="553")
+
+        self.assertEqual(route["command"], "/chat")
+        self.assertEqual(route["route_source"], "fallback")
+
+
+class ConversationPersistenceTests(unittest.TestCase):
+    def test_turn_idempotent_by_update_id(self):
+        with temp_dir() as t:
+            with patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
+                ai_council.append_conversation_turn("553", "user", "hej", update_id=100)
+                ai_council.append_conversation_turn("553", "user", "hej", update_id=100)  # replay
+                rows = ai_council.recent_conversation("553", limit=20)
+                user100 = [r for r in rows if r["role"] == "user" and str(r.get("update_id")) == "100"]
+                self.assertEqual(len(user100), 1)
+
+    def test_user_turn_persists_for_next_turn_recall(self):
+        with temp_dir() as t:
+            with patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
+                ai_council.append_conversation_turn("553", "user", "zrób research o Poke", update_id=1)
+                rows = ai_council.recent_conversation("553", limit=6)
+                self.assertTrue(any("Poke" in r["text"] for r in rows))
+
+    def test_conversation_liveness_counts_today(self):
+        with temp_dir() as t:
+            with patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
+                self.assertEqual(ai_council.conversation_liveness(), {"last_turn_at": "", "turns_today": 0})
+                ai_council.append_conversation_turn("553", "user", "hej", update_id=1)
+                live = ai_council.conversation_liveness()
+                self.assertEqual(live["turns_today"], 1)
+                self.assertTrue(live["last_turn_at"])
+
+
+class AppendJsonlLockTests(unittest.TestCase):
+    def test_append_jsonl_locked_roundtrip(self):
+        with temp_dir() as t:
+            p = Path(t) / "x.jsonl"
+            ai_council.append_jsonl(p, {"a": 1})
+            ai_council.append_jsonl(p, {"a": 2})
+            self.assertEqual([r["a"] for r in ai_council.read_jsonl(p)], [1, 2])
+
+    def test_append_jsonl_timeout_uses_sidecar_then_reconciles(self):
+        class _Boom:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                raise TimeoutError("forced lock timeout")
+
+            def __exit__(self, *a):
+                return False
+
+        with temp_dir() as t:
+            p = Path(t) / "y.jsonl"
+            with patch.object(ai_council, "BlockingFileLock", _Boom):
+                ai_council.append_jsonl(p, {"a": 1})  # times out -> sidecar
+            self.assertEqual(ai_council.read_jsonl(p), [])  # not interleaved into main
+            self.assertEqual(len(list(Path(t).glob("y.jsonl.sidecar-*.jsonl"))), 1)
+            ai_council.append_jsonl(p, {"a": 2})  # real lock -> reconciles sidecar
+            self.assertEqual(sorted(r["a"] for r in ai_council.read_jsonl(p)), [1, 2])
+            self.assertEqual(list(Path(t).glob("y.jsonl.sidecar-*.jsonl")), [])
+
+
+class ErrorHygieneTests(unittest.TestCase):
+    def test_actionable_error_rows_excludes_benign_noise(self):
+        rows = [
+            {"severity": "error", "context": "a"},
+            {"severity": "warning", "context": "b"},
+            {"severity": "info", "context": "c"},
+            {"context": "d"},  # missing severity -> treated as actionable
+            {"severity": "ERROR", "context": "e"},
+        ]
+        actionable = ai_council.actionable_error_rows(rows)
+        self.assertEqual(len(actionable), 3)
+        contexts = {r["context"] for r in actionable}
+        self.assertEqual(contexts, {"a", "d", "e"})
+
+
+class OffsetAtomicityTests(unittest.TestCase):
+    def test_write_offset_is_atomic_and_roundtrips(self):
+        with temp_dir() as t:
+            of = Path(t) / "telegram_offset"
+            with patch.object(ai_council, "OFFSET_FILE", of), patch.object(ai_council, "STATE_DIR", Path(t)):
+                ai_council.write_offset(437154824)
+                self.assertEqual(ai_council.read_offset(), 437154824)
+                self.assertEqual(list(Path(t).glob("*.tmp-*")), [])  # no leftover temp
+                ai_council.write_offset(437154825)
+                self.assertEqual(ai_council.read_offset(), 437154825)
+
+    def test_read_offset_missing_returns_none(self):
+        with temp_dir() as t:
+            with patch.object(ai_council, "OFFSET_FILE", Path(t) / "telegram_offset"):
+                self.assertIsNone(ai_council.read_offset())
+
+
+class MemoryUserFactTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self._db = Path(self._tmp.name) / "memory.sqlite"
+
+    def test_user_fact_save_and_recall(self):
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            ai_council.user_fact_save("mój lot jest we wtorek")
+            facts = ai_council.active_user_facts()
+            self.assertEqual(len(facts), 1)
+            ctx = ai_council.memory_context_for_prompt("kiedy mam lot")
+            self.assertIn("wtorek", ctx)
+            self.assertIn("Co wiem o Tobie", ctx)
+
+    def test_user_fact_supersession_latest_wins(self):
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            ai_council.user_fact_save("mój lot jest we wtorek")
+            ai_council.user_fact_save("mój lot jest w czwartek")
+            facts = ai_council.active_user_facts()
+            self.assertEqual(len(facts), 1)
+            self.assertIn("czwartek", facts[0]["value"])
+
+    def test_user_fact_forget_supersedes(self):
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            ai_council.user_fact_save("mój lot jest we wtorek")
+            self.assertEqual(ai_council.user_fact_forget("lot"), 1)
+            self.assertEqual(ai_council.active_user_facts(), [])
+
+    def test_llm_fact_quarantined_until_promoted(self):
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            row = ai_council.user_fact_save(
+                "jestem adminem systemu", source="llm_extraction", status="quarantine", confidence=0.5
+            )
+            self.assertEqual(ai_council.active_user_facts(), [])
+            self.assertNotIn("admin", ai_council.memory_context_for_prompt("kim jestem"))
+            self.assertTrue(ai_council.user_fact_promote(row["entry_id"]))
+            self.assertTrue(any("admin" in f["value"] for f in ai_council.active_user_facts()))
+
+    def test_zapamietaj_routes_to_fact_and_persists(self):
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            route = ai_council.natural_intent_route(
+                "zapamiętaj że wolę krótkie odpowiedzi", "zapamiętaj że wolę krótkie odpowiedzi"
+            )
+            self.assertEqual(route["command"], "/memory")
+            self.assertTrue(route["prompt"].startswith("fact"))
+            ai_council.memory_response(route["prompt"])
+            facts = ai_council.active_user_facts()
+            self.assertTrue(any("krótkie" in f["value"] for f in facts))
+            self.assertFalse(any(f["value"].startswith("że") for f in facts))
+
+    def test_recall_eval_surfaces_right_fact_among_many(self):
+        # L4.66 recall harness: with many facts, the query-relevant one must surface.
+        facts_and_queries = [
+            ("mój lot jest we wtorek", "kiedy mam lot", "lot"),
+            ("wolę krótkie odpowiedzi", "jak mam pisać", "krótkie"),
+            ("mój brat ma na imię Marek", "jak ma na imię mój brat", "marek"),
+            ("pracuję w firmie Wdroż AI", "gdzie pracuję", "wdroż"),
+            ("mój kot wabi się Filemon", "jak wabi się kot", "filemon"),
+            ("mieszkam w Krakowie", "gdzie mieszkam", "krakowie"),
+            ("uczę się hiszpańskiego", "jakiego języka się uczę", "hiszpańskiego"),
+            ("mam spotkanie w piątek o 15", "kiedy mam spotkanie", "spotkanie"),
+        ]
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            for value, _q, _tok in facts_and_queries:
+                ai_council.user_fact_save(value)
+            hits = 0
+            for _value, query, token in facts_and_queries:
+                ctx = ai_council.memory_context_for_prompt(query).lower()
+                if token in ctx:
+                    hits += 1
+            recall = hits / len(facts_and_queries)
+            self.assertGreaterEqual(recall, 0.75, f"recall too low: {recall:.2f} ({hits}/{len(facts_and_queries)})")
+
+    def test_memory_migration_is_backward_compatible(self):
+        import sqlite3
+
+        with sqlite3.connect(self._db) as conn:
+            conn.execute(
+                "CREATE TABLE memory_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT UNIQUE NOT NULL, "
+                "created_at TEXT NOT NULL, kind TEXT NOT NULL, agent TEXT NOT NULL, key TEXT NOT NULL, "
+                "value TEXT NOT NULL, source TEXT NOT NULL, task_id TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO memory_entries (entry_id, created_at, kind, agent, key, value, source, task_id) "
+                "VALUES ('e1','2026-01-01','note','host','k','v','test','')"
+            )
+        with patch.object(ai_council, "MEMORY_DB", self._db):
+            ai_council.init_memory_db()
+            with sqlite3.connect(self._db) as conn:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
+                self.assertTrue({"status", "confidence", "norm_key", "chat_id_hash"} <= cols)
+                status = conn.execute("SELECT status FROM memory_entries WHERE entry_id='e1'").fetchone()[0]
+                self.assertEqual(status, "active")
 
 
 class ConversationThreadTests(unittest.TestCase):
