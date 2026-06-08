@@ -2350,6 +2350,60 @@ class MorningBriefTests(unittest.TestCase):
         self.assertEqual(ai_council.route_text("/brief")["command"], "/brief")
 
 
+class ReminderTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self._state = patch.object(ai_council, "STATE_DIR", Path(self._tmp.name))
+        self._state.start()
+        self.addCleanup(self._state.stop)
+
+    def test_parse_reminder(self):
+        rec, err = ai_council.parse_reminder("daily 09:00 wypij wodę")
+        self.assertEqual(err, "")
+        self.assertEqual((rec["kind"], rec["time"]), ("daily", "09:00"))
+        self.assertEqual(ai_council.parse_reminder("weekly wt 09:00 raport")[0]["day"], 1)
+        self.assertEqual(ai_council.parse_reminder("once 2026-06-10 15:00 spotkanie")[0]["kind"], "once")
+        self.assertIsNone(ai_council.parse_reminder("daily 99:99 zle")[0])
+
+    def test_add_list_cancel(self):
+        out = ai_council.add_reminder("daily 09:00 wypij wodę")
+        self.assertIn("Przypomnienie", out)
+        rid = re.search(r"rem-[0-9a-f]+", out).group(0)
+        self.assertIn(rid, ai_council.reminders_response("list"))
+        self.assertIn("Anulowano", ai_council.reminders_response(f"cancel {rid}"))
+        self.assertNotIn(rid, ai_council.reminders_response("list"))
+
+    def test_daily_due_and_dedup(self):
+        ai_council.add_reminder("daily 12:00 lek")
+        rec = ai_council.active_reminders()[0]
+        before = datetime(2026, 6, 8, 9, 0, tzinfo=timezone.utc)   # local 11:00 < 12:00
+        after = datetime(2026, 6, 8, 11, 0, tzinfo=timezone.utc)   # local 13:00 >= 12:00
+        self.assertFalse(ai_council.reminder_due(rec, before))
+        self.assertTrue(ai_council.reminder_due(rec, after))
+
+    def test_run_due_reminders_fires_once(self):
+        ai_council.add_reminder("daily 12:00 lek")
+        after = datetime(2026, 6, 8, 11, 0, tzinfo=timezone.utc)
+        with patch.object(ai_council, "telegram_send_message", return_value=True) as send, \
+             patch.object(ai_council, "control_paused_reason", return_value=""):
+            self.assertEqual(ai_council.run_due_reminders(send=True, chat_id="553", now=after), 1)
+            self.assertEqual(ai_council.run_due_reminders(send=True, chat_id="553", now=after), 0)
+            self.assertEqual(send.call_count, 1)
+
+    def test_once_fires_then_done(self):
+        ai_council.add_reminder("once 2026-06-08 12:00 jednorazowe")
+        after = datetime(2026, 6, 8, 11, 0, tzinfo=timezone.utc)
+        with patch.object(ai_council, "telegram_send_message", return_value=True), \
+             patch.object(ai_council, "control_paused_reason", return_value=""):
+            self.assertEqual(ai_council.run_due_reminders(send=True, chat_id="553", now=after), 1)
+            self.assertEqual(ai_council.active_reminders(), [])
+
+    def test_remind_routes(self):
+        self.assertEqual(ai_council.route_text("/remind daily 09:00 x")["command"], "/remind")
+        self.assertEqual(ai_council.route_text("/reminders")["command"], "/reminders")
+
+
 class HandsSandboxTests(unittest.TestCase):
     def setUp(self):
         self._tmp = temp_dir()

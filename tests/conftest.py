@@ -52,3 +52,18 @@ for _var, _subdir in _REDIRECT.items():
     _target = _SANDBOX / _subdir
     _target.mkdir(parents=True, exist_ok=True)
     os.environ[_var] = str(_target)
+
+# Feature flags + secrets are forced OFF/empty for the suite so "off by default"
+# tests are deterministic regardless of the production host's .env (load_env lets
+# os.environ override the .env for AI_COUNCIL_*/GITHUB_*/GOOGLE_* keys). Tests that
+# need a flag ON enable it locally via patch (cfg / patch.dict(os.environ)), so this
+# only neutralizes ambient host state. Also prevents tests from using real tokens.
+for _flag in (
+    "AI_COUNCIL_PROACTIVE_BRIEF", "AI_COUNCIL_FACT_EXTRACTION", "AI_COUNCIL_FACT_AUTO_EXTRACT",
+    "AI_COUNCIL_LOCAL_HANDS", "AI_COUNCIL_LOCAL_HANDS_WRITE", "AI_COUNCIL_LLM_ROUTER",
+    "AI_COUNCIL_PROVIDER_WRITE_ENABLED", "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED",
+):
+    os.environ[_flag] = "false"
+for _secret in ("GITHUB_TOKEN", "GH_TOKEN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"):
+    os.environ.pop(_secret, None)
+    os.environ[_secret] = ""

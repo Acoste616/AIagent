@@ -185,6 +185,8 @@ READONLY_RECIPE_COMMANDS = {
     "/fs",
     "/outcome",
     "/brief",
+    "/remind",
+    "/reminders",
     "/project-memory",
     "/chat",
     "@research",
@@ -10134,6 +10136,133 @@ def maybe_send_morning_brief(send: bool = False, chat_id: str = "", now=None) ->
     return 1
 
 
+REMINDER_DAY_ALIASES = {
+    "pon": 0, "poniedzialek": 0, "poniedziałek": 0, "mon": 0,
+    "wt": 1, "wtorek": 1, "tue": 1,
+    "sr": 2, "śr": 2, "sroda": 2, "środa": 2, "wed": 2,
+    "czw": 3, "czwartek": 3, "thu": 3,
+    "pt": 4, "piatek": 4, "piątek": 4, "fri": 4,
+    "sob": 5, "sobota": 5, "sat": 5,
+    "ndz": 6, "niedziela": 6, "sun": 6,
+}
+
+
+def _reminders_file() -> Path:
+    return STATE_DIR / "reminders.jsonl"
+
+
+def _local_now(now=None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return now + timedelta(hours=int_cfg("AI_COUNCIL_TZ_OFFSET_HOURS", 2))
+
+
+def _valid_hhmm(t: str) -> bool:
+    try:
+        h, m = str(t).split(":")
+        return 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+    except (ValueError, AttributeError):
+        return False
+
+
+def parse_reminder(prompt: str):
+    parts = (prompt or "").strip().split()
+    fmt = "Format: /remind daily HH:MM <tekst> | weekly <dzień> HH:MM <tekst> | once YYYY-MM-DD HH:MM <tekst>"
+    if not parts:
+        return None, fmt
+    mode = parts[0].lower()
+    if mode == "daily" and len(parts) >= 3 and _valid_hhmm(parts[1]):
+        return {"kind": "daily", "time": parts[1], "text": " ".join(parts[2:])}, ""
+    if mode == "weekly" and len(parts) >= 4 and parts[1].lower() in REMINDER_DAY_ALIASES and _valid_hhmm(parts[2]):
+        return {"kind": "weekly", "day": REMINDER_DAY_ALIASES[parts[1].lower()], "time": parts[2], "text": " ".join(parts[3:])}, ""
+    if mode == "once" and len(parts) >= 4 and _valid_hhmm(parts[2]):
+        try:
+            datetime.strptime(parts[1], "%Y-%m-%d")
+        except ValueError:
+            return None, "Zła data (YYYY-MM-DD)."
+        return {"kind": "once", "date": parts[1], "time": parts[2], "text": " ".join(parts[3:])}, ""
+    return None, fmt
+
+
+def add_reminder(prompt: str) -> str:
+    rec, err = parse_reminder(prompt)
+    if err:
+        return "[Council] " + err
+    if not rec["text"].strip():
+        return "[Council] Brak treści przypomnienia."
+    rid = "rem-" + short_hash(json.dumps(rec, ensure_ascii=False) + utc_now())[:8]
+    rec.update({"reminder_id": rid, "status": "active", "created_at": utc_now(), "last_fired": ""})
+    append_jsonl(_reminders_file(), rec)
+    when = {
+        "daily": f"codziennie o {rec.get('time')}",
+        "weekly": f"co tydzień (dzień {rec.get('day')}) o {rec.get('time')}",
+        "once": f"{rec.get('date')} o {rec.get('time')}",
+    }.get(rec["kind"], "")
+    return f"[Council] Przypomnienie ✅ ({rid}): „{compact_line(rec['text'], 60)}” — {when}. Lista: /reminders"
+
+
+def active_reminders() -> list[dict]:
+    return [r for r in latest_by_id(_reminders_file(), "reminder_id", limit=200) if r.get("status") == "active"]
+
+
+def _mark_reminder_fired(rec: dict, fired_day: str) -> None:
+    done = rec.get("kind") == "once"
+    append_jsonl(_reminders_file(), {**rec, "last_fired": fired_day, "status": "done" if done else "active", "updated_at": utc_now()})
+
+
+def reminder_due(rec: dict, now=None) -> bool:
+    if rec.get("status") != "active" or not _valid_hhmm(rec.get("time")):
+        return False
+    ln = _local_now(now)
+    hh, mm = (int(x) for x in str(rec["time"]).split(":"))
+    slot_passed = (ln.hour, ln.minute) >= (hh, mm)
+    today = ln.strftime("%Y-%m-%d")
+    kind = rec.get("kind")
+    if kind == "daily":
+        return slot_passed and rec.get("last_fired") != today
+    if kind == "weekly":
+        return ln.weekday() == int(rec.get("day", -1)) and slot_passed and rec.get("last_fired") != today
+    if kind == "once":
+        return today >= str(rec.get("date") or "") and slot_passed and not rec.get("last_fired")
+    return False
+
+
+def run_due_reminders(send: bool = False, chat_id: str = "", now=None) -> int:
+    if control_paused_reason("proactive"):
+        return 0
+    chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    today = _local_now(now).strftime("%Y-%m-%d")
+    fired = 0
+    for rec in active_reminders():
+        if not reminder_due(rec, now):
+            continue
+        if send and chat_id:
+            telegram_send_message(chat_id, "⏰ Przypomnienie: " + str(rec.get("text") or ""))
+        _mark_reminder_fired(rec, today)
+        fired += 1
+    return fired
+
+
+def reminders_response(prompt: str) -> str:
+    parts = (prompt or "").strip().split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if sub == "cancel":
+        for r in active_reminders():
+            if r["reminder_id"] == rest:
+                append_jsonl(_reminders_file(), {**r, "status": "cancelled", "updated_at": utc_now()})
+                return f"[Council] Anulowano {rest}."
+        return f"[Council] Nie znaleziono aktywnego przypomnienia: {rest}"
+    if sub in ("", "list"):
+        rows = active_reminders()
+        if not rows:
+            return "[Council] Brak przypomnień. Ustaw: /remind daily 09:00 <tekst>"
+        lines = ["[Council] Przypomnienia:"]
+        for r in rows:
+            lines.append(f"- {r['reminder_id']} [{r.get('kind')}] o {r.get('time')}: {compact_line(str(r.get('text','')), 50)} → /remind cancel {r['reminder_id']}")
+        return "\n".join(lines)
+    return add_reminder(prompt)
+
+
 def maybe_send_action_nudges(chat_id: str, send: bool) -> int:
     if not chat_id or not send:
         return 0
@@ -14606,6 +14735,10 @@ def route_text(text: str) -> dict:
         return {"command": "/outcome", "operators": ["host"], "prompt": stripped[8:].strip(), "mode": "outcome"}
     if lower == "/brief" or lower.startswith("/brief "):
         return {"command": "/brief", "operators": ["host"], "prompt": "", "mode": "brief"}
+    if lower == "/reminders" or lower.startswith("/reminders "):
+        return {"command": "/reminders", "operators": ["host"], "prompt": stripped[10:].strip() or "list", "mode": "remind"}
+    if lower == "/remind" or lower.startswith("/remind "):
+        return {"command": "/remind", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "remind"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
     if lower.startswith("/project-memory"):
@@ -15469,6 +15602,13 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return outcome_response(prompt)
     if command == "/brief":
         return build_morning_brief() or "[Council] Nic pilnego — brief pusty (cisza). Wszystko ogarnięte ✅."
+    if command == "/remind":
+        p = (prompt or "").strip()
+        if not p or p.lower().startswith(("list", "cancel")):
+            return reminders_response(p)
+        return add_reminder(p)
+    if command == "/reminders":
+        return reminders_response(prompt)
     if command == "/project-memory":
         return project_memory_response(prompt)
     if command == "/recipe":
@@ -15993,6 +16133,9 @@ def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int
             brief = maybe_send_morning_brief(send=send)
             if brief:
                 print(f"morning_brief_sent={brief}")
+            reminders_fired = run_due_reminders(send=send)
+            if reminders_fired:
+                print(f"reminders_fired={reminders_fired}")
             code = listen_once(send=send, limit=limit, verbose=False)
             if code != 0:
                 print(f"serve_poll_error code={code}")
