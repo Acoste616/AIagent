@@ -187,6 +187,8 @@ READONLY_RECIPE_COMMANDS = {
     "/brief",
     "/remind",
     "/reminders",
+    "/automate",
+    "/automations",
     "/gh",
     "/project-memory",
     "/chat",
@@ -10356,6 +10358,61 @@ def reminder_due(rec: dict, now=None) -> bool:
     return False
 
 
+AUTOMATION_ALLOWED_COMMANDS = {
+    "@research", "/xresearch", "@xresearch", "/flow", "/council", "/brief",
+    "/status", "/agent", "/cost", "/loops", "/health", "/front", "/errors",
+    "/improvements", "/reminders", "/automations", "/nudges", "/followups",
+}
+
+
+def automation_command_safe(command: str) -> bool:
+    """L4.76: an automation may only run explicitly read/think commands — never
+    write/execute. Allowlist (subcommand-aware for /gh and /memory) is the gate."""
+    cmd = (command or "").strip()
+    if not cmd:
+        return False
+    route = route_text(cmd)
+    c = route.get("command")
+    rest = str(route.get("prompt") or "").strip().lower()
+    if c in AUTOMATION_ALLOWED_COMMANDS:
+        return True
+    if c == "/gh" and (rest == "" or rest.startswith(("issues", "list"))):
+        return True
+    if c == "/memory" and rest.startswith(("facts", "recent", "search", "pending")):
+        return True
+    return False
+
+
+def add_automation(prompt: str) -> str:
+    rec, err = parse_reminder(prompt)
+    if err:
+        structured = natural_reminder_to_structured(prompt)
+        if structured:
+            rec, err = parse_reminder(structured)
+    if err:
+        return "[Council] " + err + " (komenda po czasie, np. /automate daily 09:00 /gh issues)"
+    command = rec["text"].strip()
+    if not automation_command_safe(command):
+        return "[Council] Automatyzacja może uruchamiać tylko bezpieczne komendy read/think (np. /gh issues, /brief, /agent, status) — nie write/execute."
+    rid = "aut-" + short_hash(json.dumps(rec, ensure_ascii=False) + utc_now())[:8]
+    rec.update({"reminder_id": rid, "status": "active", "created_at": utc_now(), "last_fired": "", "exec": True, "command": command})
+    append_jsonl(_reminders_file(), rec)
+    return f"[Council] Automatyzacja ✅ ({rid}): uruchamia `{compact_line(command, 50)}` ({rec['kind']} o {rec.get('time')}). Lista: /automations"
+
+
+def run_automation_command(command: str, chat_id: str, send: bool) -> None:
+    if not automation_command_safe(command):
+        return
+    route = route_text(command)
+    try:
+        resp = build_response(route, chat_id=chat_id)
+    except Exception as exc:
+        resp = f"[Council] Automation error: {compact_line(str(exc), 200)}"
+    if send and chat_id:
+        text = f"🤖 Automatyzacja `{compact_line(command, 40)}`:\n{str(resp)[:3500]}"
+        telegram_send_message_with_markup(chat_id, text, response_reply_markup(str(resp)))
+
+
 def run_due_reminders(send: bool = False, chat_id: str = "", now=None) -> int:
     if control_paused_reason("proactive"):
         return 0
@@ -10365,11 +10422,34 @@ def run_due_reminders(send: bool = False, chat_id: str = "", now=None) -> int:
     for rec in active_reminders():
         if not reminder_due(rec, now):
             continue
-        if send and chat_id:
+        if rec.get("exec") and rec.get("command"):
+            run_automation_command(str(rec.get("command")), chat_id, send)
+        elif send and chat_id:
             telegram_send_message(chat_id, "⏰ Przypomnienie: " + str(rec.get("text") or ""))
         _mark_reminder_fired(rec, today)
         fired += 1
     return fired
+
+
+def automations_response(prompt: str) -> str:
+    parts = (prompt or "").strip().split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if sub == "cancel":
+        for r in active_reminders():
+            if r["reminder_id"] == rest and r.get("exec"):
+                append_jsonl(_reminders_file(), {**r, "status": "cancelled", "updated_at": utc_now()})
+                return f"[Council] Anulowano automatyzację {rest}."
+        return f"[Council] Nie znaleziono automatyzacji: {rest}"
+    if sub in ("", "list"):
+        rows = [r for r in active_reminders() if r.get("exec")]
+        if not rows:
+            return "[Council] Brak automatyzacji. Ustaw: /automate daily 09:00 /gh issues"
+        lines = ["[Council] Automatyzacje:"]
+        for r in rows:
+            lines.append(f"- {r['reminder_id']} [{r.get('kind')}] o {r.get('time')}: `{compact_line(str(r.get('command','')), 40)}` → /automations cancel {r['reminder_id']}")
+        return "\n".join(lines)
+    return add_automation(prompt)
 
 
 def reminders_response(prompt: str) -> str:
@@ -10383,7 +10463,7 @@ def reminders_response(prompt: str) -> str:
                 return f"[Council] Anulowano {rest}."
         return f"[Council] Nie znaleziono aktywnego przypomnienia: {rest}"
     if sub in ("", "list"):
-        rows = active_reminders()
+        rows = [r for r in active_reminders() if not r.get("exec")]
         if not rows:
             return "[Council] Brak przypomnień. Ustaw: /remind daily 09:00 <tekst>"
         lines = ["[Council] Przypomnienia:"]
@@ -14910,6 +14990,10 @@ def route_text(text: str) -> dict:
         return {"command": "/remind", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "remind"}
     if lower == "/gh" or lower.startswith("/gh "):
         return {"command": "/gh", "operators": ["host"], "prompt": stripped[3:].strip(), "mode": "gh"}
+    if lower == "/automations" or lower.startswith("/automations "):
+        return {"command": "/automations", "operators": ["host"], "prompt": stripped[12:].strip() or "list", "mode": "automate"}
+    if lower == "/automate" or lower.startswith("/automate "):
+        return {"command": "/automate", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "automate"}
     if lower.startswith("/memory"):
         return {"command": "/memory", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "memory"}
     if lower.startswith("/project-memory"):
@@ -15780,6 +15864,10 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return add_reminder(p)
     if command == "/gh":
         return gh_response(prompt)
+    if command == "/automate":
+        return add_automation(prompt)
+    if command == "/automations":
+        return automations_response(prompt)
     if command == "/reminders":
         return reminders_response(prompt)
     if command == "/project-memory":

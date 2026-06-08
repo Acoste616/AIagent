@@ -2350,6 +2350,48 @@ class MorningBriefTests(unittest.TestCase):
         self.assertEqual(ai_council.route_text("/brief")["command"], "/brief")
 
 
+class AutomationTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self._state = patch.object(ai_council, "STATE_DIR", Path(self._tmp.name))
+        self._state.start()
+        self.addCleanup(self._state.stop)
+
+    def test_safe_command_allowlist(self):
+        self.assertTrue(ai_council.automation_command_safe("/gh issues"))
+        self.assertTrue(ai_council.automation_command_safe("/brief"))
+        self.assertTrue(ai_council.automation_command_safe("/agent"))
+        self.assertFalse(ai_council.automation_command_safe("/gh issue zrób X"))
+        self.assertFalse(ai_council.automation_command_safe("/fs commit x = y"))
+        self.assertFalse(ai_council.automation_command_safe("/memory save x = y"))
+
+    def test_add_automation_safe_and_unsafe(self):
+        out = ai_council.add_automation("daily 09:00 /gh issues")
+        self.assertIn("Automatyzacja", out)
+        self.assertTrue(any(r.get("exec") and r.get("command") == "/gh issues" for r in ai_council.active_reminders()))
+        self.assertIn("tylko bezpieczne", ai_council.add_automation("daily 09:00 /fs commit x = y"))
+
+    def test_automation_runs_when_due(self):
+        ai_council.add_automation("daily 12:00 /brief")
+        after = datetime(2026, 6, 8, 11, 0, tzinfo=timezone.utc)
+        with patch.object(ai_council, "telegram_send_message_with_markup", return_value=True) as send, \
+             patch.object(ai_council, "telegram_send_message", return_value=True), \
+             patch.object(ai_council, "control_paused_reason", return_value=""), \
+             patch.object(ai_council, "build_response", return_value="[Council] brief text"):
+            self.assertEqual(ai_council.run_due_reminders(send=True, chat_id="553", now=after), 1)
+            self.assertEqual(send.call_count, 1)
+            self.assertIn("Automatyzacja", send.call_args.args[1])
+
+    def test_automations_list_separate_from_reminders(self):
+        ai_council.add_reminder("daily 08:00 wypij wode")
+        ai_council.add_automation("daily 09:00 /gh issues")
+        self.assertIn("/gh issues", ai_council.automations_response("list"))
+        self.assertNotIn("/gh issues", ai_council.reminders_response("list"))
+        self.assertIn("wypij wode", ai_council.reminders_response("list"))
+        self.assertNotIn("wypij wode", ai_council.automations_response("list"))
+
+
 class GitHubActionsTests(unittest.TestCase):
     def test_list_issues_filters_prs(self):
         data = [{"number": 5, "title": "Bug w routerze"}, {"number": 6, "title": "PR jakiś", "pull_request": {}}]
