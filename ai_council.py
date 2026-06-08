@@ -8054,6 +8054,129 @@ def fs_stat(rel: str) -> str:
     return f"[Council] {target.name}: {kind} size={st.st_size}B"
 
 
+def hands_write_enabled() -> bool:
+    # Writes require BOTH the master hands flag AND a separate write flag. Off by default.
+    return local_hands_enabled() and bool_cfg("AI_COUNCIL_LOCAL_HANDS_WRITE", False)
+
+
+def _hands_split_write_arg(arg: str):
+    if "=" not in (arg or ""):
+        return (arg or "").strip(), None
+    rel, content = arg.split("=", 1)
+    return rel.strip(), content.strip()
+
+
+def _hands_backup_dir() -> Path:
+    # Backups live OUTSIDE the sandbox (under STATE_DIR), keyed by target hash —
+    # so a sandbox symlink named "<file>.hands-bak" can never redirect a backup
+    # write (red-team CRITICAL), and real sandbox files are never clobbered.
+    d = STATE_DIR / "hands_backups"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _hands_backup_keys(target: Path):
+    key = short_hash(str(target))
+    base = _hands_backup_dir()
+    return base / f"{key}.meta", base / f"{key}.data"
+
+
+def _hands_safe_write_bytes(target: Path, data: bytes) -> None:
+    """Write with O_NOFOLLOW where available so a symlink/junction swapped in at
+    the leaf cannot redirect the write outside the sandbox (atomic no-follow on
+    POSIX; on Windows the reparse re-check + safe_resolve are the guard)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(target), flags, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+
+def fs_write(rel: str, content, commit: bool = False) -> str:
+    """L4.69.1 sandboxed write. Two-step: preview (commit=False) then commit=True.
+    Reuses hardened safe_resolve; backups stored OUTSIDE the sandbox; O_NOFOLLOW
+    write. Off by default + explicit commit."""
+    if not hands_write_enabled():
+        return "[Council] Zapis przez hands wyłączony (ustaw AI_COUNCIL_LOCAL_HANDS_WRITE=true)."
+    if content is None:
+        return "[Council] Użyj: /fs write <plik> = <treść>"
+    try:
+        target = safe_resolve(rel)
+    except HandsError as exc:
+        return f"[Council] Odrzucono: {exc}"
+    if target.exists() and not target.is_file():
+        return "[Council] Cel nie jest zwykłym plikiem."
+    if not target.parent.exists() or not target.parent.is_dir():
+        return "[Council] Katalog docelowy nie istnieje (v1 nie tworzy katalogów)."
+    max_bytes = int_cfg("AI_COUNCIL_HANDS_MAX_BYTES", 1048576)
+    data = content.encode("utf-8", errors="replace")
+    if len(data) > max_bytes:
+        return f"[Council] Treść za duża (limit {max_bytes}B)."
+    existed = target.exists()
+    if not commit:
+        action = "NADPISZE istniejący" if existed else "UTWORZY nowy"
+        _audit_hands("write_preview", rel, resolved=target, decision="preview", size_bytes=len(content))
+        return (
+            f"[Council] DRY-RUN: {action} plik {target.name} ({len(content)} znaków). "
+            f"Aby wykonać: `/fs commit {rel} = <treść>`. Cofnięcie po zapisie: `/fs undo {rel}`."
+        )
+    if _hands_is_reparse(target) or not _hands_canonical_contained(target, hands_root()):
+        _audit_hands("write", rel, resolved=target, decision="rejected_toctou")
+        return "[Council] Odrzucono: cel zmienił się przed zapisem."
+    meta_path, data_path = _hands_backup_keys(target)
+    try:
+        if existed:
+            data_path.write_bytes(target.read_bytes())
+        elif data_path.exists():
+            data_path.unlink()
+        meta_path.write_text(
+            json.dumps({"target": str(target), "existed": existed, "ts": utc_now()}), encoding="utf-8"
+        )
+        _hands_safe_write_bytes(target, data)
+    except OSError as exc:
+        _audit_hands("write", rel, resolved=target, decision="error")
+        return f"[Council] Błąd zapisu: {exc}"
+    _audit_hands("write", rel, resolved=target, decision="committed", size_bytes=len(content))
+    return f"[Council] Zapisano ✅ {target.name} ({len(content)} znaków). Cofnij: `/fs undo {rel}`"
+
+
+def fs_undo(rel: str) -> str:
+    if not hands_write_enabled():
+        return "[Council] Undo przez hands wyłączone (AI_COUNCIL_LOCAL_HANDS_WRITE)."
+    try:
+        target = safe_resolve(rel)
+    except HandsError as exc:
+        return f"[Council] Odrzucono: {exc}"
+    meta_path, data_path = _hands_backup_keys(target)
+    if not meta_path.exists():
+        return "[Council] Brak backupu do cofnięcia (nic nie zapisano przez hands)."
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return "[Council] Backup uszkodzony."
+    if meta.get("target") != str(target):
+        return "[Council] Backup nie pasuje do celu."
+    if target.exists() and (_hands_is_reparse(target) or not _hands_canonical_contained(target, hands_root())):
+        return "[Council] Odrzucono: cel zmienił się przed cofnięciem."
+    try:
+        if meta.get("existed"):
+            _hands_safe_write_bytes(target, data_path.read_bytes())
+            if data_path.exists():
+                data_path.unlink()
+            meta_path.unlink()
+            result = f"przywrócono poprzednią treść {target.name}"
+        else:
+            if target.exists():
+                target.unlink()
+            meta_path.unlink()
+            result = f"usunięto {target.name} (wrócił do stanu „nie istniał”)"
+    except OSError as exc:
+        return f"[Council] Błąd cofania: {exc}"
+    _audit_hands("undo", rel, resolved=target, decision="restored")
+    return f"[Council] Cofnięto ✅ {result}."
+
+
 def fs_response(prompt: str) -> str:
     parts = (prompt or "").strip().split(None, 1)
     sub = parts[0].lower() if parts else ""
@@ -8064,7 +8187,19 @@ def fs_response(prompt: str) -> str:
         return fs_read(arg)
     if sub == "stat":
         return fs_stat(arg)
-    return "[Council] OpenClaw hands (read-only). Użyj: /fs list [ścieżka] | /fs read <plik> | /fs stat <ścieżka>. Sandbox: " + str(hands_root())
+    if sub == "write":
+        rel, content = _hands_split_write_arg(arg)
+        return fs_write(rel, content, commit=False)
+    if sub == "commit":
+        rel, content = _hands_split_write_arg(arg)
+        return fs_write(rel, content, commit=True)
+    if sub == "undo":
+        return fs_undo(arg)
+    return (
+        "[Council] OpenClaw hands. Read-only: /fs list [ścieżka] | /fs read <plik> | /fs stat <ścieżka>. "
+        "Write (gated): /fs write <plik> = <treść> (dry-run) -> /fs commit <plik> = <treść> -> /fs undo <plik>. "
+        "Sandbox: " + str(hands_root())
+    )
 
 
 def project_memory_entry_id(task_id: str, section: str) -> str:

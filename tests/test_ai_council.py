@@ -2305,6 +2305,85 @@ class HandsSandboxTests(unittest.TestCase):
         self.assertIn("zzcontent", out)
 
 
+class HandsWriteTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "hands"
+        self.root.mkdir()
+        self._env = patch.dict(os.environ, {
+            "AI_COUNCIL_HANDS_ROOT": str(self.root),
+            "AI_COUNCIL_LOCAL_HANDS": "true",
+            "AI_COUNCIL_LOCAL_HANDS_WRITE": "true",
+        })
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def test_preview_does_not_write(self):
+        self.assertIn("DRY-RUN", ai_council.fs_write("a.txt", "hello", commit=False))
+        self.assertFalse((self.root / "a.txt").exists())
+
+    def test_commit_then_undo_restores_previous(self):
+        ai_council.fs_write("a.txt", "v1", commit=True)
+        self.assertEqual((self.root / "a.txt").read_text(), "v1")
+        ai_council.fs_write("a.txt", "v2", commit=True)
+        self.assertEqual((self.root / "a.txt").read_text(), "v2")
+        ai_council.fs_undo("a.txt")
+        self.assertEqual((self.root / "a.txt").read_text(), "v1")
+
+    def test_undo_of_new_file_deletes_it(self):
+        ai_council.fs_write("fresh.txt", "x", commit=True)
+        self.assertTrue((self.root / "fresh.txt").exists())
+        self.assertIn("usunięto", ai_council.fs_undo("fresh.txt"))
+        self.assertFalse((self.root / "fresh.txt").exists())
+
+    def test_write_escapes_never_touch_outside(self):
+        outside = Path(self._tmp.name) / "outside.txt"
+        outside.write_text("ORIG", encoding="utf-8")
+        for bad in ["../outside.txt", "..\\outside.txt", "/tmp/x", "NUL", "a.txt:s", ".. /outside.txt"]:
+            ai_council.fs_write(bad, "PWNED", commit=True)
+        self.assertEqual(outside.read_text(), "ORIG")
+
+    def test_write_through_symlink_rejected(self):
+        outside = Path(self._tmp.name) / "outside.txt"
+        outside.write_text("ORIG", encoding="utf-8")
+        try:
+            (self.root / "link.txt").symlink_to(outside)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not permitted")
+        ai_council.fs_write("link.txt", "PWNED", commit=True)
+        self.assertEqual(outside.read_text(), "ORIG")
+
+    def test_write_off_by_default(self):
+        with patch.dict(os.environ, {"AI_COUNCIL_LOCAL_HANDS_WRITE": "false"}):
+            self.assertIn("wyłączony", ai_council.fs_write("a.txt", "x", commit=True))
+            self.assertFalse((self.root / "a.txt").exists())
+
+    def test_size_limit_on_write(self):
+        self.assertIn("za duża", ai_council.fs_write("big.txt", "x" * (1048576 + 10), commit=True))
+        self.assertFalse((self.root / "big.txt").exists())
+
+    def test_backup_symlink_vector_closed(self):
+        # Red-team CRITICAL: a sandbox symlink named "<file>.hands-bak" must not
+        # redirect the backup write outside (backups now live outside the sandbox).
+        outside = Path(self._tmp.name) / "victim.txt"
+        outside.write_text("VICTIM", encoding="utf-8")
+        (self.root / "notes.txt").write_text("orig", encoding="utf-8")
+        try:
+            (self.root / "notes.txt.hands-bak").symlink_to(outside)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not permitted")
+        ai_council.fs_write("notes.txt", "NEW", commit=True)
+        self.assertEqual(outside.read_text(), "VICTIM")
+
+    def test_sibling_hands_bak_file_not_clobbered(self):
+        # Red-team HIGH: a real file literally named "<x>.hands-bak" is no longer touched.
+        (self.root / "data.txt").write_text("data", encoding="utf-8")
+        (self.root / "data.txt.hands-bak").write_text("PRECIOUS", encoding="utf-8")
+        ai_council.fs_write("data.txt", "new", commit=True)
+        self.assertEqual((self.root / "data.txt.hands-bak").read_text(), "PRECIOUS")
+
+
 class ConversationPersistenceTests(unittest.TestCase):
     def test_turn_idempotent_by_update_id(self):
         with temp_dir() as t:
