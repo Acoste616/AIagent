@@ -8438,6 +8438,11 @@ class SetupOnboardingTests(unittest.TestCase):
         out = ai_council.build_response({"command": "/setup", "prompt": ""})
         self.assertIn("Onboarding", out)
 
+    def test_setup_is_readonly_router_allowed(self):
+        self.assertIn("/setup", ai_council.READONLY_RECIPE_COMMANDS)
+        self.assertIn("/setup", ai_council.FRONT_QUALITY_TECHNICAL_COMMANDS)
+        self.assertIn("/setup", ai_council.LLM_ROUTER_ALLOWED_COMMANDS)
+
 
 if __name__ == "__main__":
     unittest.main()
