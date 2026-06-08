@@ -8265,5 +8265,101 @@ class CouncilAllVerdictTests(unittest.TestCase):
         self.assertIn("NASTĘPNY KROK:", out)
 
 
+class IMessageBridgeTests(unittest.TestCase):
+    """L4.82: macOS native iMessage/Mail bridge — armed but OFF by default."""
+
+    def test_applescript_quote_escapes(self):
+        self.assertEqual(ai_council.applescript_quote('a"b\\c'), '"a\\"b\\\\c"')
+
+    def test_imessage_gated_off_by_default(self):
+        # conftest forces the flag off; send must refuse without touching osascript.
+        with patch.object(ai_council, "subprocess") as sp:
+            out = ai_council.imessage_send("hej")
+        self.assertIn("gated", out)
+        sp.run.assert_not_called()
+
+    def test_imessage_requires_recipient(self):
+        def fake_cfg(key, default=""):
+            return {"AI_COUNCIL_IMESSAGE_ENABLED": "true", "AI_COUNCIL_IMESSAGE_TO": ""}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg):
+            out = ai_council.imessage_send("hej")
+        self.assertIn("brak odbiorcy", out)
+
+    def test_imessage_send_builds_applescript_and_calls_osascript(self):
+        def fake_cfg(key, default=""):
+            return {"AI_COUNCIL_IMESSAGE_ENABLED": "true", "AI_COUNCIL_IMESSAGE_TO": "+48555"}.get(key, default)
+
+        captured = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            return _Proc()
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "on_macos", return_value=True
+        ), patch.object(ai_council.subprocess, "run", side_effect=fake_run):
+            out = ai_council.imessage_send("cześć \"świat\"")
+
+        self.assertIn("wysłane do +48555", out)
+        script = captured["args"][-1]
+        self.assertIn("Messages", script)
+        self.assertIn("+48555", script)
+        self.assertIn('service type = iMessage', script)
+        # body is AppleScript-escaped
+        self.assertIn('\\"świat\\"', script)
+
+    def test_imessage_off_macos_returns_bridge_required(self):
+        def fake_cfg(key, default=""):
+            return {"AI_COUNCIL_IMESSAGE_ENABLED": "true", "AI_COUNCIL_IMESSAGE_TO": "+48555"}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "on_macos", return_value=False
+        ):
+            out = ai_council.imessage_send("hej")
+        self.assertIn("bridge_required", out)
+
+    def test_imessage_status_text_has_version_and_status(self):
+        text = ai_council.imessage_bridge_status_text()
+        self.assertIn(ai_council.IMESSAGE_BRIDGE_VERSION, text)
+        self.assertIn("status:", text)
+        self.assertIn("/imessage test", text)
+
+    def test_imessage_command_routes_and_dispatches_status(self):
+        route = ai_council.route_text("/imessage status")
+        self.assertEqual(route["command"], "/imessage")
+        out = ai_council.build_response(route)
+        self.assertIn("iMessage bridge", out)
+
+    def test_imessage_text_sends_to_self_not_third_party(self):
+        # The /imessage <text> command always targets self (no third-party send).
+        sent = {}
+
+        def fake_send(text, to=""):
+            sent["text"] = text
+            sent["to"] = to
+            return "[iMessage] ok"
+
+        with patch.object(ai_council, "imessage_send", side_effect=fake_send):
+            ai_council.imessage_response("przypomnij mi o spotkaniu")
+        self.assertEqual(sent["to"], "")
+
+    def test_mail_gated_off_by_default(self):
+        with patch.object(ai_council, "subprocess") as sp:
+            out = ai_council.mail_send("S", "B", "x@example.com")
+        self.assertIn("gated", out)
+        sp.run.assert_not_called()
+
+    def test_health_reports_imessage_bridge(self):
+        health = ai_council.health_response()
+        self.assertIn("imessage_bridge=", health)
+        self.assertIn("mail_bridge=", health)
+
+
 if __name__ == "__main__":
     unittest.main()

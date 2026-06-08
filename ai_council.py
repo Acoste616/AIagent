@@ -7352,7 +7352,7 @@ def health_response() -> str:
         f"nudges_open: {len(nudges_open)}",
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
-        f"front: claude_delegate={CLAUDE_DELEGATE_HANDOFF_VERSION} poke_handoff={POKE_RESEARCH_HANDOFF_VERSION} poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} command=/front",
+        f"front: claude_delegate={CLAUDE_DELEGATE_HANDOFF_VERSION} poke_handoff={POKE_RESEARCH_HANDOFF_VERSION} poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} imessage_bridge={IMESSAGE_BRIDGE_VERSION}:{imessage_bridge_status_label()} mail_bridge={'armed' if mail_enabled() and on_macos() else 'gated'} command=/front",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -15056,6 +15056,9 @@ def route_text(text: str) -> dict:
         return {"command": "/goal", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "goal"}
     if lower.startswith("/poke-gap"):
         return {"command": "/poke-gap", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "poke_gap"}
+    if lower.startswith("/imessage") or lower.startswith("/imsg"):
+        prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
+        return {"command": "/imessage", "operators": ["host"], "prompt": prompt, "mode": "imessage"}
     if lower.startswith("/chat"):
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/agent"):
@@ -15806,6 +15809,147 @@ def host_response(prompt: str, chat_id: str = "") -> str:
     return poke_chat_response(prompt, chat_id=chat_id)
 
 
+# ============================================================================
+# L4.82 — macOS native messaging bridge (iMessage + Mail), the OpenPoke path.
+# Sends through the Mac's Messages.app / Mail.app via AppleScript, AS the
+# logged-in user, with NO OAuth and NO Apple Business approval. ARMED BUT OFF
+# by default: going live needs (a) one macOS TCC "Automation" permission click
+# and (b) the enable flag. ai_council itself runs on Windows, so on non-macOS
+# these return a clear "bridge_required" status instead of attempting osascript.
+# Sending to SELF (Bartek's own Apple ID/number) is the assistant->user channel
+# — parity with the Telegram listener. Sending to a THIRD PARTY stays an
+# approval-gated external action (handled by the Risk Officer / approval path).
+# ============================================================================
+IMESSAGE_BRIDGE_VERSION = "L4.82"
+
+
+def on_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def applescript_quote(value: str) -> str:
+    """Quote a Python string as an AppleScript string literal (escape \\ and ")."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def applescript_run(script: str, timeout: int = 20) -> tuple[bool, str]:
+    """Run an AppleScript via osascript. Returns (ok, output). macOS only."""
+    if not on_macos():
+        return False, "bridge_required: osascript jest tylko na macOS (ai_council działa na Windows)"
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            input="",
+            capture_output=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return False, "osascript not found"
+    except subprocess.TimeoutExpired:
+        # AppleEvent timeout (-1712) typically means a pending macOS TCC
+        # Automation permission prompt is waiting for a click.
+        return False, "timeout: prawdopodobnie czeka na zgodę macOS Automation (TCC) — jeden klik w Ustawienia → Prywatność → Automatyzacja"
+    out = clean_operator_output(redact_secrets((proc.stdout or "") + (proc.stderr or "")))
+    return (proc.returncode == 0), out.strip()
+
+
+def imessage_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_IMESSAGE_ENABLED", False)
+
+
+def imessage_self_recipient() -> str:
+    return cfg("AI_COUNCIL_IMESSAGE_TO", "").strip()
+
+
+def imessage_send(text: str, to: str = "") -> str:
+    """Send an iMessage via Messages.app. Default recipient = self (the channel)."""
+    if not imessage_enabled():
+        return "[iMessage] gated: most jest armed, ale wyłączony. Włącz: AI_COUNCIL_IMESSAGE_ENABLED=true (potrzebny też 1 klik zgody macOS Automation)."
+    recipient = (to or imessage_self_recipient()).strip()
+    if not recipient:
+        return "[iMessage] brak odbiorcy: ustaw AI_COUNCIL_IMESSAGE_TO (Apple ID albo numer) albo podaj odbiorcę."
+    body = (text or "").strip()
+    if not body:
+        return "[iMessage] pusta treść — nic nie wysłano."
+    if not on_macos():
+        return "[iMessage] bridge_required: ta instancja działa poza macOS. Uruchom most na Macu (Messages.app jest zalogowany)."
+    script = (
+        'tell application "Messages"\n'
+        "  set targetService to 1st service whose service type = iMessage\n"
+        f"  set targetBuddy to buddy {applescript_quote(recipient)} of targetService\n"
+        f"  send {applescript_quote(body)} to targetBuddy\n"
+        "end tell"
+    )
+    ok, out = applescript_run(script)
+    if ok:
+        return f"[iMessage] wysłane do {recipient}."
+    return f"[iMessage] nie wysłano: {out}"
+
+
+def mail_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_MAIL_ENABLED", False)
+
+
+def mail_send(subject: str, body: str, to: str) -> str:
+    """Send an email via Mail.app as the logged-in user. External -> gated."""
+    if not mail_enabled():
+        return "[Mail] gated: most jest armed, ale wyłączony (AI_COUNCIL_MAIL_ENABLED). Wysyłka maila to akcja zewnętrzna — wymaga też approval."
+    recipient = (to or "").strip()
+    if not recipient:
+        return "[Mail] brak odbiorcy."
+    if not on_macos():
+        return "[Mail] bridge_required: ta instancja działa poza macOS. Uruchom most na Macu (Mail.app jest zalogowany)."
+    script = (
+        'tell application "Mail"\n'
+        f"  set newMsg to make new outgoing message with properties {{subject:{applescript_quote(subject)}, content:{applescript_quote(body)}, visible:false}}\n"
+        "  tell newMsg\n"
+        f"    make new to recipient at end of to recipients with properties {{address:{applescript_quote(recipient)}}}\n"
+        "    send\n"
+        "  end tell\n"
+        "end tell"
+    )
+    ok, out = applescript_run(script)
+    if ok:
+        return f"[Mail] wysłane do {recipient}."
+    return f"[Mail] nie wysłano: {out}"
+
+
+def imessage_bridge_status_label() -> str:
+    if not on_macos():
+        return "bridge_required(non-macOS)"
+    if not imessage_enabled():
+        return "gated"
+    if not imessage_self_recipient():
+        return "armed(no-recipient)"
+    return "armed"
+
+
+def imessage_bridge_status_text() -> str:
+    lines = [
+        f"[Council] iMessage bridge ({IMESSAGE_BRIDGE_VERSION})",
+        f"platform: {'macOS' if on_macos() else sys.platform + ' (most musi działać na Macu)'}",
+        f"enabled: {imessage_enabled()} (AI_COUNCIL_IMESSAGE_ENABLED)",
+        f"recipient(self): {imessage_self_recipient() or 'brak — ustaw AI_COUNCIL_IMESSAGE_TO'}",
+        f"status: {imessage_bridge_status_label()}",
+        "Do uruchomienia na żywo: 1 klik macOS Automation (Ustawienia → Prywatność → Automatyzacja → Terminal/osascript → Messages) + flaga ON.",
+        "Test po włączeniu: /imessage test",
+    ]
+    return "\n".join(lines)
+
+
+def imessage_response(prompt: str) -> str:
+    arg = (prompt or "").strip()
+    lower = arg.lower()
+    if not arg or lower in {"status", "stan", "info"}:
+        return imessage_bridge_status_text()
+    if lower in {"test", "ping"}:
+        return imessage_send(f"AI Council iMessage bridge OK ({IMESSAGE_BRIDGE_VERSION}).")
+    return imessage_send(arg)
+
+
 def raw_operator_response(command: str, prompt: str, task_id: str = "") -> str:
     if command in {"@codex", "codex_default"}:
         return codex_response(prompt, task_id=task_id)
@@ -15963,6 +16107,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return goal_response()
     if command == "/poke-gap":
         return poke_gap_response(prompt)
+    if command == "/imessage":
+        return imessage_response(prompt)
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/agent":
