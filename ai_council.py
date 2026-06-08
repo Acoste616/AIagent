@@ -14435,6 +14435,21 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
                 "intent": "natural",
             }
 
+    # L4.74: "just text it" — natural access to the new features (no slash).
+    if lower in {"brief", "co dzisiaj", "co dziś", "co mam dzisiaj", "co mam dziś", "podsumowanie dnia"}:
+        return {"command": "/brief", "operators": ["host"], "prompt": "", "mode": "brief", "intent": "natural"}
+    if lower in {"moje przypomnienia", "lista przypomnień", "lista przypomnien", "przypomnienia"}:
+        return {"command": "/reminders", "operators": ["host"], "prompt": "list", "mode": "remind", "intent": "natural"}
+    if lower in {"pokaż pliki", "pokaz pliki", "lista plików", "lista plikow", "co w plikach", "moje pliki"}:
+        return {"command": "/fs", "operators": ["host"], "prompt": "list", "mode": "fs", "intent": "natural"}
+    fs_read_prefixes = ["przeczytaj plik ", "pokaż plik ", "pokaz plik ", "otwórz plik ", "otworz plik "]
+    if any(lower.startswith(p) for p in fs_read_prefixes):
+        return {
+            "command": "/fs", "operators": ["host"],
+            "prompt": "read " + strip_intent_prefix(stripped, fs_read_prefixes),
+            "mode": "fs", "intent": "natural",
+        }
+
     write_prefixes = ["zapisz plik", "utwórz plik", "utworz plik", "stwórz plik", "stworz plik", "write file", "zapisz workspace"]
     if any(lower.startswith(prefix) for prefix in write_prefixes):
         return {

@@ -2417,6 +2417,13 @@ class ReminderTests(unittest.TestCase):
         ai_council.add_reminder("codziennie o 8 wypij wodę")
         self.assertTrue(any(rec.get("text") == "wypij wodę" and rec.get("kind") == "daily" for rec in ai_council.active_reminders()))
 
+    def test_natural_ux_routes(self):
+        self.assertEqual(ai_council.natural_intent_route("co dzisiaj", "co dzisiaj")["command"], "/brief")
+        self.assertEqual(ai_council.natural_intent_route("moje przypomnienia", "moje przypomnienia")["command"], "/reminders")
+        self.assertEqual(ai_council.natural_intent_route("pokaż pliki", "pokaż pliki")["command"], "/fs")
+        r = ai_council.natural_intent_route("przeczytaj plik notatki.txt", "przeczytaj plik notatki.txt")
+        self.assertEqual((r["command"], r["prompt"]), ("/fs", "read notatki.txt"))
+
 
 class HandsSandboxTests(unittest.TestCase):
     def setUp(self):
