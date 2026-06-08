@@ -8336,18 +8336,18 @@ class IMessageBridgeTests(unittest.TestCase):
         out = ai_council.build_response(route)
         self.assertIn("iMessage bridge", out)
 
-    def test_imessage_text_sends_to_self_not_third_party(self):
-        # The /imessage <text> command always targets self (no third-party send).
-        sent = {}
+    def test_imessage_text_targets_self_not_third_party(self):
+        # The /imessage <text> command always queues to self (no third-party recipient).
+        captured = {}
 
-        def fake_send(text, to=""):
-            sent["text"] = text
-            sent["to"] = to
-            return "[iMessage] ok"
+        def fake_enqueue(text, to="", kind="manual"):
+            captured["to"] = to
+            return {"id": "imsg-test"}
 
-        with patch.object(ai_council, "imessage_send", side_effect=fake_send):
-            ai_council.imessage_response("przypomnij mi o spotkaniu")
-        self.assertEqual(sent["to"], "")
+        with patch.object(ai_council, "imessage_outbox_enqueue", side_effect=fake_enqueue):
+            out = ai_council.imessage_response("przypomnij mi o spotkaniu")
+        self.assertEqual(captured["to"], "")
+        self.assertIn("zakolejkowane", out)
 
     def test_mail_gated_off_by_default(self):
         with patch.object(ai_council, "subprocess") as sp:
@@ -8359,6 +8359,62 @@ class IMessageBridgeTests(unittest.TestCase):
         health = ai_council.health_response()
         self.assertIn("imessage_bridge=", health)
         self.assertIn("mail_bridge=", health)
+
+
+class IMessageOutboxTests(unittest.TestCase):
+    """L4.82: cross-host outbox relay (host enqueues, Mac drains)."""
+
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self._state = Path(self._tmp.name)
+        self._patch = patch.object(ai_council, "STATE_DIR", self._state)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_enqueue_then_pending_then_ack_idempotent(self):
+        row = ai_council.imessage_outbox_enqueue("cześć", to="+48555", kind="test")
+        pending = ai_council.imessage_outbox_pending()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["id"], row["id"])
+        self.assertEqual(pending[0]["to"], "+48555")
+
+        ai_council.imessage_outbox_ack(row["id"], "sent")
+        self.assertEqual(ai_council.imessage_outbox_pending(), [])
+
+    def test_drain_rows_sends_and_acks(self):
+        sent_calls = []
+        ack_calls = []
+
+        def send_fn(text, to):
+            sent_calls.append((text, to))
+            return "[iMessage] wysłane do " + (to or "self") + "."
+
+        def ack_fn(mid, status, detail):
+            ack_calls.append((mid, status))
+
+        rows = [{"id": "imsg-1", "text": "a", "to": ""}, {"id": "imsg-2", "text": "b", "to": "+48"}]
+        results = ai_council.imessage_drain_rows(rows, send_fn, ack_fn)
+        self.assertEqual([r["status"] for r in results], ["sent", "sent"])
+        self.assertEqual(len(sent_calls), 2)
+        self.assertEqual([a[1] for a in ack_calls], ["sent", "sent"])
+
+    def test_drain_rows_marks_failure(self):
+        def send_fn(text, to):
+            return "[iMessage] nie wysłano: timeout"
+
+        acks = []
+        results = ai_council.imessage_drain_rows(
+            [{"id": "imsg-x", "text": "a", "to": ""}], send_fn, lambda m, s, d: acks.append((m, s, d))
+        )
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertEqual(acks[0][1], "failed")
+        self.assertIn("timeout", acks[0][2])
+
+    def test_imessage_command_text_enqueues(self):
+        out = ai_council.imessage_response("przypomnij o spotkaniu jutro")
+        self.assertIn("zakolejkowane", out)
+        self.assertEqual(len(ai_council.imessage_outbox_pending()), 1)
 
 
 if __name__ == "__main__":

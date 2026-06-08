@@ -52,7 +52,18 @@ osascript (mock), off-macOS→bridge_required, status text, /imessage routes+dis
 - Rozpoznanie środowiska: Messages.app i Mail.app obecne na Macu; `osascript` → `-1712`
   (czeka na klik TCC Automation) — potwierdza ścieżkę OpenPoke.
 
+## Cross-host relay (wybrana architektura A — reużywa istniejący SSH Mac→host)
+Host (Windows) ENQUEUE → Mac runner DRAIN+SEND → ACK z powrotem. Single source of truth na hoście.
+- ai_council (host): `imessage_outbox_enqueue` / `imessage_outbox_pending` / `imessage_outbox_ack`
+  (JSONL: `state/imessage_outbox.jsonl` + `state/imessage_sent.jsonl`, idempotencja po id).
+- CLI: `imessage-outbox-dump` (Mac pulluje), `imessage-outbox-enqueue`, `imessage-outbox-ack`.
+- `/imessage <tekst>` kolejkuje do self; `/imessage outbox` pokazuje kolejkę.
+- Mac runner: `scripts/mac_imessage_bridge.py` — pulluje outbox przez `ssh ai-council-desktop`,
+  wysyła lokalnie przez `imessage_send` (osascript), acku­je. `--once` albo `--interval N`.
+  Rdzeń logiki (`imessage_drain_rows`) jest w ai_council.py i otestowany.
+- Round-trip zweryfikowany lokalnie: enqueue → dump → ack → dump=[].
+
 ## Follow-up
-- Wybrać architekturę mostu (A/B) i podłączyć iMessage jako żywy kanał proaktywny + odbiór
-  (read chat.db wymaga Full Disk Access — osobny TCC).
-- Po włączeniu: `/imessage test` jako smoke test end-to-end.
+- Odbiór iMessage (read `~/Library/Messages/chat.db`) wymaga Full Disk Access — osobny TCC.
+- Po kliknięciu TCC + `AI_COUNCIL_IMESSAGE_ENABLED=true` + `AI_COUNCIL_IMESSAGE_TO`:
+  `python3 scripts/mac_imessage_bridge.py --interval 15` na Macu = żywy kanał. Smoke: `/imessage test`.

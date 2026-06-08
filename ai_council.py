@@ -15947,7 +15947,93 @@ def imessage_response(prompt: str) -> str:
         return imessage_bridge_status_text()
     if lower in {"test", "ping"}:
         return imessage_send(f"AI Council iMessage bridge OK ({IMESSAGE_BRIDGE_VERSION}).")
-    return imessage_send(arg)
+    if lower in {"outbox", "queue", "kolejka"}:
+        pending = imessage_outbox_pending()
+        if not pending:
+            return "[iMessage] outbox pusty."
+        lines = [f"[iMessage] outbox: {len(pending)} oczekuje"]
+        for row in pending[:8]:
+            lines.append(f"- {row.get('id')} → {row.get('to') or 'self'}: {compact_line(str(row.get('text') or ''), 80)}")
+        return "\n".join(lines)
+    # Any other free text is queued for delivery to SELF (the assistant->user
+    # channel). The Mac-side runner drains the outbox and sends via Messages.app.
+    row = imessage_outbox_enqueue(arg, to="", kind="command")
+    return f"[iMessage] zakolejkowane do wysyłki ({row['id']}). Mac runner wyśle, gdy most jest ON."
+
+
+# --- Cross-host outbox relay (L4.82) ---------------------------------------
+# ai_council runs on Windows (the listener), but iMessage can only be SENT from
+# the Mac (Messages.app is logged in there). So the host ENQUEUES deliveries to a
+# JSONL outbox; the Mac-side runner (scripts/mac_imessage_bridge.py) pulls pending
+# rows over the existing SSH alias, sends each via osascript, and acks back. Single
+# source of truth stays on the host; the Mac only sends.
+def imessage_outbox_path() -> Path:
+    return STATE_DIR / "imessage_outbox.jsonl"
+
+
+def imessage_sent_path() -> Path:
+    return STATE_DIR / "imessage_sent.jsonl"
+
+
+def imessage_outbox_enqueue(text: str, to: str = "", kind: str = "manual") -> dict:
+    ensure_council_dirs()
+    body = (text or "").strip()
+    seed = f"{body}:{to}:{kind}:{time.time_ns()}"
+    row = {
+        "id": f"imsg-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(seed)[:6]}",
+        "to": (to or "").strip(),
+        "text": body,
+        "kind": kind,
+        "created_at": utc_now(),
+    }
+    append_jsonl(imessage_outbox_path(), row)
+    return row
+
+
+def imessage_outbox_terminal_ids() -> set[str]:
+    ids: set[str] = set()
+    for row in read_jsonl(imessage_sent_path()):
+        rid = str(row.get("id") or "")
+        if rid and str(row.get("status") or "") in {"sent", "failed", "skipped"}:
+            ids.add(rid)
+    return ids
+
+
+def imessage_outbox_pending(limit: int = 50) -> list[dict]:
+    done = imessage_outbox_terminal_ids()
+    pending = [r for r in read_jsonl(imessage_outbox_path()) if str(r.get("id") or "") and str(r.get("id")) not in done]
+    return pending[:limit]
+
+
+def imessage_outbox_ack(msg_id: str, status: str, detail: str = "") -> dict:
+    ensure_council_dirs()
+    row = {
+        "id": str(msg_id),
+        "status": str(status),
+        "detail": redact_secrets(str(detail))[:300],
+        "ts": utc_now(),
+    }
+    append_jsonl(imessage_sent_path(), row)
+    return row
+
+
+def imessage_drain_rows(rows: list[dict], send_fn, ack_fn) -> list[dict]:
+    """Send each outbox row via send_fn and ack via ack_fn. Used by the Mac runner.
+
+    send_fn(text, to) -> str (success starts with '[iMessage] wysłane').
+    ack_fn(id, status, detail) records the terminal state back on the host.
+    """
+    results: list[dict] = []
+    for row in rows:
+        rid = str(row.get("id") or "")
+        if not rid:
+            continue
+        out = send_fn(str(row.get("text") or ""), str(row.get("to") or ""))
+        ok = isinstance(out, str) and out.startswith("[iMessage] wysłane")
+        status = "sent" if ok else "failed"
+        ack_fn(rid, status, "" if ok else str(out))
+        results.append({"id": rid, "status": status})
+    return results
 
 
 def raw_operator_response(command: str, prompt: str, task_id: str = "") -> str:
@@ -16806,6 +16892,15 @@ def main() -> int:
     respond = sub.add_parser("respond")
     respond.add_argument("text", nargs="+")
     respond.add_argument("--chat-id", default="", help="Chat id for conversation context; defaults to TELEGRAM_ALLOWED_CHAT_ID")
+    imo_dump = sub.add_parser("imessage-outbox-dump", help="Print pending iMessage outbox rows as JSON (Mac runner pulls this)")
+    imo_dump.add_argument("--limit", type=int, default=50)
+    imo_enq = sub.add_parser("imessage-outbox-enqueue", help="Queue an iMessage for the Mac runner to send")
+    imo_enq.add_argument("--text", required=True)
+    imo_enq.add_argument("--to", default="")
+    imo_ack = sub.add_parser("imessage-outbox-ack", help="Record terminal state for a queued iMessage")
+    imo_ack.add_argument("--id", required=True, dest="msg_id")
+    imo_ack.add_argument("--status", required=True)
+    imo_ack.add_argument("--detail", default="")
     args = parser.parse_args()
 
     if args.cmd == "doctor":
@@ -16839,6 +16934,15 @@ def main() -> int:
         return 0
     if args.cmd == "respond":
         respond_dry(" ".join(args.text), chat_id=args.chat_id)
+        return 0
+    if args.cmd == "imessage-outbox-dump":
+        print(json.dumps(imessage_outbox_pending(limit=args.limit), ensure_ascii=False))
+        return 0
+    if args.cmd == "imessage-outbox-enqueue":
+        print(json.dumps(imessage_outbox_enqueue(args.text, to=args.to, kind="cli"), ensure_ascii=False))
+        return 0
+    if args.cmd == "imessage-outbox-ack":
+        print(json.dumps(imessage_outbox_ack(args.msg_id, args.status, detail=args.detail), ensure_ascii=False))
         return 0
     return 2
 
