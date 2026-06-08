@@ -8417,5 +8417,27 @@ class IMessageOutboxTests(unittest.TestCase):
         self.assertEqual(len(ai_council.imessage_outbox_pending()), 1)
 
 
+class SetupOnboardingTests(unittest.TestCase):
+    """L4.83: /setup onboarding checklist (read-only status)."""
+
+    def test_setup_lists_channels_and_integrations(self):
+        out = ai_council.setup_response()
+        self.assertIn("Setup / Onboarding", out)
+        self.assertIn("Telegram", out)
+        self.assertIn("iMessage", out)
+        self.assertIn("Google", out)
+        self.assertIn("GitHub", out)
+        self.assertIn("NEXT:", out)
+
+    def test_setup_routes_explicit_and_natural(self):
+        self.assertEqual(ai_council.route_text("/setup")["command"], "/setup")
+        natural = ai_council.route_message("co podłączyć", chat_id="553")
+        self.assertEqual(natural["command"], "/setup")
+
+    def test_setup_dispatches_in_build_response(self):
+        out = ai_council.build_response({"command": "/setup", "prompt": ""})
+        self.assertIn("Onboarding", out)
+
+
 if __name__ == "__main__":
     unittest.main()

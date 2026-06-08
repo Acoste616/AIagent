@@ -14420,6 +14420,11 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/poke-gap", "operators": ["host"], "prompt": stripped, "mode": "poke_gap", "intent": "natural"}
 
+    if lower in {"setup", "onboarding", "konfiguracja", "co podłączyć", "co podlaczyc", "co jest podłączone", "co jest podlaczone", "co mam podłączone", "co mam podlaczone"} or lower.startswith(
+        ("pokaż setup", "pokaz setup", "pokaż konfigurację", "pokaz konfiguracje", "co podłączyć", "co podlaczyc")
+    ):
+        return {"command": "/setup", "operators": ["host"], "prompt": "", "mode": "setup", "intent": "natural"}
+
     if lower in {"goal", "cel", "jaki jest cel"}:
         return {"command": "/goal", "operators": ["host"], "prompt": stripped, "mode": "goal", "intent": "natural"}
 
@@ -15059,6 +15064,8 @@ def route_text(text: str) -> dict:
     if lower.startswith("/imessage") or lower.startswith("/imsg"):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/imessage", "operators": ["host"], "prompt": prompt, "mode": "imessage"}
+    if lower.startswith("/setup") or lower.startswith("/onboarding"):
+        return {"command": "/setup", "operators": ["host"], "prompt": "", "mode": "setup"}
     if lower.startswith("/chat"):
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/agent"):
@@ -16036,6 +16043,48 @@ def imessage_drain_rows(rows: list[dict], send_fn, ack_fn) -> list[dict]:
     return results
 
 
+def _setup_mark(ok: bool, gated: bool = False) -> str:
+    if ok:
+        return "✅"
+    return "🔒" if gated else "⚪"
+
+
+def setup_response() -> str:
+    """Poke-style onboarding: what's connected vs one action away (read-only)."""
+    telegram_ok = bool(cfg("TELEGRAM_BOT_TOKEN"))
+    google_ok = google_oauth_configured()
+    github_ok = bool(github_token())
+    rows = [
+        "[Council] Setup / Onboarding — co podłączone, co jeden ruch dalej",
+        "",
+        "Kanały (jak Cię łapię):",
+        f"{_setup_mark(telegram_ok)} Telegram — {'aktywny' if telegram_ok else 'ustaw TELEGRAM_BOT_TOKEN'}",
+        f"{_setup_mark(imessage_enabled() and on_macos(), gated=True)} iMessage — {imessage_bridge_status_label()} → 1 klik macOS Automation + AI_COUNCIL_IMESSAGE_TO + runner na Macu (scripts/mac_imessage_bridge.py)",
+        f"{_setup_mark(mail_enabled() and on_macos(), gated=True)} Mail.app — {'armed' if mail_enabled() and on_macos() else 'gated'} → AI_COUNCIL_MAIL_ENABLED + TCC na Macu (email bez Gmail OAuth)",
+        "",
+        "Integracje (apki):",
+        f"{_setup_mark(google_ok, gated=True)} Google Gmail/Calendar/Drive — {'OAuth OK' if google_ok else 'brak → scripts/get_google_refresh_token.py'}",
+        f"{_setup_mark(github_ok, gated=True)} GitHub — {'token OK (' + ('write armed' if github_issue_write_enabled() else 'read') + ')' if github_ok else 'brak → GITHUB_TOKEN'}",
+        "⚪ Notion / Linear / Spotify / Slack — wymagają tokenu/OAuth od Ciebie (powiedz których chcesz)",
+        "",
+        "Mózg (proaktywność + research + pamięć):",
+        f"{_setup_mark(llm_router_enabled())} Router intencji (Grok) — {'on' if llm_router_enabled() else 'off (AI_COUNCIL_LLM_ROUTER)'}",
+        f"{_setup_mark(proactive_brief_enabled())} Poranny brief — {'on' if proactive_brief_enabled() else 'off (AI_COUNCIL_PROACTIVE_BRIEF)'}",
+        f"{_setup_mark(fact_extraction_enabled())} Pamięć / auto-fakty — {'on' if fact_extraction_enabled() else 'off (AI_COUNCIL_FACT_EXTRACTION)'}",
+        "",
+        "Legenda: ✅ działa · 🔒 gotowe, czeka na Twój 1 ruch · ⚪ niepodłączone",
+    ]
+    # Single best next step: pick the highest-leverage missing piece.
+    if not (imessage_enabled() and on_macos()):
+        rows.append("NEXT: odpal iMessage — 1 klik macOS Automation + ustaw odbiorcę, ja włączę runner.")
+    elif not google_ok:
+        rows.append("NEXT: podłącz Google — uruchom scripts/get_google_refresh_token.py i napisz 'gotowe'.")
+    else:
+        rows.append("NEXT: powiedz, które jeszcze apki podłączyć (Notion/Linear/Slack…).")
+    rows.append("Pełny kontekst: docs/CONTEXT_QUESTIONS_FOR_BARTEK.md")
+    return "\n".join(rows)
+
+
 def raw_operator_response(command: str, prompt: str, task_id: str = "") -> str:
     if command in {"@codex", "codex_default"}:
         return codex_response(prompt, task_id=task_id)
@@ -16195,6 +16244,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return poke_gap_response(prompt)
     if command == "/imessage":
         return imessage_response(prompt)
+    if command == "/setup":
+        return setup_response()
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/agent":
