@@ -8572,5 +8572,42 @@ class WatchlistTests(unittest.TestCase):
         self.assertIn("OpenClaw", line)
 
 
+class IMessageInboundScaffoldTests(unittest.TestCase):
+    """L4.90: inbound (two-way) gating + FDA detection + status (live build needs FDA)."""
+
+    def test_inbound_off_by_default(self):
+        self.assertFalse(ai_council.imessage_inbound_enabled())
+
+    def test_apple_date_to_unix_handles_ns_and_seconds(self):
+        # 2001-01-01T00:00:00Z is the Apple epoch -> 978307200 unix.
+        self.assertEqual(ai_council.apple_date_to_unix(0), 978307200.0)
+        # nanoseconds form (modern macOS): 1 day after apple epoch
+        self.assertEqual(ai_council.apple_date_to_unix(86400 * 1_000_000_000), 978307200.0 + 86400)
+        # seconds form (old macOS): 1 day
+        self.assertEqual(ai_council.apple_date_to_unix(86400), 978307200.0 + 86400)
+        self.assertEqual(ai_council.apple_date_to_unix("bad"), 0.0)
+
+    def test_full_disk_access_false_off_macos(self):
+        with patch.object(ai_council, "on_macos", return_value=False):
+            self.assertFalse(ai_council.imessage_full_disk_access())
+
+    def test_inbound_status_guides_fda_when_missing(self):
+        with patch.object(ai_council, "imessage_full_disk_access", return_value=False):
+            out = ai_council.imessage_inbound_status()
+        self.assertIn("Full Disk Access", out)
+        self.assertIn("NIE", out)
+
+    def test_inbound_status_ready_when_fda_present(self):
+        with patch.object(ai_council, "imessage_full_disk_access", return_value=True):
+            out = ai_council.imessage_inbound_status()
+        self.assertIn("TAK", out)
+
+    def test_imessage_inbound_command_routes(self):
+        with patch.object(ai_council, "imessage_full_disk_access", return_value=False):
+            out = ai_council.imessage_response("inbound")
+        self.assertIn("inbound", out.lower())
+        self.assertIn("Full Disk Access", out)
+
+
 if __name__ == "__main__":
     unittest.main()

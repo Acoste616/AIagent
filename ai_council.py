@@ -15987,11 +15987,78 @@ def imessage_bridge_status_text() -> str:
     return "\n".join(lines)
 
 
+# --- Inbound (two-way) scaffolding (L4.90) ---------------------------------
+# Outbound (assistant -> Bartek) is live. INBOUND (Bartek texts -> assistant
+# replies, like Telegram) requires reading the Messages chat.db on the Mac, which
+# needs Full Disk Access (a one-time user grant). These helpers detect FDA and
+# gate the feature; the live reader is built/tested only once FDA is granted, so
+# we never read Bartek's message history without consent.
+def imessage_inbound_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_IMESSAGE_INBOUND", False)
+
+
+def chat_db_path() -> Path:
+    return Path.home() / "Library" / "Messages" / "chat.db"
+
+
+def imessage_full_disk_access() -> bool:
+    """True if this process can read the Messages chat.db (needs Full Disk Access).
+    Inbound two-way iMessage cannot work without it. macOS only."""
+    if not on_macos():
+        return False
+    db = chat_db_path()
+    if not db.exists():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        try:
+            conn.execute("SELECT 1 FROM message LIMIT 1")
+        finally:
+            conn.close()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+APPLE_EPOCH_OFFSET = 978307200  # unix seconds at 2001-01-01T00:00:00Z (Mac absolute time base)
+
+
+def apple_date_to_unix(value) -> float:
+    """Convert a chat.db `date` (Mac absolute time; ns on modern macOS, s on old) to unix seconds."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if v > 1_000_000_000_000:  # nanoseconds on modern macOS
+        v = v // 1_000_000_000
+    return float(v) + APPLE_EPOCH_OFFSET
+
+
+def imessage_inbound_status() -> str:
+    fda = imessage_full_disk_access()
+    lines = [
+        "[Council] iMessage inbound (dwukierunkowy) — status",
+        f"platform: {'macOS' if on_macos() else sys.platform + ' (czyta Mac, nie host)'}",
+        f"flag AI_COUNCIL_IMESSAGE_INBOUND: {imessage_inbound_enabled()}",
+        f"Full Disk Access (czyta chat.db): {'TAK' if fda else 'NIE'}",
+    ]
+    if not fda:
+        lines.append(
+            "Aby włączyć dwukierunkowy iMessage: System Settings → Privacy & Security → "
+            "Full Disk Access → dodaj /usr/bin/python3 (albo Terminal) → ON. Potem napisz: zrobione FDA."
+        )
+    else:
+        lines.append("FDA OK — mogę dokończyć i przetestować odczyt przychodzących na realnych danych.")
+    return "\n".join(lines)
+
+
 def imessage_response(prompt: str) -> str:
     arg = (prompt or "").strip()
     lower = arg.lower()
     if not arg or lower in {"status", "stan", "info"}:
         return imessage_bridge_status_text()
+    if lower in {"inbound", "two-way", "dwukierunkowy", "inbound-status", "dwustronny"}:
+        return imessage_inbound_status()
     if lower in {"test", "ping"}:
         return imessage_send(f"AI Council iMessage bridge OK ({IMESSAGE_BRIDGE_VERSION}).")
     if lower in {"outbox", "queue", "kolejka"}:
