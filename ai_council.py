@@ -16288,6 +16288,11 @@ BARTEK_PROFILE_FACTS = [
     "Poranny brief o 8:00 Europe/Warsaw.",
     "Główny workspace: D:\\ai-council; OpenClaw context: D:\\openclaw-export.",
     "Główny kanał: Telegram/iPhone; docelowo też iMessage przez Mac.",
+    "Budżet/koszt (6c): tryb cost-aware — stop i pytaj przy nietypowo drogich lub zapętlonych zadaniach; nie marnować calli.",
+    "Deploy (6d): małe poprawki mogę wdrażać + testować; produkcyjne restarty/integracje raportować; nowych daemonów nie uruchamiać bez jasnej zgody.",
+    "Zakres plików (5c): workspace D:\\ai-council i D:\\openclaw-export; zakazane sekrety/dane wrażliwe poza allowlistą i kasowanie bez approval; brak broad-filesystem bez risk fence.",
+    "Pamięć (7b/7c): nie zapamiętywać sekretów/tokenów/haseł/kodów OAuth; auto-fakty z provenance i quarantine; 'zapamiętaj' ma pierwszeństwo.",
+    "Zawsze approval (6b): wysyłka maili/wiadomości, publikacja, płatności, usuwanie, ryzykowny deploy, DNS/auth/billing, kontakt z ludźmi.",
 ]
 
 
