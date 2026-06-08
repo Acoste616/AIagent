@@ -64,8 +64,10 @@ def host_pull_pending(alias: str, host_dir: str, host_python: str, limit: int) -
 
 
 def host_ack(alias: str, host_dir: str, host_python: str, msg_id: str, status: str, detail: str = "") -> None:
-    safe_detail = detail.replace('"', "'")[:200]
-    args = f'imessage-outbox-ack --id {msg_id} --status {status} --detail "{safe_detail}"'
+    # Quote-safe: NO --detail. Nesting `--detail "..."` inside the host's
+    # `powershell -Command "..."` wrapper breaks argparse on Windows, so the ack
+    # never recorded and the row stayed pending -> infinite resend loop.
+    args = f"imessage-outbox-ack --id {msg_id} --status {status}"
     subprocess.run(_host_cmd(alias, host_dir, host_python, args), capture_output=True, text=True, timeout=30)
 
 

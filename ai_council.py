@@ -15876,8 +15876,11 @@ def applescript_quote(value: str) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def applescript_run(script: str, timeout: int = 20) -> tuple[bool, str]:
-    """Run an AppleScript via osascript. Returns (ok, output). macOS only."""
+def applescript_run(script: str, timeout: int = 60) -> tuple[bool, str]:
+    """Run an AppleScript via osascript. Returns (ok, output). macOS only.
+
+    60s default: the first AppleEvent after Messages/Mail is idle can be slow to
+    set up (cold start); a tight timeout previously failed the first send."""
     if not on_macos():
         return False, "bridge_required: osascript jest tylko na macOS (ai_council działa na Windows)"
     try:
