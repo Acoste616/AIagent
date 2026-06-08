@@ -10270,6 +10270,13 @@ def build_morning_brief() -> str:
     if reminders:
         nxt = compact_line(str(reminders[0].get("text", "")), 50)
         sections.append(f"⏰ {len(reminders)} przypomnień (np. {nxt}) — /reminders")
+    digest_line = ""
+    try:  # L4.87: proactive watchlist research (gated, off by default)
+        digest_line = watch_digest_brief_line()
+    except Exception:
+        digest_line = ""
+    if digest_line:
+        sections.append(digest_line)
     if not sections:
         return ""
     head = f"☀️ [Council] Poranny brief — {today_utc()}"
@@ -10304,6 +10311,7 @@ def maybe_send_morning_brief(send: bool = False, chat_id: str = "", now=None) ->
         return 0
     chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
     _brief_marker_save(today_utc())  # mark first so we never retry/spam, even if empty or send fails
+    maybe_refresh_watch_digest(now)  # L4.87: refresh gated watchlist digest once/day before composing
     text = build_morning_brief()
     if not text:
         return 0  # 'wait' — nothing worth saying today
@@ -16126,6 +16134,7 @@ def setup_response() -> str:
         f"{_setup_mark(fact_extraction_enabled())} Pamięć / auto-fakty — {'on' if fact_extraction_enabled() else 'off (AI_COUNCIL_FACT_EXTRACTION)'}",
         f"{_setup_mark(proactive_imessage_enabled())} Proaktywny iMessage — {'on (brief+nudge → iMessage)' if proactive_imessage_enabled() else 'off (AI_COUNCIL_IMESSAGE_PROACTIVE)'}",
         f"✅ Watchlist tematów — {len(watch_topics())} śledzonych (/watch)",
+        f"{_setup_mark(watch_digest_enabled())} Dzienny research watchlisty — {'on (w briefie)' if watch_digest_enabled() else 'off (AI_COUNCIL_WATCH_DIGEST)'}",
         "",
         "Legenda: ✅ działa · 🔒 gotowe, czeka na Twój 1 ruch · ⚪ niepodłączone",
     ]
@@ -16216,6 +16225,58 @@ def watch_response(prompt: str, task_id: str = "") -> str:
     # Bare text = add it as a topic.
     topics = watch_topics_save(watch_topics() + [arg])
     return f"[Council] 🔭 Dodano: {arg} (razem {len(topics)})."
+
+
+# L4.87 — gated daily watchlist research digest. Implements Bartek's 4a/4b wish
+# (proactive research alerts in the brief) the cost-safe way: OFF by default, and
+# at most ONE batched Grok call per day, generated at brief time and cached.
+def watch_digest_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_WATCH_DIGEST", False)
+
+
+def watch_digest_path() -> Path:
+    return STATE_DIR / "watch_digest.json"
+
+
+def latest_watch_digest() -> dict:
+    try:
+        data = json.loads(watch_digest_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def maybe_refresh_watch_digest(now=None) -> int:
+    """If enabled and not yet refreshed today, run ONE batched Grok research over
+    the watchlist and cache a short digest. Best-effort; never raises."""
+    if not watch_digest_enabled():
+        return 0
+    today = (now or datetime.now(timezone.utc)).date().isoformat()
+    if latest_watch_digest().get("day") == today:
+        return 0
+    topics = watch_topics()
+    if not topics:
+        return 0
+    try:
+        query = "Najważniejsze nowe newsy/premiery/zmiany z ostatniej doby dla tematów: " + ", ".join(topics)
+        text = grok_x_research_response(query, max_chars=int_cfg("AI_COUNCIL_WATCH_DIGEST_MAX_CHARS", 600))
+        ensure_council_dirs()
+        watch_digest_path().write_text(
+            json.dumps({"day": today, "text": text}, ensure_ascii=False), encoding="utf-8"
+        )
+        return 1
+    except Exception:
+        return 0
+
+
+def watch_digest_brief_line(now=None) -> str:
+    if not watch_digest_enabled():
+        return ""
+    today = (now or datetime.now(timezone.utc)).date().isoformat()
+    d = latest_watch_digest()
+    if d.get("day") != today or not str(d.get("text") or "").strip():
+        return ""
+    return "🔭 Research dnia (watchlist): " + compact_line(strip_operator_label(str(d.get("text"))), 220)
 
 
 BARTEK_PROFILE_FACTS = [

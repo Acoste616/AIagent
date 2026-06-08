@@ -8546,6 +8546,31 @@ class WatchlistTests(unittest.TestCase):
         self.assertIn("Europe/Warsaw", facts)
         self.assertIn("approval", facts)
 
+    def test_watch_digest_off_by_default(self):
+        # conftest forces AI_COUNCIL_WATCH_DIGEST off -> no Grok call, no brief line.
+        with patch.object(ai_council, "grok_x_research_response") as grok:
+            self.assertEqual(ai_council.maybe_refresh_watch_digest(), 0)
+        grok.assert_not_called()
+        self.assertEqual(ai_council.watch_digest_brief_line(), "")
+
+    def test_watch_digest_refreshes_once_when_enabled(self):
+        now = datetime(2026, 6, 8, 6, 0, tzinfo=timezone.utc)
+        calls = {"n": 0}
+
+        def fake_research(q, max_chars=None, task_id=""):
+            calls["n"] += 1
+            return "[Grok X Research] Poke wypuścił X; OpenClaw update Y."
+
+        with patch.object(ai_council, "watch_digest_enabled", return_value=True), \
+             patch.object(ai_council, "grok_x_research_response", side_effect=fake_research):
+            self.assertEqual(ai_council.maybe_refresh_watch_digest(now), 1)
+            # second call same day = cached, no extra Grok call
+            self.assertEqual(ai_council.maybe_refresh_watch_digest(now), 0)
+            self.assertEqual(calls["n"], 1)
+            line = ai_council.watch_digest_brief_line(now)
+        self.assertIn("Research dnia", line)
+        self.assertIn("OpenClaw", line)
+
 
 if __name__ == "__main__":
     unittest.main()
