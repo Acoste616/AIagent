@@ -108,12 +108,24 @@ def main():
     if not refresh:
         print("Nie dostalem refresh_token. Usun dostep aplikacji w https://myaccount.google.com/permissions i sprobuj ponownie (prompt=consent).")
         return 1
-    print("\n==================== SKOPIUJ DO .env ====================")
-    print(f"GOOGLE_CLIENT_ID={client_id}")
-    print(f"GOOGLE_CLIENT_SECRET={client_secret}")
-    print(f"GOOGLE_REFRESH_TOKEN={refresh}")
-    print("=========================================================")
-    print("\nNastepnie powiedz Claude: wlacz Gmail write (a on ustawi flagi i przetestuje draftem).")
+    out_path = os.path.expanduser("~/.ai_council_google_creds.env")
+    body = (
+        f"GOOGLE_CLIENT_ID={client_id}\n"
+        f"GOOGLE_CLIENT_SECRET={client_secret}\n"
+        f"GOOGLE_REFRESH_TOKEN={refresh}\n"
+    )
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    try:
+        os.chmod(out_path, 0o600)
+    except OSError:
+        pass
+    print("\n==================== GOTOWE ====================")
+    print("Zapisalem 3 klucze do pliku (poza repo, prawa 600):")
+    print("  " + out_path)
+    print("\nTeraz po prostu napisz do Claude: 'gotowe' — przeniose je na hosta i wlacze Gmail.")
+    print("(Nie wklejaj zawartosci tego pliku do czatu.)")
+    print("===============================================")
     return 0
 
 
