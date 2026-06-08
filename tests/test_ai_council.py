@@ -2403,6 +2403,20 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(ai_council.route_text("/remind daily 09:00 x")["command"], "/remind")
         self.assertEqual(ai_council.route_text("/reminders")["command"], "/reminders")
 
+    def test_natural_reminder_parsing(self):
+        self.assertEqual(ai_council.natural_reminder_to_structured("codziennie o 9 wypij wodę"), "daily 09:00 wypij wodę")
+        self.assertEqual(ai_council.natural_reminder_to_structured("co wtorek o 9:30 raport"), "weekly wtorek 09:30 raport")
+        nat = ai_council.natural_reminder_to_structured("jutro o 15 że kupić mleko")
+        self.assertTrue(nat.startswith("once "))
+        self.assertIn("15:00 kupić mleko", nat)
+        self.assertEqual(ai_council.natural_reminder_to_structured("bez czasu nic"), "")
+
+    def test_natural_reminder_add_and_route(self):
+        r = ai_council.natural_intent_route("przypomnij mi jutro o 15 że kupić mleko", "przypomnij mi jutro o 15 że kupić mleko")
+        self.assertEqual(r["command"], "/remind")
+        ai_council.add_reminder("codziennie o 8 wypij wodę")
+        self.assertTrue(any(rec.get("text") == "wypij wodę" and rec.get("kind") == "daily" for rec in ai_council.active_reminders()))
+
 
 class HandsSandboxTests(unittest.TestCase):
     def setUp(self):

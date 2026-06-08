@@ -22,3 +22,11 @@ parse (daily/weekly/once + invalid), add/list/cancel, daily due+dedup, run_due f
 
 ## Follow-up
 Naturalny język ("przypominaj co wtorek o 9 że X" → /remind weekly wt 09:00 X) — L4.73.1 (parser PL czasu).
+
+## L4.73.1 — naturalny język (LANDED)
+`natural_reminder_to_structured` + prefix route ("przypomnij/przypominaj/remind") konwertuje PL na formę strukturalną:
+- "przypomnij mi jutro o 15 że kupić mleko" → `once <jutro> 15:00 kupić mleko`
+- "przypominaj codziennie o 8 wypij wodę" → `daily 08:00 wypij wodę`
+- "co wtorek o 9:30 raport" → `weekly wtorek 09:30 raport`
+- "w piątek o 15 …" → `once <najbliższy piątek> 15:00 …`
+**Bramka:** /remind przejmuje TYLKO gdy jest parsowalny czas zegarowy ("o 15", "9:30"); frazy bez czasu ("przypomnij o lekach") spadają do istniejącej ścieżki calendar-draft (L4.35) — bez regresji. Tests: natural parsing + route (8 ReminderTests total). Live: „przypomnij mi codziennie o 8…" → ustawione bez slasha.

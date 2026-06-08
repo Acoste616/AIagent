@@ -10183,8 +10183,53 @@ def parse_reminder(prompt: str):
     return None, fmt
 
 
+def natural_reminder_to_structured(text: str) -> str:
+    """L4.73.1: convert Polish natural reminder phrasing into the structured form
+    (daily/weekly/once HH:MM <text>). Returns '' if it can't confidently parse."""
+    raw = (text or "").strip()
+    low = normalize_intent_text(raw)
+    m = re.search(r"\bo\s+(\d{1,2})(?::(\d{2}))?\b", low) or re.search(r"\b(\d{1,2}):(\d{2})\b", low)
+    if not m:
+        return ""
+    hh = int(m.group(1))
+    mm = int(m.group(2)) if m.lastindex and m.group(2) else 0
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return ""
+    hhmm = f"{hh:02d}:{mm:02d}"
+    mb = re.search(r"\b(?:że|ze|żeby|zeby|aby|o tym że|o tym ze)\s+(.+)$", raw, re.IGNORECASE)
+    if mb:
+        body = mb.group(1).strip()
+    else:
+        body = re.sub(
+            r"\b(przypominaj|przypomnij|mi|o\s+\d{1,2}(?::\d{2})?|\d{1,2}:\d{2}|codziennie|co\s+\w+|jutro|dzisiaj|dziś|dzis|w\s+\w+)\b",
+            "", raw, flags=re.IGNORECASE,
+        ).strip()
+    body = body.strip(" ,.:;-") or "przypomnienie"
+    if "codziennie" in low:
+        return f"daily {hhmm} {body}"
+    mday = re.search(r"\bco\s+(\w+)", low)
+    if mday and mday.group(1) in REMINDER_DAY_ALIASES:
+        return f"weekly {mday.group(1)} {hhmm} {body}"
+    ln = _local_now()
+    if "jutro" in low:
+        return f"once {(ln + timedelta(days=1)).strftime('%Y-%m-%d')} {hhmm} {body}"
+    if "dzisiaj" in low or "dziś" in low or "dzis" in low:
+        return f"once {ln.strftime('%Y-%m-%d')} {hhmm} {body}"
+    mw = re.search(r"\bw\s+(\w+)", low)
+    if mw and mw.group(1) in REMINDER_DAY_ALIASES:
+        days_ahead = (REMINDER_DAY_ALIASES[mw.group(1)] - ln.weekday()) % 7 or 7
+        return f"once {(ln + timedelta(days=days_ahead)).strftime('%Y-%m-%d')} {hhmm} {body}"
+    # default: once — today if the time hasn't passed, else tomorrow
+    day = (ln + timedelta(days=1)) if (ln.hour, ln.minute) >= (hh, mm) else ln
+    return f"once {day.strftime('%Y-%m-%d')} {hhmm} {body}"
+
+
 def add_reminder(prompt: str) -> str:
     rec, err = parse_reminder(prompt)
+    if err and not (prompt or "").strip().lower().startswith(("daily", "weekly", "once")):
+        structured = natural_reminder_to_structured(prompt)
+        if structured:
+            rec, err = parse_reminder(structured)
     if err:
         return "[Council] " + err
     if not rec["text"].strip():
@@ -14374,6 +14419,21 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "mode": "memory",
             "intent": "natural",
         }
+
+    reminder_prefixes = ["przypomnij mi", "przypominaj mi", "przypomnij", "przypominaj", "remind me", "remind"]
+    if any(lower.startswith(prefix) for prefix in reminder_prefixes):
+        reminder_body = strip_intent_prefix(stripped, reminder_prefixes)
+        # Only take over as a /remind trigger when there is a parseable clock time
+        # (e.g. "o 15", "9:30"). Reminder phrases WITHOUT a time ("o lekach",
+        # "o spotkaniu") fall through to the existing calendar-draft path.
+        if natural_reminder_to_structured(reminder_body) or parse_reminder(reminder_body)[0] is not None:
+            return {
+                "command": "/remind",
+                "operators": ["host"],
+                "prompt": reminder_body,
+                "mode": "remind",
+                "intent": "natural",
+            }
 
     write_prefixes = ["zapisz plik", "utwórz plik", "utworz plik", "stwórz plik", "stworz plik", "write file", "zapisz workspace"]
     if any(lower.startswith(prefix) for prefix in write_prefixes):
