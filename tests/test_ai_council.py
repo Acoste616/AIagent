@@ -8458,5 +8458,81 @@ class SetupOnboardingTests(unittest.TestCase):
         self.assertIn("/setup", ai_council.LLM_ROUTER_ALLOWED_COMMANDS)
 
 
+class WatchlistTests(unittest.TestCase):
+    """L4.85: topic watchlist + Bartek profile."""
+
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        self._state = Path(self._tmp.name)
+        p = patch.object(ai_council, "STATE_DIR", self._state)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_default_topics_when_no_file(self):
+        topics = ai_council.watch_topics()
+        self.assertIn("Poke", topics)
+        self.assertIn("OpenClaw", topics)
+        self.assertEqual(len(topics), len(ai_council.DEFAULT_WATCH_TOPICS))
+
+    def test_add_remove_dedup_roundtrip(self):
+        ai_council.watch_response("add Tesla")
+        self.assertIn("Tesla", ai_council.watch_topics())
+        ai_council.watch_response("add tesla")  # dedup, case-insensitive
+        self.assertEqual(sum(1 for t in ai_council.watch_topics() if t.lower() == "tesla"), 1)
+        ai_council.watch_response("remove Tesla")
+        self.assertNotIn("tesla", [t.lower() for t in ai_council.watch_topics()])
+
+    def test_clear_then_defaults_returned(self):
+        ai_council.watch_response("clear")
+        # empty file -> watch_topics() falls back to defaults (never an empty watchlist)
+        self.assertEqual(ai_council.watch_topics(), list(ai_council.DEFAULT_WATCH_TOPICS))
+
+    def test_watch_routes_explicit_and_natural(self):
+        self.assertEqual(ai_council.route_text("/watch")["command"], "/watch")
+        natural = ai_council.route_message("śledź Nvidia Blackwell", chat_id="553")
+        self.assertEqual(natural["command"], "/watch")
+        self.assertTrue(natural["prompt"].startswith("add "))
+
+    def test_watch_is_readonly_and_front_technical(self):
+        self.assertIn("/watch", ai_council.READONLY_RECIPE_COMMANDS)
+        self.assertIn("/watch", ai_council.FRONT_QUALITY_TECHNICAL_COMMANDS)
+        # Deliberately NOT in the LLM router allowlist (avoids auto-triggering Grok research).
+        self.assertNotIn("/watch", ai_council.LLM_ROUTER_ALLOWED_COMMANDS)
+
+    def test_watch_research_one_topic_calls_grok(self):
+        captured = {}
+
+        def fake_research(topic, max_chars=None, task_id=""):
+            captured["topic"] = topic
+            return "[Grok X Research] ok"
+
+        with patch.object(ai_council, "grok_x_research_response", side_effect=fake_research):
+            out = ai_council.watch_response("research Poke")
+        self.assertEqual(captured["topic"], "Poke")
+        self.assertIn("ok", out)
+
+    def test_watch_research_all_combines_topics(self):
+        captured = {}
+
+        def fake_research(topic, max_chars=None, task_id=""):
+            captured["topic"] = topic
+            return "[Grok X Research] ok"
+
+        with patch.object(ai_council, "grok_x_research_response", side_effect=fake_research):
+            ai_council.watch_response("research")
+        self.assertIn("Poke", captured["topic"])
+        self.assertIn("OpenClaw", captured["topic"])
+
+    def test_seed_profile_persists_trusted_facts(self):
+        db = self._state / "memory.sqlite"
+        with patch.object(ai_council, "MEMORY_DB", db):
+            saved = ai_council.seed_bartek_profile()
+            self.assertGreaterEqual(saved, 5)
+            facts = " ".join(f.get("value", "") for f in ai_council.active_user_facts(limit=30))
+        self.assertIn("Europe/Warsaw", facts)
+        self.assertIn("approval", facts)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -165,6 +165,7 @@ READONLY_RECIPE_COMMANDS = {
     "/agent",
     "/shortcuts",
     "/setup",
+    "/watch",
     "/delegate",
     "/drafts",
     "/cost",
@@ -412,6 +413,7 @@ FRONT_QUALITY_TECHNICAL_COMMANDS = {
     "/artifacts",
     "/shortcuts",
     "/setup",
+    "/watch",
     "/approve",
     "/deny",
     "/execute",
@@ -14432,6 +14434,16 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/setup", "operators": ["host"], "prompt": "", "mode": "setup", "intent": "natural"}
 
+    if lower in {"watch", "watchlist", "śledzone tematy", "sledzone tematy", "co śledzisz", "co sledzisz", "tematy"} or lower.startswith(
+        ("pokaż tematy", "pokaz tematy", "śledź ", "sledz ", "obserwuj ")
+    ):
+        rest = ""
+        for pref in ("śledź ", "sledz ", "obserwuj "):
+            if lower.startswith(pref):
+                rest = "add " + stripped[len(pref):].strip()
+                break
+        return {"command": "/watch", "operators": ["host"], "prompt": rest, "mode": "watch", "intent": "natural"}
+
     if lower in {"goal", "cel", "jaki jest cel"}:
         return {"command": "/goal", "operators": ["host"], "prompt": stripped, "mode": "goal", "intent": "natural"}
 
@@ -15073,6 +15085,9 @@ def route_text(text: str) -> dict:
         return {"command": "/imessage", "operators": ["host"], "prompt": prompt, "mode": "imessage"}
     if lower.startswith("/setup") or lower.startswith("/onboarding"):
         return {"command": "/setup", "operators": ["host"], "prompt": "", "mode": "setup"}
+    if lower == "/watch" or lower.startswith("/watch "):
+        prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
+        return {"command": "/watch", "operators": ["host"], "prompt": prompt, "mode": "watch"}
     if lower.startswith("/chat"):
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/agent"):
@@ -16103,6 +16118,7 @@ def setup_response() -> str:
         f"{_setup_mark(proactive_brief_enabled())} Poranny brief — {'on' if proactive_brief_enabled() else 'off (AI_COUNCIL_PROACTIVE_BRIEF)'}",
         f"{_setup_mark(fact_extraction_enabled())} Pamięć / auto-fakty — {'on' if fact_extraction_enabled() else 'off (AI_COUNCIL_FACT_EXTRACTION)'}",
         f"{_setup_mark(proactive_imessage_enabled())} Proaktywny iMessage — {'on (brief+nudge → iMessage)' if proactive_imessage_enabled() else 'off (AI_COUNCIL_IMESSAGE_PROACTIVE)'}",
+        f"✅ Watchlist tematów — {len(watch_topics())} śledzonych (/watch)",
         "",
         "Legenda: ✅ działa · 🔒 gotowe, czeka na Twój 1 ruch · ⚪ niepodłączone",
     ]
@@ -16115,6 +16131,108 @@ def setup_response() -> str:
         rows.append("NEXT: powiedz, które jeszcze apki podłączyć (Notion/Linear/Slack…).")
     rows.append("Pełny kontekst: docs/CONTEXT_QUESTIONS_FOR_BARTEK.md")
     return "\n".join(rows)
+
+
+# ============================================================================
+# L4.85 — Topic watchlist + Bartek profile. From Bartek's context answers: the
+# assistant tracks his standing research interests and remembers his durable
+# profile/preferences. Watch topics are stored (no auto-Grok spam — cost-aware
+# per 6c); research runs ON DEMAND via /watch research.
+# ============================================================================
+WATCHLIST_VERSION = "L4.85"
+
+DEFAULT_WATCH_TOPICS = [
+    "Poke", "OpenClaw", "Hermes", "AI agents", "Codex", "Claude Code",
+    "Grok / xAI", "OpenAI", "Wdroz.AI", "automations",
+    "iPhone / iMessage agents", "local AI execution",
+]
+
+
+def watch_topics_path() -> Path:
+    return STATE_DIR / "watch_topics.json"
+
+
+def watch_topics() -> list[str]:
+    try:
+        data = json.loads(watch_topics_path().read_text(encoding="utf-8"))
+        topics = data.get("topics") if isinstance(data, dict) else data
+        if isinstance(topics, list):
+            cleaned = [str(t).strip() for t in topics if str(t).strip()]
+            return cleaned if cleaned else list(DEFAULT_WATCH_TOPICS)
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return list(DEFAULT_WATCH_TOPICS)
+
+
+def watch_topics_save(topics: list[str]) -> list[str]:
+    ensure_council_dirs()
+    seen: list[str] = []
+    for t in topics:
+        c = str(t).strip()
+        if c and c.lower() not in {s.lower() for s in seen}:
+            seen.append(c)
+    watch_topics_path().write_text(json.dumps({"topics": seen}, ensure_ascii=False), encoding="utf-8")
+    return seen
+
+
+def watch_response(prompt: str, task_id: str = "") -> str:
+    arg = (prompt or "").strip()
+    lower = arg.lower()
+    if not arg or lower in {"list", "lista", "status", "stan"}:
+        topics = watch_topics()
+        body = "\n".join(f"- {t}" for t in topics) or "- (puste)"
+        return (
+            f"[Council] 🔭 Śledzone tematy ({len(topics)}):\n{body}\n"
+            "Dodaj: /watch add <temat> · Usuń: /watch remove <temat> · Research: /watch research [temat] · Reset: /watch reset"
+        )
+    if lower in {"reset", "domyślne", "domyslne"}:
+        topics = watch_topics_save(list(DEFAULT_WATCH_TOPICS))
+        return f"[Council] 🔭 Przywrócono domyślne tematy ({len(topics)})."
+    if lower in {"clear", "wyczyść", "wyczysc"}:
+        watch_topics_save([])
+        return "[Council] 🔭 Lista tematów wyczyszczona."
+    if lower.startswith("add ") or lower.startswith("dodaj "):
+        topic = arg.split(maxsplit=1)[1].strip()
+        topics = watch_topics_save(watch_topics() + [topic])
+        return f"[Council] 🔭 Dodano: {topic} (razem {len(topics)})."
+    if lower.startswith(("remove ", "rm ", "usuń ", "usun ")):
+        topic = arg.split(maxsplit=1)[1].strip().lower()
+        topics = [t for t in watch_topics() if t.lower() != topic]
+        watch_topics_save(topics)
+        return f"[Council] 🔭 Usunięto (jeśli było): {topic} (razem {len(topics)})."
+    if lower == "research" or lower.startswith("research"):
+        topic = arg[len("research"):].strip()
+        if topic:
+            return grok_x_research_response(topic, task_id=task_id)
+        combined = "Najnowsze istotne newsy, premiery i zmiany z ostatnich dni dla tematów: " + ", ".join(watch_topics())
+        return grok_x_research_response(combined, task_id=task_id)
+    # Bare text = add it as a topic.
+    topics = watch_topics_save(watch_topics() + [arg])
+    return f"[Council] 🔭 Dodano: {arg} (razem {len(topics)})."
+
+
+BARTEK_PROFILE_FACTS = [
+    "Strefa czasowa: Europe/Warsaw.",
+    "Mam na imię Bartek (Bartosz).",
+    "Projekt: Bartek Agent OS / AIagent — Poke-like + OpenClaw/Hermes, Desktop Windows 24/7 jako serwer wykonawczy.",
+    "Polityka akcji: drafty najpierw, realny send/akcja zewnętrzna dopiero po approval.",
+    "Godziny ciszy: 23:00–07:00 Europe/Warsaw (bez pingów w nocy).",
+    "Poranny brief o 8:00 Europe/Warsaw.",
+    "Główny workspace: D:\\ai-council; OpenClaw context: D:\\openclaw-export.",
+    "Główny kanał: Telegram/iPhone; docelowo też iMessage przez Mac.",
+]
+
+
+def seed_bartek_profile() -> int:
+    """Persist Bartek's durable profile/preferences as trusted user facts (once)."""
+    saved = 0
+    for fact in BARTEK_PROFILE_FACTS:
+        try:
+            if user_fact_save(fact, source="host_user", status="active"):
+                saved += 1
+        except Exception:
+            continue
+    return saved
 
 
 def raw_operator_response(command: str, prompt: str, task_id: str = "") -> str:
@@ -16278,6 +16396,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return imessage_response(prompt)
     if command == "/setup":
         return setup_response()
+    if command == "/watch":
+        return watch_response(prompt, task_id=task_id)
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/agent":
@@ -16984,6 +17104,7 @@ def main() -> int:
     imo_ack.add_argument("--id", required=True, dest="msg_id")
     imo_ack.add_argument("--status", required=True)
     imo_ack.add_argument("--detail", default="")
+    sub.add_parser("seed-profile", help="Persist Bartek's durable profile/preferences to memory")
     args = parser.parse_args()
 
     if args.cmd == "doctor":
@@ -17026,6 +17147,10 @@ def main() -> int:
         return 0
     if args.cmd == "imessage-outbox-ack":
         print(json.dumps(imessage_outbox_ack(args.msg_id, args.status, detail=args.detail), ensure_ascii=False))
+        return 0
+    if args.cmd == "seed-profile":
+        saved = seed_bartek_profile()
+        print(f"profile_facts_saved={saved}")
         return 0
     return 2
 
