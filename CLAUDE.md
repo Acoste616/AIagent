@@ -99,6 +99,13 @@ As of 2026-06-08:
 - `errors_24h` was around 50, mostly benign/noisy according to Claude's latest audit.
 - Claude created an unreviewed local L4.63 patch for a cost-safe router gate. Treat it as your worktree responsibility: verify, finish, document, and request/perform audit before production deploy.
 
+As of 2026-06-09 (L4.93, Mac worktree, NOT deployed):
+
+- Claude is now the default front conversation operator (`poke_chat_claude_response`, CLI, no tools), Grok is fallback + research; local host keeps short ACK/status. Config: `AI_COUNCIL_POKE_CHAT_OPERATOR` (default `claude`).
+- `respond` no longer prints `route=`/`audit_log=` debug tail by default (opt-in: `AI_COUNCIL_RESPOND_DEBUG_TAIL=true`); `respond-b64` output is scrubbed via `strip_debug_metadata`.
+- Doc: `docs/implementation/L4_93_CLAUDE_FRONT_OPERATOR.md`. Mac tests: 452/452. Windows sync/deploy + iMessage smoke pending Bartek approval (Windows may be ahead of Mac — diff first).
+- L4.94 (agent loop iter 1): `respond_b64_reply` — iMessage thread memory (turns persisted) + auto fact capture parity + debug scrub; permissive Claude chat gate (`AI_COUNCIL_POKE_CHAT_CLAUDE_ALL_CHAT`, default on) so short natural messages get a live reply; voice contract gained the single-follow-up-question rule. Doc: `docs/agent-loop/LOOP_2026-06-09_L4_94.md`. Mac tests: 456/456.
+
 ## Required Verification Commands
 
 Mac:
