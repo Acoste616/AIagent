@@ -106,6 +106,13 @@ As of 2026-06-09 (L4.93, Mac worktree, NOT deployed):
 - Doc: `docs/implementation/L4_93_CLAUDE_FRONT_OPERATOR.md`. Mac tests: 452/452. Windows sync/deploy + iMessage smoke pending Bartek approval (Windows may be ahead of Mac — diff first).
 - L4.94 (agent loop iter 1): `respond_b64_reply` — iMessage thread memory (turns persisted) + auto fact capture parity + debug scrub; permissive Claude chat gate (`AI_COUNCIL_POKE_CHAT_CLAUDE_ALL_CHAT`, default on) so short natural messages get a live reply; voice contract gained the single-follow-up-question rule. Doc: `docs/agent-loop/LOOP_2026-06-09_L4_94.md`. Mac tests: 456/456.
 
+As of 2026-06-09 late evening (L4.97, **DEPLOYED to D:\ai-council**):
+
+- Windows production had an unmerged Conversation Brain (clarify-before-act, food_local/coding flows, brain_loop, llm_route retired from live path). Merged into repo as base + L4.93–L4.96 reapplied on top (commits 88aa965, 4c3e73e, 0290de7; NOT pushed to GitHub yet).
+- L4.95: approved workspace writes snapshot before write; `/undo <path>` restores. L4.96: ORDER_DRAFT marker flow — Claude front proposes `order_handoff` pending action (R1), `/approve` returns deep-link handoff; no payments, no pretending.
+- Deployed with backup at `D:\ai-council\backups\pre-L4.97\`; Windows pytest 493 passed; Telegram listener restarted on new code; respond-b64 smoke clean (no debug tail); Bartek notified via iMessage.
+- Loop docs: `docs/agent-loop/LOOP_2026-06-09_L4_97_DEPLOY.md`.
+
 ## Required Verification Commands
 
 Mac:
