@@ -25,7 +25,7 @@ import time
 import traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import quote, quote_plus, urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -848,13 +848,6 @@ def front_quality_issues(text: str, route: dict | None = None) -> list[str]:
     if not allow_long and len(command_lines) > int_cfg("AI_COUNCIL_FRONT_QUALITY_MAX_COMMAND_LINES", 6):
         issues.append(f"command_spam:{len(command_lines)}")
     return issues
-
-
-def strip_debug_metadata(text: str) -> str:
-    """L4.93 P0: user-facing replies must never carry route=/audit_log= debug tails
-    (Poke polish). Applied to `respond` and `respond-b64` (iMessage relay) output."""
-    kept = [line for line in str(text or "").splitlines() if not re.match(r"^\s*(route=|audit_log=)", line)]
-    return "\n".join(kept).strip()
 
 
 def record_front_quality_if_needed(response: str, route: dict | None, event: dict | None = None, chat_id: str = "", force: bool = False) -> list[str]:
@@ -3595,10 +3588,15 @@ def media_intent_text(media: dict, analysis: dict) -> str:
 
 
 def run_media_derived_route(intent_text: str, chat_id: str, parent_task: dict, send_progress: bool = True) -> dict:
-    clean_text = intent_text.strip()
+    # B: collapse whitespace so multi-line OCR/STT does not trip route_message's newline
+    # short-circuit, then route the media-derived intent through the SHARED Conversation
+    # Brain (clarify-before-act, food/coding, pending answers, approve/cancel) instead of the
+    # bare route_text dispatcher. route_message falls through to route_text for explicit/
+    # keyword commands, so every existing media route (e.g. /flow, /write) is preserved.
+    clean_text = " ".join(str(intent_text or "").split())
     if not clean_text:
         return {"status": "skipped", "reason": "empty intent"}
-    route = route_text(clean_text)
+    route = route_message(clean_text, chat_id=chat_id)
     route = {**route, "parent_task_id": parent_task.get("task_id", "")}
     derived = {
         "status": "routed",
@@ -3758,6 +3756,21 @@ def shortcut_text_from_payload(payload: dict) -> str:
         value = str(payload.get(key) or "").strip()
         if value:
             parts.append(value)
+    # B Step 3: extract a shared GPS pin so it can fill the food-flow location slot (or any
+    # location intent) once routed through the brain. Additive — no existing field changed.
+    place = str(payload.get("place_name") or payload.get("place") or payload.get("address") or "").strip()
+    lat = payload.get("latitude", payload.get("lat"))
+    lng = payload.get("longitude", payload.get("lng", payload.get("lon")))
+    if lat not in (None, "") and lng not in (None, ""):
+        try:
+            coords = f"({float(lat):.5f},{float(lng):.5f})"
+        except (TypeError, ValueError):
+            coords = ""
+        loc = f"lokalizacja: {place + ' ' if place else ''}{coords}".strip()
+        if loc.strip().rstrip(":"):
+            parts.insert(0, loc)
+    elif place:
+        parts.insert(0, f"lokalizacja: {place}")
     title = str(payload.get("title") or "").strip()
     url = str(payload.get("url") or payload.get("share_url") or "").strip()
     caption = str(payload.get("caption") or "").strip()
@@ -3908,13 +3921,18 @@ def shortcut_should_research_url(payload: dict) -> bool:
     return payload_bool(payload, "research", bool_cfg("AI_COUNCIL_SHORTCUT_URL_RESEARCH_DEFAULT", True))
 
 
-def shortcut_route_for_text(payload: dict, text: str) -> dict:
+def shortcut_route_for_text(payload: dict, text: str, chat_id: str = "") -> dict:
     command = str(payload.get("command") or payload.get("route") or "").strip()
     if command.startswith(("/", "@")):
         return route_text(f"{command} {text}".strip())
     if shortcut_should_research_url(payload):
         return route_text(f"/recipe run research_brief {text}".strip())
-    return route_text(text)
+    # B Step 2: plain Shortcut text shares the SAME Conversation Brain as iMessage/Telegram
+    # (clarify-before-act, food/coding, approve/cancel). Whitespace is collapsed so a
+    # multi-field payload (which shortcut_text_from_payload joins with newlines) does not
+    # trip route_message's newline short-circuit. route_message falls through to route_text
+    # for explicit/keyword commands, so the URL-research and command payloads above are unaffected.
+    return route_message(" ".join(text.split()), chat_id=chat_id)
 
 
 def persist_shortcut_text_artifact(text: str, route: dict, response: str, remote_addr: str, chat_id: str, idem_key: str) -> str:
@@ -4096,7 +4114,7 @@ def process_shortcut_payload(payload: dict, remote_addr: str = "") -> dict:
     text = shortcut_text_from_payload(payload)
     if not text:
         return {"ok": False, "status": "failed", "error": "missing_text_or_media"}
-    route = shortcut_route_for_text(payload, text)
+    route = shortcut_route_for_text(payload, text, chat_id=chat_id)
     route_key = short_hash(str(route.get("command") or route.get("mode") or "text"))
     idem_key = str(payload.get("idempotency_key") or f"shortcut-text:{route_key}:{short_hash(text)}")
     duplicate = find_recent_duplicate(idem_key)
@@ -9560,71 +9578,6 @@ def create_workspace_patch_action(prompt: str) -> dict | None:
     )
 
 
-def workspace_action_snapshot(target: Path) -> bool:
-    """L4.95 (OpenClaw hands): before an APPROVED workspace write executes, snapshot
-    the previous state into the hands backup journal (outside the workspace), so every
-    approved write is undoable via `/undo <path>`. No rollback => no write."""
-    meta_path, data_path = _hands_backup_keys(target)
-    existed = target.exists()
-    try:
-        if existed:
-            data_path.write_bytes(target.read_bytes())
-        elif data_path.exists():
-            data_path.unlink()
-        meta_path.write_text(
-            json.dumps({"target": str(target), "existed": existed, "ts": utc_now(), "scope": "workspace_action"}),
-            encoding="utf-8",
-        )
-    except OSError:
-        return False
-    return True
-
-
-def workspace_action_undo(raw_path: str) -> str:
-    """L4.95: restore a workspace file to its pre-action state — the counterpart of
-    fs_undo for approved workspace writes. Undo is risk-REDUCING, so it needs no
-    extra flag; resolver keeps it inside the workspace sandbox."""
-    target, error = resolve_workspace_path(raw_path)
-    if error or target is None:
-        return f"[Council] Odrzucono: {error}"
-    meta_path, data_path = _hands_backup_keys(target)
-    if not meta_path.exists():
-        return "[Council] Brak backupu dla tego pliku (nie był zapisany przez approved action)."
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8") or "{}")
-    except (OSError, json.JSONDecodeError):
-        return "[Council] Backup uszkodzony."
-    if meta.get("target") != str(target):
-        return "[Council] Backup nie pasuje do celu."
-    try:
-        if meta.get("existed"):
-            _hands_safe_write_bytes(target, data_path.read_bytes())
-            if data_path.exists():
-                data_path.unlink()
-            meta_path.unlink()
-            result = f"przywrócono poprzednią treść {target.name}"
-        else:
-            if target.exists():
-                target.unlink()
-            meta_path.unlink()
-            result = f"usunięto {target.name} (wrócił do stanu „nie istniał”)"
-    except OSError as exc:
-        return f"[Council] Błąd cofania: {exc}"
-    audit({"command": "/undo", "operators": ["host"], "status": "restored", "duration_ms": 0, "output_preview": str(target)[:200]})
-    return f"[Council] Cofnięto ✅ {result}."
-
-
-def _workspace_snapshot_failed(action: dict) -> dict:
-    executed = {
-        **action,
-        "status": "failed",
-        "updated_at": utc_now(),
-        "execution_result": "blocked: backup snapshot failed (no rollback => no write)",
-    }
-    append_jsonl(ACTIONS_FILE, executed)
-    return executed
-
-
 def execute_workspace_write_action(action: dict) -> dict:
     payload = action.get("payload") or {}
     target, error = resolve_workspace_path(str(payload.get("path", "")))
@@ -9648,8 +9601,6 @@ def execute_workspace_write_action(action: dict) -> dict:
         append_jsonl(ACTIONS_FILE, executed)
         return executed
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not workspace_action_snapshot(target):
-        return _workspace_snapshot_failed(action)
     target.write_text(content, encoding="utf-8")
     executed = {
         **action,
@@ -9684,8 +9635,6 @@ def execute_workspace_append_action(action: dict) -> dict:
         append_jsonl(ACTIONS_FILE, executed)
         return executed
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not workspace_action_snapshot(target):
-        return _workspace_snapshot_failed(action)
     target.write_text(new_content, encoding="utf-8")
     executed = {**action, "status": "executed", "updated_at": utc_now(), "execution_result": f"appended {target}"}
     append_jsonl(ACTIONS_FILE, executed)
@@ -9716,8 +9665,6 @@ def execute_workspace_patch_action(action: dict) -> dict:
         executed = {**action, "status": "failed", "updated_at": utc_now(), "execution_result": "blocked: content too large"}
         append_jsonl(ACTIONS_FILE, executed)
         return executed
-    if not workspace_action_snapshot(target):
-        return _workspace_snapshot_failed(action)
     target.write_text(new_content, encoding="utf-8")
     executed = {**action, "status": "executed", "updated_at": utc_now(), "execution_result": f"patched {target}"}
     append_jsonl(ACTIONS_FILE, executed)
@@ -10278,16 +10225,18 @@ def detect_proactive_events() -> list[dict]:
 
 
 def send_proactive_nudge(chat_id: str, event: dict) -> bool:
-    text = (
-        "[Council] Proactive nudge\n"
-        f"{event.get('title')}\n"
-        f"summary: {event.get('summary')}\n"
-        f"next: {event.get('next_action')}\n"
-        "inbox: /nudges"
-    )
+    # Clean, human proactive ping — no "[Council]", no summary:/next:/inbox: debug labels.
+    title = compact_line(str(event.get("title") or "").strip(), 120)
+    summary = compact_line(str(event.get("summary") or "").strip(), 220)
+    nxt = compact_line(str(event.get("next_action") or "").strip(), 120)
+    parts = [p for p in (title, summary if summary and summary != title else "") if p]
+    body = "\n".join(parts).strip() or "Coś czeka na Twoją decyzję — napisz „co tam mam”, pokażę."
+    if nxt and not re.match(r"^/|@", nxt):  # only surface a next step if it's human, not a slash-command
+        body += f"\nNastępny krok: {nxt}"
+    text = sanitize_brain_reply(body)
     ok = telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
     if ok:
-        mirror_proactive_to_imessage(text)  # L4.84: mirror nudge to iMessage (gated)
+        mirror_proactive_to_imessage(text)  # mirror to iMessage (gated)
     return ok
 
 
@@ -10347,69 +10296,32 @@ def proactive_brief_enabled() -> bool:
 
 
 def build_morning_brief() -> str:
-    """L4.72: compose a once-daily brief from INTERNAL state only (no external auth).
-    Returns '' when there is nothing worth saying ('wait' — never spam an empty brief)."""
-    sections = []
+    """A short, HUMAN morning brief — only what Bartek actually cares about (today's
+    reminders). No [Council], no ops metrics (improvements/errors/stuck/cost), no command
+    walls — that was the daily "głupoty". Empty -> no spam. External calendar/email will
+    add real day-context here once Google OAuth is connected (watchlist digest stays opt-in)."""
     try:
-        pending_actions = [a for a in latest_by_id(ACTIONS_FILE, "action_id", limit=40) if a.get("status") == "pending"]
-    except Exception:
-        pending_actions = []
-    if pending_actions:
-        sections.append(f"⏳ {len(pending_actions)} akcji czeka na decyzję — /drafts")
-    try:
-        pf = pending_user_facts(limit=30)
-    except Exception:
-        pf = []
-    if pf:
-        sections.append(f"🧠 {len(pf)} faktów do potwierdzenia — /memory pending")
-    try:
-        imp = open_improvements(limit=10)
-    except Exception:
-        imp = []
-    if imp:
-        sections.append(f"💡 {len(imp)} otwartych improvementów — /improve")
-    try:
-        stuck = stuck_tasks(limit=10)
-    except Exception:
-        stuck = []
-    if stuck:
-        sections.append(f"⚠️ {len(stuck)} tasków stuck — /agent")
-    try:
-        act_err = len(actionable_error_rows(error_rows(days=1)))
-    except Exception:
-        act_err = 0
-    if act_err:
-        sections.append(f"🔴 {act_err} błędów wymagających akcji — /errors")
-    try:  # L4.86: Bartek's 4a brief spec — surface active reminders
         reminders = active_reminders()
     except Exception:
         reminders = []
-    if reminders:
-        nxt = compact_line(str(reminders[0].get("text", "")), 50)
-        sections.append(f"⏰ {len(reminders)} przypomnień (np. {nxt}) — /reminders")
     digest_line = ""
-    try:  # L4.87: proactive watchlist research (gated, off by default)
+    try:  # opt-in watchlist research digest (off by default) — a single clean line if enabled
         digest_line = watch_digest_brief_line()
     except Exception:
         digest_line = ""
+    if not reminders and not digest_line:
+        return ""  # nothing date-specific worth a proactive ping — don't spam
+    parts = ["Dzień dobry!"]
+    if reminders:
+        if len(reminders) == 1:
+            parts.append(f"Masz dziś przypomnienie: {compact_line(str(reminders[0].get('text', '')), 80)}.")
+        else:
+            items = "; ".join(compact_line(str(r.get('text', '')), 45) for r in reminders[:4])
+            parts.append(f"Masz dziś {len(reminders)} przypomnienia: {items}.")
     if digest_line:
-        sections.append(digest_line)
-    if not sections:
-        return ""
-    head = f"☀️ [Council] Poranny brief — {today_utc()}"
-    try:
-        facts = active_user_facts(limit=3)
-    except Exception:
-        facts = []
-    if facts:
-        head += "\nPamiętam: " + "; ".join(compact_line(str(f.get("value", "")), 45) for f in facts)
-    cost_line = ""
-    try:  # L4.68: cost transparency — Poke's #1 complaint is opaque cost; we show it.
-        g = operator_limit_status("grok")
-        cost_line = f"\n💰 Grok dziś: {g.get('calls', 0)} calli, ~${float(g.get('estimated_usd', 0.0)):.3f}"
-    except Exception:
-        cost_line = ""
-    return head + "\n" + "\n".join("• " + s for s in sections) + cost_line + "\nNEXT: /agent — pełny inbox."
+        parts.append(compact_line(re.sub(r"^[^A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+", "", digest_line), 280))
+    parts.append("Miłego dnia — gdyby coś, pisz.")
+    return " ".join(parts)
 
 
 def morning_brief_due(now=None) -> bool:
@@ -10730,44 +10642,18 @@ def approve_response(prompt: str) -> str:
     if updated.get("type") == "workspace_write" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_write_action(updated)
         if executed.get("status") == "executed":
-            return (
-                f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}\n"
-                f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
-            )
+            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
     if updated.get("type") == "workspace_append" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_append_action(updated)
         if executed.get("status") == "executed":
-            return (
-                f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}\n"
-                f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
-            )
+            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
     if updated.get("type") == "workspace_patch" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_patch_action(updated)
         if executed.get("status") == "executed":
-            return (
-                f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}\n"
-                f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
-            )
+            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
-    if updated.get("type") == "order_handoff":
-        payload = updated.get("payload") or {}
-        executed = {
-            **updated,
-            "status": "executed",
-            "updated_at": utc_now(),
-            "execution_result": "handoff delivered in chat; external_write_performed=false",
-        }
-        append_jsonl(ACTIONS_FILE, executed)
-        address = compact_line(str(payload.get("address", "")), 100)
-        return (
-            "[Council] Zamówienie GOTOWE DO ZŁOŻENIA (ja nie składam i nie płacę):\n"
-            f"{compact_line(str(payload.get('items', '')), 160)} | {compact_line(str(payload.get('service', '')), 80)}"
-            + (f" | {address}" if address else "")
-            + f"\nLink: {payload.get('deep_link', '')}\n"
-            "Otwórz link, potwierdź koszyk i zapłać sam."
-        )
     if updated.get("type") == "planner_proposal":
         payload = updated.get("payload") or {}
         task_id = str(payload.get("task_id") or "")
@@ -13403,6 +13289,7 @@ def run_background_job(task_id: str) -> int:
                     force=True,
                 )
                 telegram_send_message_with_markup(chat_id, summary, background_delivery_reply_markup(summary, task_id))
+                mirror_proactive_to_imessage(summary)  # Deliver: background failure summary also reaches iMessage (gated)
             return 1
         append_progress_event(task_id, route, "DELIVERING", "final summary ready")
         if send_intermediate:
@@ -13441,6 +13328,7 @@ def run_background_job(task_id: str) -> int:
                 force=True,
             )
             telegram_send_message_with_markup(chat_id, summary, background_delivery_reply_markup(summary, task_id))
+            mirror_proactive_to_imessage(summary)  # Deliver: background RESULT also reaches iMessage (gated)
         return 0
     except Exception as exc:
         stop_progress_heartbeat(heartbeat)
@@ -15162,6 +15050,351 @@ def multiline_command_route(text: str) -> dict | None:
     }
 
 
+# === Conversation Brain (Capability A) =======================================
+# A unified, deterministic conversation layer SHARED by iMessage (respond-b64) and
+# Telegram (listen_once). It (1) classifies natural-language intent, (2) asks for the
+# missing slot before acting (clarify-before-act) and resumes when the user answers,
+# and (3) speaks one Poke-style voice: short, Polish, status-first, one next step,
+# no debug/JSON. It is intentionally CONSERVATIVE inside route_message: it only takes
+# over for (a) a pending clarification, or (b) a confident food/coding intent that the
+# keyword router does not already handle. Everything else returns None so the existing
+# explicit -> keyword -> llm -> /chat flow is byte-for-byte unchanged.
+
+CLARIFICATIONS_FILE = STATE_DIR / "clarifications.jsonl"
+
+# P2: keyword routes the LLM brain owns better (cleaner + memory + tools). route_message
+# defers these to /chat -> brain_loop instead of the old leaky handlers: /memory and /remind
+# leak "[Council]"; /plan-action mis-routes reminders into R3 calendar drafts and auto-starts
+# recipes; /flow returns Claude plan-mode walls. The brain's tools (save_fact / recall_fact /
+# set_reminder / web_research / plan_code) replace them with one clean reply.
+BRAIN_OWNED_COMMANDS = frozenset({"/memory", "/remind", "/plan-action", "/flow"})
+
+# Single source of truth for the intent taxonomy (DoD "wykrywa intencje").
+BRAIN_INTENTS = (
+    "approval_cancel",
+    "risky_action",
+    "food_local",
+    "coding",
+    "reminder",
+    "memory_save",
+    "memory_recall",
+    "recipe",
+    "research",
+    "casual_chat",
+    "unknown",
+)
+
+_BRAIN_APPROVAL_TERMS = (
+    "zatwierdzam", "zatwierdz", "zatwierdź", "akceptuj", "potwierdzam", "tak zrob",
+    "tak, zrob", "approve", "anuluj", "odrzuc", "odrzuć", "nie rob", "odpuszczam",
+)
+_BRAIN_FOOD_TERMS = (
+    "jedzenie", "cos do jedzenia", "cos do zjedzenia", "zjesc", "zjeść", "najem sie",
+    "glodny", "glodna", "głodny", "głodna", "obiad", "kolacja", "sniadanie", "śniadanie",
+    "pizza", "sushi", "burger", "kebab", "na wynos", "dowoz", "dowóz", "zamow jedzenie",
+    "zamów jedzenie", "zamowic jedzenie", "restauracj", "chce jesc", "chcę jeść",
+    "order food", "i want food", "hungry", "want to eat",
+)
+_BRAIN_CODING_TERMS = (
+    "popraw kod", "napraw kod", "napisz kod", "napisz funkcj", "napisz skrypt",
+    "zbuduj skrypt", "zrefaktor", "refaktor", "zdebuguj", "debuguj", "popraw bug",
+    "napraw bug", "przejrzyj kod", "code review", "review kodu", "fix the code",
+    "write a function", "implementuj funkcj",
+)
+_BRAIN_REMINDER_TERMS = (
+    "przypomnij", "przypomnienie", "remind me", "reminder", "ustaw przypomnienie",
+)
+_BRAIN_MEMORY_SAVE_TERMS = (
+    "zapamietaj", "zapamiętaj", "zapisz ze", "zapisz, ze", "zapisz że", "zanotuj",
+    "remember that", "note that",
+)
+_BRAIN_MEMORY_RECALL_TERMS = (
+    "co wiesz o", "czy pamietasz", "czy pamiętasz", "pamietasz", "pamiętasz",
+    "co zapisalem", "co zapisałem",
+)
+_BRAIN_RECIPE_TERMS = (
+    "stworz recipe", "stwórz recipe", "stworz przepis", "stwórz przepis",
+    "automatyzacj", "zautomatyzuj", "codziennie o", "every morning",
+)
+_BRAIN_RESEARCH_TERMS = (
+    "research", "poszukaj", "wyszukaj", "sprawdz w necie", "sprawdź w necie",
+    "co mowia", "co mówią", "opinie o", "dowiedz sie", "dowiedz się", "sprawdz to",
+    "sprawdź to",
+)
+
+# Food slot-fill flow (one question per turn, in priority order).
+FOOD_SLOTS = ("cuisine", "budget", "location")
+FOOD_QUESTIONS = {
+    "cuisine": "Jasne. Na co masz ochotę? (np. włoska, sushi, kebab, coś lekkiego)",
+    "budget": "Ile chcesz wydać? (np. do 40 zł / 40–80 / bez limitu)",
+    "location": "Gdzie szukam/dostawa? (dzielnica albo adres — możesz wrzucić lokalizację)",
+}
+# EXACT-match cancels only. Critically, short words like "nie"/"stop" must NOT be matched by
+# startswith — that killed "nie wiem", "niedaleko", "Niemcewicza" (a street!) mid-flow, which
+# is exactly the "asked what I'd eat but couldn't continue" bug. Longer phrases use a prefix.
+_BRAIN_CANCEL_WORDS = {
+    "anuluj", "cancel", "nie", "zostaw", "odpusc", "odpuść", "stop", "wyjdz", "wyjdź",
+    "zapomnij", "nieważne", "niewazne", "odpuszczam", "rezygnuje", "rezygnuję", "spoko nie",
+}
+_BRAIN_CANCEL_PREFIXES = ("anuluj ", "cancel ", "odpuść ", "odpusc ", "daj spokój", "daj spokoj", "zostaw to", "zapomnij o")
+
+
+def _brain_ci(intent: str, confidence: float, matched: str = "") -> dict:
+    return {"intent": intent, "confidence": confidence, "matched": matched}
+
+
+def classify_intent(text: str) -> dict:
+    """Deterministic intent classifier — the brain's taxonomy. Pure/cheap (no LLM)."""
+    stripped = str(text or "").strip()
+    if not stripped:
+        return _brain_ci("unknown", 0.0)
+    low = stripped.lower()
+    norm = normalize_intent_text(stripped)
+
+    def has(terms) -> str:
+        return next((t for t in terms if t in low or t in norm), "")
+
+    matched = has(_BRAIN_APPROVAL_TERMS)
+    if matched:
+        return _brain_ci("approval_cancel", 0.9, matched)
+    risk, _reason = risk_level_for_text(stripped)
+    if risk in ("R3", "R4"):
+        return _brain_ci("risky_action", 1.0, risk)
+    matched = has(_BRAIN_FOOD_TERMS)
+    if matched:
+        return _brain_ci("food_local", 0.9, matched)
+    matched = has(_BRAIN_CODING_TERMS)
+    if matched:
+        return _brain_ci("coding", 0.9, matched)
+    matched = has(_BRAIN_REMINDER_TERMS)
+    if matched:
+        return _brain_ci("reminder", 0.85, matched)
+    matched = has(_BRAIN_MEMORY_SAVE_TERMS)
+    if matched:
+        return _brain_ci("memory_save", 0.85, matched)
+    matched = has(_BRAIN_MEMORY_RECALL_TERMS)
+    if matched:
+        return _brain_ci("memory_recall", 0.8, matched)
+    matched = has(_BRAIN_RECIPE_TERMS)
+    if matched:
+        return _brain_ci("recipe", 0.85, matched)
+    matched = has(_BRAIN_RESEARCH_TERMS)
+    if matched:
+        return _brain_ci("research", 0.85, matched)
+    if is_smalltalk(stripped):
+        return _brain_ci("casual_chat", 0.9, "smalltalk")
+    return _brain_ci("unknown", 0.4)
+
+
+def sanitize_brain_reply(text: str) -> str:
+    """Enforce the anti-debug/anti-JSON contract on brain output (not just log it)."""
+    clean = str(text or "").strip()
+    if not clean:
+        return "Jestem. Napisz o co chodzi."
+    kept = []
+    for line in clean.splitlines():
+        s = line.strip()
+        if re.match(r"^(route=|audit_log=)", s):  # structured debug at line start
+            continue
+        if re.search(r"\[(Codex|Claude|Grok)[\]\s]", s, re.IGNORECASE):  # raw operator label anywhere ([Council] is the intended host voice, kept)
+            continue
+        if re.search(r"Traceback \(most recent call last\)|\bsubprocess\b|\bcwd=|\benv_path=", s):
+            continue
+        kept.append(line)
+    out = "\n".join(kept).strip()
+    if re.search(r'\{[^{}]*"[^"]+"\s*:', out) or (out.startswith("{") and out.endswith("}") and '"' in out):
+        out = "Mam wynik, ale nie wrzucam Ci surowego JSON-a. Powiedz, czego z tego potrzebujesz."
+    max_chars = int_cfg("AI_COUNCIL_FRONT_QUALITY_MAX_CHARS", 2400)
+    if len(out) > max_chars:
+        out = out[:max_chars].rstrip() + " …"
+    return out or "Jestem. Napisz o co chodzi."
+
+
+def _brain_reply_route(text: str, intent: str = "", confidence: float = 0.9) -> dict:
+    return {
+        "command": "conversation",
+        "operators": ["host"],
+        "reply": sanitize_brain_reply(text),
+        "mode": "conversation",
+        "intent": intent or "conversation",
+        "route_source": "brain",
+        "confidence": confidence,
+    }
+
+
+def _clar_hash(chat_id: str) -> str:
+    # Empty chat_id must not collapse to short_hash("") == "" (Codex audit #4): map
+    # unscoped callers to a stable sentinel bucket instead of a shared empty key.
+    return short_hash(str(chat_id) or "anon-chat")
+
+
+def set_pending_clarification(chat_id: str, intent: str, slots: dict, pending_slot: str) -> dict:
+    ensure_council_dirs()
+    rec = {
+        "created_at": utc_now(),
+        "chat_id_hash": _clar_hash(chat_id),
+        "intent": intent,
+        "slots": dict(slots or {}),
+        "pending_slot": pending_slot,
+        "status": "pending",
+    }
+    append_jsonl(CLARIFICATIONS_FILE, rec)
+    return rec
+
+
+def get_pending_clarification(chat_id: str) -> dict | None:
+    if not CLARIFICATIONS_FILE.exists():
+        return None
+    h = _clar_hash(chat_id)
+    rows = [r for r in read_jsonl(CLARIFICATIONS_FILE) if r.get("chat_id_hash") == h]
+    if not rows:
+        return None
+    last = rows[-1]
+    if last.get("status") != "pending":
+        return None
+    # TTL: an abandoned flow must not silently resume days later (Sonnet review #2).
+    ttl = int_cfg("AI_COUNCIL_CLARIFY_TTL_SECONDS", 21600)  # 6h
+    if seconds_since(str(last.get("created_at") or "")) > ttl:
+        return None
+    return last
+
+
+def clear_pending_clarification(chat_id: str) -> dict | None:
+    last = get_pending_clarification(chat_id)
+    if last is None:
+        return None
+    rec = {
+        "created_at": utc_now(),
+        "chat_id_hash": _clar_hash(chat_id),
+        "intent": last.get("intent", ""),
+        "slots": last.get("slots", {}),
+        "pending_slot": "",
+        "status": "closed",
+    }
+    append_jsonl(CLARIFICATIONS_FILE, rec)
+    return rec
+
+
+def food_search_reply(slots: dict) -> str:
+    # Deliver: once cuisine+budget+location are known, DO the safe thing — a real web/X search
+    # for concrete places (R0), returned as ONE clean message (sanitized, no [Council]). Only an
+    # actual ORDER would need approval + a delivery connector we don't have yet.
+    cuisine = compact_line(str((slots or {}).get("cuisine", "")).strip() or "cokolwiek dobrego", 60)
+    budget = compact_line(str((slots or {}).get("budget", "")).strip() or "bez limitu", 60)
+    location = compact_line(
+        str((slots or {}).get("location", "")).strip().replace("lokalizacja:", "").strip() or "moja okolica", 80
+    )
+    query = (
+        f"Znajdź 3-5 konkretnych miejsc na jedzenie — kuchnia {cuisine}, okolica {location}, budżet {budget}. "
+        "Dla każdego podaj nazwę, orientacyjną cenę i czy ma dostawę/na wynos. Zwięźle, po polsku, bez nagłówków."
+    )
+    result = grok_x_research_response(query)
+    cleaned = sanitize_brain_reply(result) if result else ""
+    return cleaned or f"Na razie nie udało mi się znaleźć miejsc ({cuisine}, {location}) — spróbuj za chwilę."
+
+
+def coding_prompt_from(slots: dict, text: str) -> str:
+    target = str((slots or {}).get("target", "")).strip() or str(text or "").strip()
+    return f"Zadanie kodowe (plan → job → test → wynik): {compact_line(target, 600)}"
+
+
+def coding_target_from_text(text: str) -> str:
+    low = normalize_intent_text(text)
+    for term in _BRAIN_CODING_TERMS:
+        low = low.replace(term, " ")
+    leftover = low.strip(" :,-—")
+    if len(leftover) >= 4 or re.search(r"\.\w{1,5}\b", str(text or "")):
+        return str(text or "").strip()
+    return ""
+
+
+def telegram_location_to_text(location: dict) -> str:
+    # Deliver: a shared GPS pin (Telegram message.location) becomes brain-routable text so it
+    # fills a pending food/location slot instead of being dropped as "ignored_no_text".
+    lat = (location or {}).get("latitude")
+    lng = (location or {}).get("longitude")
+    try:
+        return f"lokalizacja: {float(lat):.5f},{float(lng):.5f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _coding_plan_route(prompt: str) -> dict:
+    # Route code work to the delegation path (Grok -> Claude plan -> Codex worker ->
+    # host audit). This creates the plan/job/test/result handoff and is gated:
+    # AUTO-RUN stays off until AI_COUNCIL_CODEX_WORKER_ENABLED=true. It never spawns a
+    # worker or writes externally on its own (unlike /plan-action, which auto-starts R0
+    # recipes that do not match a coding intent).
+    return {
+        "command": "/delegate",
+        "operators": ["grok", "claude-flow", "codex-worker", "host"],
+        "prompt": prompt,
+        "mode": "delegate",
+        "intent": "coding",
+        "route_source": "brain",
+        "confidence": 0.9,
+    }
+
+
+def conversation_brain_consume(text: str, chat_id: str = "") -> dict | None:
+    """If a clarification is pending for this chat, treat `text` as the answer."""
+    pending = get_pending_clarification(chat_id)
+    if pending is None:
+        return None
+    stripped = text.strip()
+    norm = normalize_intent_text(text)
+    if norm in _BRAIN_CANCEL_WORDS or any(norm.startswith(p) for p in _BRAIN_CANCEL_PREFIXES):
+        clear_pending_clarification(chat_id)
+        return _brain_reply_route(
+            "Spoko, odpuszczam ten wątek. Napisz, gdy będziesz chciał wrócić.",
+            intent=str(pending.get("intent", "")),
+        )
+    # If the keyword router recognizes this message, the user changed topic mid-flow —
+    # defer to it (Sonnet review #1). The pending clarification lingers and resumes on
+    # the next free-text answer the router does not claim.
+    if natural_intent_route(stripped, stripped.lower()) is not None:
+        return None
+    intent = str(pending.get("intent", ""))
+    slots = dict(pending.get("slots") or {})
+    slot = str(pending.get("pending_slot", ""))
+    if slot:
+        slots[slot] = text.strip()
+    if intent == "food_local":
+        nxt = next((s for s in FOOD_SLOTS if not slots.get(s)), "")
+        if nxt:
+            set_pending_clarification(chat_id, intent, slots, nxt)
+            return _brain_reply_route(FOOD_QUESTIONS[nxt], intent=intent)
+        clear_pending_clarification(chat_id)
+        return _brain_reply_route(food_search_reply(slots), intent="food_local")
+    if intent == "coding":
+        clear_pending_clarification(chat_id)
+        return _coding_plan_route(coding_prompt_from(slots, text))
+    clear_pending_clarification(chat_id)
+    return _brain_reply_route("Mam to. Mów dalej.", intent=intent)
+
+
+def conversation_brain_route(text: str, chat_id: str = "") -> dict | None:
+    """Start a brain flow for the gaps the keyword router misses (food / coding).
+
+    Returns None for every other intent so the existing flow is unchanged.
+    """
+    info = classify_intent(text)
+    intent = info.get("intent")
+    if intent == "food_local":
+        set_pending_clarification(chat_id, "food_local", {}, "cuisine")
+        return _brain_reply_route(FOOD_QUESTIONS["cuisine"], intent="food_local")
+    if intent == "coding":
+        target = coding_target_from_text(text)
+        if not target:
+            set_pending_clarification(chat_id, "coding", {}, "target")
+            return _brain_reply_route(
+                "Jasne. Wklej kod albo powiedz który plik i co poprawić — wtedy zrobię plan.",
+                intent="coding",
+            )
+        return _coding_plan_route(coding_prompt_from({}, text))
+    return None
+
+
 def route_message(text: str, chat_id: str = "") -> dict:
     stripped = text.strip()
     lower = stripped.lower()
@@ -15175,14 +15408,31 @@ def route_message(text: str, chat_id: str = "") -> dict:
         route.setdefault("route_source", "explicit")
         route.setdefault("confidence", 1.0)
         return route
+    # A: Conversation Brain — a pending clarification answer wins over keyword routing
+    # (we just asked a question; this turn is most likely the answer). Explicit @/ commands
+    # already returned above, so the power-user escape still works.
+    brain = conversation_brain_consume(stripped, chat_id)
+    if brain is not None:
+        brain.setdefault("route_source", "brain")
+        brain.setdefault("confidence", 0.9)
+        return brain
     natural = natural_intent_route(stripped, lower)
-    if natural:
+    if natural and natural.get("command") not in BRAIN_OWNED_COMMANDS:
         natural.setdefault("route_source", "keyword")
         natural.setdefault("confidence", 1.0)
         return natural
-    llm = llm_route(stripped, chat_id=chat_id)
-    if llm:
-        return llm
+    # A: Conversation Brain — only fills the gaps the keyword router misses (food / coding);
+    # returns None for everything else, so llm/chat fallback below is unchanged.
+    brain = conversation_brain_route(stripped, chat_id)
+    if brain is not None:
+        brain.setdefault("route_source", "brain")
+        brain.setdefault("confidence", 0.9)
+        return brain
+    # P2: the brain owns all remaining free-text. Route to /chat, which build_response hands
+    # to brain_loop (a clean, reasoned, memory-aware reply). llm_route is RETIRED from the
+    # live path: it classified ordinary conversational messages into leaky operator commands
+    # (e.g. "od czego zacząć" -> @claude-flow plan-mode), which is exactly the "głupoty"
+    # Bartek reported. The brain decides for itself when to just answer.
     return {
         "command": "/chat",
         "operators": ["host"],
@@ -15226,8 +15476,6 @@ def route_text(text: str) -> dict:
         return {"command": "/append", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "append"}
     if lower.startswith("/patch"):
         return {"command": "/patch", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "patch"}
-    if lower.startswith("/undo"):
-        return {"command": "/undo", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "undo"}
     if lower.startswith("/task"):
         return {"command": "/task", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "task"}
     if lower.startswith("/queue"):
@@ -15750,7 +15998,7 @@ def build_research_prompt(prompt: str) -> str:
 # wall of commands, logs, jargon or small talk. Truthful about system state; external
 # side effects always route to POTRZEBUJĘ ZGODY.
 MASTER_HOST_CONTRACT = (
-    "Jesteś frontowym operatorem Bartek Agent OS w iMessage i Telegramie — styl Poke. Mówisz po polsku.\n"
+    "Jesteś frontowym operatorem Bartek Agent OS w Telegramie — styl Poke. Mówisz po polsku.\n"
     "GŁOS: krótko i decyzyjnie. Maks 3 zdania albo 4 punkty. Zero ściany komend, logów, żargonu i small talku ('co u Ciebie').\n"
     "STATUS-FIRST: zaczynaj od jednego stanu, gdy coś robisz lub coś trzeba zrobić:\n"
     "  • ROBIĘ: … — gdy realnie startujesz bezpieczny krok/task teraz.\n"
@@ -15758,37 +16006,35 @@ MASTER_HOST_CONTRACT = (
     "  • POTRZEBUJĘ ZGODY: … — dla akcji zewnętrznych/nieodwracalnych (mail, kalendarz, GitHub write, publikacja, płatność, usuwanie, deploy).\n"
     "  • NIE MOGĘ: … — gdy czegoś nie wolno/nie da się; powiedz to wprost i podaj alternatywę.\n"
     "Dla zwykłego pytania po prostu odpowiedz krótko — bez sztucznego nagłówka statusu.\n"
-    "PAMIĘĆ WĄTKU: iMessage/Telegram to jeden ciągły kontakt. Używaj historii rozmowy; nie proś o powtórzenie kontekstu, jeśli już był.\n"
-    "DOPYTYWANIE: gdy w prośbie brakuje kluczowej danej (miejsce, czas, budżet, format, zakres), zadaj dokładnie JEDNO najważniejsze pytanie "
-    "i od razu zaproponuj sensowny default — zamiast odpowiadać ogólnikiem albo prosić o 'doprecyzowanie celu'.\n"
-    "ZAMÓWIENIA (jedzenie/zakupy/rezerwacje): nie masz dostępu do żadnego systemu zamówień i NIGDY nie twierdzisz, że coś zamówiłeś, złożyłeś albo opłaciłeś. "
-    "Zbieraj dane jedno pytanie na turę (co, skąd, adres, budżet), używając sekcji 'Co wiem o Tobie' jako defaultów. "
-    "Gdy masz komplet (minimum: pozycje + restauracja/serwis), zakończ odpowiedź OSOBNĄ ostatnią linią dokładnie w formacie: "
-    "ORDER_DRAFT: {\"service\":\"...\",\"items\":\"...\",\"address\":\"...\",\"notes\":\"...\"} — system zamieni ją w draft do /approve. Żadnych płatności.\n"
+    "PAMIĘĆ WĄTKU: Telegram to jeden ciągły kontakt. Używaj historii rozmowy; nie proś o powtórzenie kontekstu, jeśli już był.\n"
     "PRAWDA O STANIE: jeśli Bartek pyta o cel/Poke parity/health — mów prawdę: system nie jest ukończony, brakuje pełnych connectorów oraz iPhone/iMessage layer. "
     "Nigdy 'wszystko działa' bez sprawdzenia health.\n"
     "TRYB: jeśli wiadomość to większe zadanie, nazwij najlepszy tryb (research, plan, Council, task albo approval) i zaproponuj jeden następny krok."
 )
 
 
-def poke_chat_operator() -> str:
-    """L4.93: default front conversation operator. Claude is the voice of the
-    assistant (subscription CLI, no per-token cost); Grok stays as fallback here
-    and as the dedicated research/red-team operator."""
-    value = cfg("AI_COUNCIL_POKE_CHAT_OPERATOR", "claude").strip().lower()
-    return value if value in {"claude", "grok"} else "claude"
-
-
-def poke_chat_claude_configured() -> bool:
-    return poke_chat_operator() == "claude" and bool_cfg("AI_COUNCIL_POKE_CHAT_USE_CLAUDE", True)
-
-
-def poke_chat_grok_configured() -> bool:
-    return bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) and bool(cfg("XAI_API_KEY"))
+# P1 — the brain's system prompt. Channel-agnostic, warm, and explicitly forbids the
+# debug artifacts Bartek called "głupoty" ([Council] prefix, DECYZJA:/ETAP: labels, JSON,
+# command/version dumps). The brain composes EVERY conversational reply from this.
+BRAIN_SYSTEM_PROMPT = (
+    "Jesteś prywatnym asystentem Bartka — jego ogarnięty, kumaty kumpel. Mówisz po polsku, "
+    "krótko i naturalnie, jak człowiek w iMessage. Bez korpo-tonu.\n"
+    "ZASADY:\n"
+    "- Odpowiadaj wprost na to, o co chodzi. Maks 2–4 zdania, chyba że Bartek prosi o więcej.\n"
+    "- Jeśli brakuje danych, żeby coś zrobić — zadaj JEDNO konkretne pytanie zamiast zgadywać.\n"
+    "- Jeśli to ma sens, zaproponuj jeden konkretny następny krok.\n"
+    "- Korzystaj z pamięci i historii rozmowy. Nie proś o powtórzenie tego, co już było.\n"
+    "- Mów prawdę o stanie: nie udawaj, że coś zrobiłeś, jeśli system tego nie wykonał. "
+    "Akcje zewnętrzne (mail, kalendarz, płatność, publikacja, usuwanie, deploy) wymagają zgody Bartka — "
+    "powiedz to wprost, nie wykonuj sam.\n"
+    "CZEGO NIGDY NIE ROBISZ: nie piszesz prefiksu [Council] ani [AI Council], nie używasz etykiet "
+    "DECYZJA:/FAKTY:/ETAP:/NEXT:/STAN:, nie wklejasz JSON, logów, surowych komend, task_id ani list wersji. "
+    "Piszesz jak normalna, ludzka wiadomość."
+)
 
 
 def poke_chat_llm_configured() -> bool:
-    return poke_chat_claude_configured() or poke_chat_grok_configured()
+    return bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) and bool(cfg("XAI_API_KEY"))
 
 
 def poke_gap_feedback_fallback(lower: str) -> bool:
@@ -15912,13 +16158,6 @@ def poke_chat_should_use_llm(prompt: str) -> bool:
 
     if any(has_marker(marker) for marker in local_markers):
         return False
-    # L4.94: with Claude (subscription CLI) as the front voice the marginal cost of a
-    # natural reply is ~0, so EVERY remaining natural message goes to the LLM. This is
-    # what makes short messages like "chce jedzenie" feel alive — the voice contract
-    # then asks ONE follow-up question instead of returning a canned status. Grok-only
-    # setups keep the old conservative gate below (per-token API cost).
-    if poke_chat_claude_configured() and bool_cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_ALL_CHAT", True):
-        return True
     question_prefixes = (
         "czy ",
         "jak ",
@@ -15960,170 +16199,8 @@ def poke_chat_should_use_llm(prompt: str) -> bool:
     return len(text) >= max(min_chars, 140) or any(marker in lower for marker in value_markers)
 
 
-def poke_chat_history_messages(chat_id: str) -> list[dict]:
-    messages: list[dict] = []
-    if chat_id:
-        for row in recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_CHAT_HISTORY_TURNS", 6)):
-            role = row.get("role") if row.get("role") in {"user", "assistant"} else "user"
-            content = str(row.get("text") or "").strip()
-            if content:
-                messages.append({"role": role, "content": content})
-    return messages
-
-
-def poke_chat_claude_prompt(prompt: str, chat_id: str = "") -> str:
-    text = prompt.strip()
-    memory_context = memory_context_for_prompt(text)
-    memory_block = f"\n\nKontekst z pamięci AI Council:\n{memory_context}" if memory_context else ""
-    history_lines = []
-    for message in poke_chat_history_messages(chat_id):
-        speaker = "Bartek" if message["role"] == "user" else "Ty"
-        history_lines.append(f"{speaker}: {compact_line(message['content'], 400)}")
-    history_block = ("Ostatnia rozmowa:\n" + "\n".join(history_lines) + "\n\n") if history_lines else ""
-    return f"{history_block}Bartek pisze: {text}{memory_block}\n\nOdpowiedz Bartkowi zgodnie z kontraktem głosu."
-
-
-ORDER_DRAFT_RE = re.compile(r"^\s*ORDER_DRAFT:\s*(\{.*\})\s*$", re.MULTILINE)
-
-
-def extract_order_draft(answer: str) -> tuple[str, dict | None]:
-    """L4.96: parse the front operator's ORDER_DRAFT marker line into a payload.
-    Always strips the marker from the user-visible text; returns payload only when
-    the JSON is valid AND has the minimum fields (service + items)."""
-    text = str(answer or "")
-    matches = list(ORDER_DRAFT_RE.finditer(text))
-    if not matches:
-        return text, None
-    # Audit L4.96: strip ALL marker lines (a hallucinated second marker must never
-    # reach the user raw); only the FIRST one is considered for the draft payload.
-    cleaned = ORDER_DRAFT_RE.sub("", text).strip()
-    try:
-        payload = json.loads(matches[0].group(1))
-    except (json.JSONDecodeError, TypeError):
-        return cleaned, None
-    if not isinstance(payload, dict):
-        return cleaned, None
-    if not str(payload.get("service", "")).strip() or not str(payload.get("items", "")).strip():
-        return cleaned, None
-    return cleaned, payload
-
-
-def order_deep_link(payload: dict) -> str:
-    """Best-effort handoff link (NO requests, just a URL string). Checkout and
-    payment always stay with Bartek."""
-    service = str(payload.get("service", "")).strip()
-    lower = service.lower()
-    query = quote_plus(" ".join(part for part in [service, str(payload.get("items", ""))[:60]] if part).strip())
-    if "pyszne" in lower:
-        return "https://www.pyszne.pl/"
-    if "glovo" in lower:
-        return "https://glovoapp.com/pl/"
-    if "uber" in lower:
-        return "https://www.ubereats.com/pl"
-    if "wolt" in lower:
-        return "https://wolt.com/pl"
-    return f"https://www.google.com/search?q={query}+zamow+online"
-
-
-def create_order_handoff_action(payload: dict, chat_id: str = "") -> dict:
-    summary = compact_line(f"{payload.get('items', '')} @ {payload.get('service', '')}", 160)
-    return create_action(
-        f"Order handoff: {summary}",
-        action_type="order_handoff",
-        risk="R1",
-        payload={**payload, "deep_link": order_deep_link(payload), "chat_id": str(chat_id)},
-    )
-
-
-def attach_order_draft_if_any(answer: str, chat_id: str = "", max_chars: int | None = None) -> str:
-    """L4.96: shared hook for front-chat LLM answers — parses the ORDER_DRAFT marker
-    BEFORE truncation (so it is never cut in half), truncates the visible text, then
-    appends the /approve footer AFTER truncation (so the action id is never cut off).
-    Never raises into the chat path."""
-    cleaned, payload = extract_order_draft(answer)
-    limit = max_chars if max_chars is not None else int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)
-    body = cleaned[:limit]
-    if not payload:
-        return body
-    try:
-        action = create_order_handoff_action(payload, chat_id=chat_id)
-    except Exception:
-        return body
-    return f"{body}\n\nDraft zamówienia gotowy: /approve {action['action_id']} albo /deny {action['action_id']}"
-
-
-def poke_chat_claude_response(prompt: str, chat_id: str = "") -> str | None:
-    """L4.93: Claude (subscription CLI, no tools) as the default front conversation
-    operator. Returns None on any failure so the caller can fall back to Grok/local."""
-    if not poke_chat_claude_configured():
-        return None
-    started = time.time()
-    allowed, reason, reservation = reserve_operator_call("claude", detail="poke_chat")
-    if not allowed:
-        return None
-    command = [
-        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
-        "--no-session-persistence",
-        "--permission-mode",
-        "dontAsk",
-        "--tools",
-        "",
-        "--append-system-prompt",
-        MASTER_HOST_CONTRACT,
-    ]
-    model = cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_MODEL").strip()
-    if model:
-        command.extend(["--model", model])
-    command.extend(["-p", poke_chat_claude_prompt(prompt, chat_id=chat_id)])
-    timeout = int_cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_TIMEOUT", 90)
-    try:
-        proc = subprocess.run(
-            command,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            input="",
-            capture_output=True,
-            timeout=timeout,
-            cwd=str(PROJECT_DIR),
-            env=operator_env(),
-        )
-    except subprocess.TimeoutExpired:
-        finalize_operator_call(
-            reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="poke_chat claude timeout"
-        )
-        record_error("poke_chat_claude", message=f"timeout after {timeout}s", severity="warning")
-        return None
-    except FileNotFoundError:
-        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="poke_chat claude missing")
-        return None
-    duration_ms = int((time.time() - started) * 1000)
-    if proc.returncode != 0:
-        detail = compact_line(redact_secrets(proc.stderr or proc.stdout or ""), 220)
-        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"poke_chat claude: {detail}")
-        record_error("poke_chat_claude", message=detail or f"exit {proc.returncode}", severity="warning")
-        return None
-    answer = clean_operator_output(redact_secrets(proc.stdout or "")).strip()
-    if not answer:
-        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="poke_chat claude: empty response")
-        return None
-    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="poke_chat claude")
-    return "[Council]\n" + attach_order_draft_if_any(answer, chat_id=chat_id)
-
-
 def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
-    """Front chat LLM dispatcher: Claude is the default voice, Grok is the fallback;
-    cheap local fallback stays in the caller (poke_chat_response)."""
     if not poke_chat_should_use_llm(prompt):
-        return None
-    claude_answer = poke_chat_claude_response(prompt, chat_id=chat_id)
-    if claude_answer:
-        return claude_answer
-    return poke_chat_grok_response(prompt, chat_id=chat_id)
-
-
-def poke_chat_grok_response(prompt: str, chat_id: str = "") -> str | None:
-    if not poke_chat_grok_configured():
         return None
     started = time.time()
     allowed, reason, reservation = reserve_operator_call("grok", detail="poke_chat")
@@ -16138,7 +16215,12 @@ def poke_chat_grok_response(prompt: str, chat_id: str = "") -> str | None:
             "content": MASTER_HOST_CONTRACT,
         }
     ]
-    messages.extend(poke_chat_history_messages(chat_id))
+    if chat_id:
+        for row in recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_CHAT_HISTORY_TURNS", 6)):
+            role = row.get("role") if row.get("role") in {"user", "assistant"} else "user"
+            content = str(row.get("text") or "").strip()
+            if content:
+                messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": f"{text}{memory_block}"})
     payload = {
         "model": cfg("AI_COUNCIL_POKE_CHAT_MODEL", cfg("AI_COUNCIL_GROK_MODEL", "grok-4.3")),
@@ -16165,23 +16247,169 @@ def poke_chat_grok_response(prompt: str, chat_id: str = "") -> str | None:
         finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="poke_chat: empty response")
         return None
     finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="poke_chat")
-    return "[Council]\n" + attach_order_draft_if_any(answer, chat_id=chat_id)
+    return "[Council]\n" + answer[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)]
+
+
+BRAIN_TOOLS = [
+    {"type": "function", "function": {
+        "name": "set_reminder",
+        "description": "Ustaw przypomnienie, gdy użytkownik prosi, żeby mu o czymś przypomnieć w określonym czasie (np. 'przypomnij mi jutro o 15 o lekach').",
+        "parameters": {"type": "object", "properties": {
+            "what": {"type": "string", "description": "o czym przypomnieć"},
+            "when": {"type": "string", "description": "kiedy, np. 'jutro o 15', 'za godzinę', 'codziennie o 8'"}},
+            "required": ["what", "when"]}}},
+    {"type": "function", "function": {
+        "name": "save_fact",
+        "description": "Zapisz trwały fakt o użytkowniku, gdy prosi 'zapamiętaj/zapisz' albo podaje trwałą informację o sobie, planach, preferencjach, ludziach lub projektach.",
+        "parameters": {"type": "object", "properties": {
+            "fact": {"type": "string", "description": "fakt do zapamiętania, zwięźle"}}, "required": ["fact"]}}},
+    {"type": "function", "function": {
+        "name": "recall_fact",
+        "description": "Przywołaj zapisane fakty, gdy użytkownik pyta o coś, co mógł wcześniej podać ('co wiesz o...', 'kiedy mam...', 'czy pamiętasz...').",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "o co pyta"}}, "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "web_research",
+        "description": "Odpal research w sieci/na X, gdy użytkownik chce aktualne informacje, opinie, newsy albo fakty, których nie znasz na pewno.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "czego szukać"}}, "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "plan_code",
+        "description": "Gdy użytkownik prosi o napisanie, poprawienie, debugowanie albo refaktor kodu.",
+        "parameters": {"type": "object", "properties": {
+            "task": {"type": "string", "description": "zadanie kodowe"}}, "required": ["task"]}}},
+]
+
+
+def brain_decide(text: str, chat_id: str = "") -> dict | None:
+    """P2 — the brain's reasoning turn. One Grok call with BRAIN_SYSTEM_PROMPT + recent
+    conversation + memory + tool schemas. Returns {"action":"reply","text":…} or
+    {"action":<tool>,"args":{…}}. None when the LLM is unavailable."""
+    clean = str(text or "").strip()
+    if not clean or not cfg("XAI_API_KEY"):
+        return None
+    started = time.time()
+    allowed, _reason, reservation = reserve_operator_call("grok", detail="brain")
+    if not allowed:
+        return None
+    memory_context = memory_context_for_prompt(clean)
+    memory_block = f"\n\nKontekst z pamięci (fakty o Bartku):\n{memory_context}" if memory_context else ""
+    messages = [{"role": "system", "content": BRAIN_SYSTEM_PROMPT}]
+    if chat_id:
+        for row in recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_CHAT_HISTORY_TURNS", 6)):
+            role = row.get("role") if row.get("role") in {"user", "assistant"} else "user"
+            content = str(row.get("text") or "").strip()
+            if content:
+                messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": f"{clean}{memory_block}"})
+    payload = {
+        "model": cfg("AI_COUNCIL_POKE_CHAT_MODEL", cfg("AI_COUNCIL_GROK_MODEL", "grok-4.3")),
+        "messages": messages,
+        "tools": BRAIN_TOOLS,
+        "tool_choice": "auto",
+        "stream": False,
+    }
+    data = request_json(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {cfg('XAI_API_KEY')}"},
+        method="POST",
+        payload=payload,
+        timeout=int_cfg("AI_COUNCIL_POKE_CHAT_TIMEOUT", 35),
+    )
+    duration_ms = int((time.time() - started) * 1000)
+    if data.get("ok") is False:
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="brain: api")
+        return None
+    try:
+        msg = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="brain: empty")
+        return None
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="brain")
+    tool_calls = msg.get("tool_calls") or []
+    if tool_calls:
+        fn = (tool_calls[0] or {}).get("function") or {}
+        name = str(fn.get("name") or "").strip()
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        if name:
+            return {"action": name, "args": args if isinstance(args, dict) else {}}
+    content = str(msg.get("content") or "").strip()
+    return {"action": "reply", "text": content[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 1200)]}
+
+
+def brain_execute_tool(action: str, args: dict, text: str, chat_id: str = "") -> str:
+    """P2/P3 — run the brain's chosen tool via an EXISTING executor and compose a clean
+    human confirmation. External-write executors keep their Risk Officer / approval gate."""
+    args = args or {}
+    if action == "set_reminder":
+        result = add_reminder(text)
+        if "✅" in result:
+            what = compact_line(str(args.get("what") or "to"), 80)
+            when = str(args.get("when") or "").strip()
+            return f"Jasne, przypomnę Ci o: {what}" + (f" — {when}." if when else ".")
+        return "Pewnie — tylko powiedz dokładnie, kiedy mam przypomnieć (np. „jutro o 15”, „za godzinę”)?"
+    if action == "save_fact":
+        fact = str(args.get("fact") or text).strip()
+        user_fact_save(fact, chat_id_hash=short_hash(chat_id))
+        return f"Zapamiętane: {compact_line(fact.rstrip(' .'), 140)}."
+    if action == "recall_fact":
+        query = str(args.get("query") or text)
+        facts = active_user_facts(query=query, limit=6)
+        lines = [f"• {compact_line(str(f.get('value') or ''), 140)}" for f in facts[:5] if f.get("value")]
+        if not lines:
+            return "Nie mam tego zapisanego. Chcesz, żebym to zapamiętał?"
+        return "Co mam zapisane:\n" + "\n".join(lines)
+    if action == "web_research":
+        query = str(args.get("query") or text).strip()
+        result = grok_x_research_response(query)
+        return sanitize_brain_reply(result) or "Nie udało mi się teraz dociągnąć researchu — spróbuj za chwilę."
+    if action == "plan_code":
+        return (
+            "Jasne, kod ogarnę. Powiedz tylko dokładnie: który plik albo projekt i co ma się "
+            "zmienić (możesz wkleić fragment) — wtedy rozpiszę plan i się za to wezmę."
+        )
+    return sanitize_brain_reply(str(args.get("text") or "")) or "Jasne. Mów dalej."
+
+
+_BRAIN_SMALLTALK_REPLIES = (
+    "Hej! Co robimy?",
+    "Siema. W czym lecę?",
+    "No cześć. Czego potrzebujesz?",
+    "Jestem. Mów śmiało.",
+)
+
+
+def brain_loop(text: str, chat_id: str = "") -> str:
+    """P1 — THE single conversational brain. One clean, natural reply for every
+    non-command message. Smalltalk is answered locally (cheap); everything else goes
+    through the LLM with memory + conversation context. Output is always sanitized —
+    no [Council], no debug labels, no JSON, no command/version walls."""
+    clean = str(text or "").strip()
+    if not clean:
+        return "Jestem. Napisz, co chcesz ogarnąć."
+    if is_smalltalk(clean):
+        return _BRAIN_SMALLTALK_REPLIES[len(clean) % len(_BRAIN_SMALLTALK_REPLIES)]
+    decision = brain_decide(clean, chat_id=chat_id)
+    if not decision:
+        # LLM unavailable: stay honest and clean — never the old "[Council] Przyjąłem…" sludge.
+        return (
+            "Złapałem temat, ale nie mam teraz dostępu do modelu, żeby to dobrze przemyśleć. "
+            "Daj mi chwilę i napisz jeszcze raz, albo doprecyzuj o co chodzi — ruszę od razu."
+        )
+    if decision.get("action") == "reply":
+        return sanitize_brain_reply(decision.get("text") or "") or "Jasne. Powiedz coś więcej?"
+    return brain_execute_tool(str(decision.get("action") or ""), decision.get("args") or {}, clean, chat_id)
 
 
 def poke_chat_response(prompt: str, chat_id: str = "") -> str:
-    lower = normalize_intent_text(prompt)
-    if lower in {"co umiesz", "co potrafisz", "co możesz", "co mozesz", "możliwości", "mozliwosci"}:
-        return capabilities_response()
-    llm_response = poke_chat_llm_response(prompt, chat_id=chat_id)
-    if llm_response:
-        return llm_response
-    return poke_chat_fallback(prompt, chat_id=chat_id)
+    return brain_loop(prompt, chat_id=chat_id)
 
 
 def host_response(prompt: str, chat_id: str = "") -> str:
-    if not prompt:
-        return poke_chat_fallback("", chat_id=chat_id)
-    return poke_chat_response(prompt, chat_id=chat_id)
+    return brain_loop(prompt, chat_id=chat_id)
 
 
 # ============================================================================
@@ -16886,6 +17114,9 @@ def build_response(route: dict, chat_id: str = "") -> str:
     command = route.get("command")
     prompt = route.get("prompt", "")
     task_id = route.get("task_id", "")
+    if command == "conversation":
+        # A: brain already produced a clean, user-facing reply; enforce the guard once more.
+        return sanitize_brain_reply(str(route.get("reply", "")).strip())
     if command == "/multi":
         responses = []
         for index, child_route in enumerate(route.get("routes", []), start=1):
@@ -16921,8 +17152,6 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return setup_response()
     if command == "/watch":
         return watch_response(prompt, task_id=task_id)
-    if command == "/undo":
-        return workspace_action_undo(prompt)
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/agent":
@@ -17161,23 +17390,6 @@ def dry_route(text: str) -> None:
     print(f"audit_log={AUDIT_LOG}")
 
 
-def respond_b64_reply(msg: str) -> str:
-    """L4.94: iMessage inbound relay pipeline. Persists BOTH conversation turns
-    (thread memory — same as the Telegram listener) and returns ONLY the clean
-    user-facing reply (debug metadata scrubbed)."""
-    cid = cfg("TELEGRAM_ALLOWED_CHAT_ID")
-    route = route_message(msg, chat_id=cid)
-    append_conversation_turn(cid, "user", msg, route)
-    response = strip_debug_metadata(build_response(route, chat_id=cid))
-    if not response.strip():
-        response = "[Council] Przyjąłem."  # audit L4.96: never relay an empty iMessage
-    append_conversation_turn(cid, "assistant", response, route)
-    # L4.94: Hermes memory parity with the Telegram listener — gated, heuristic,
-    # never-raising auto fact capture (quarantine) also for iMessage messages.
-    maybe_auto_extract_facts(msg, cid)
-    return response
-
-
 def respond_dry(text: str, chat_id: str = "") -> None:
     started = time.time()
     clean_chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
@@ -17197,12 +17409,9 @@ def respond_dry(text: str, chat_id: str = "") -> None:
         "output_preview": response[:300],
     }
     audit(event)
-    print(strip_debug_metadata(response))
-    # L4.93 P0: the debug tail leaked into user-facing channels (iMessage/CLI relay).
-    # It is now opt-in for diagnostics only.
-    if bool_cfg("AI_COUNCIL_RESPOND_DEBUG_TAIL", False):
-        print(f"\nroute={json.dumps(sanitize_for_audit(route), ensure_ascii=False)}")
-        print(f"audit_log={AUDIT_LOG}")
+    print(response)
+    print(f"\nroute={json.dumps(sanitize_for_audit(route), ensure_ascii=False)}")
+    print(f"audit_log={AUDIT_LOG}")
 
 
 def is_allowed_message(message: dict) -> bool:
@@ -17371,6 +17580,8 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         message = update.get("message") or update.get("edited_message") or {}
         media = telegram_media_from_message(message)
         text = message.get("text") or message.get("caption") or ""
+        if not text and not media and message.get("location"):
+            text = telegram_location_to_text(message.get("location") or {})
         chat_id = str((message.get("chat") or {}).get("id", ""))
         allowed = is_allowed_message(message)
         route = (
@@ -17707,9 +17918,15 @@ def main() -> int:
         except Exception:
             print("[Council] (decode error)")
             return 1
+        cid = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+        # A: persist the inbound turn so iMessage shares ONE continuous thread with
+        # Telegram (was missing here — iMessage had no conversation memory).
+        append_conversation_turn(cid, "user", msg)
+        route = route_message(msg, chat_id=cid)
+        reply = build_response(route, chat_id=cid)
+        append_conversation_turn(cid, "assistant", reply, route)
         # Print ONLY the reply so the iMessage inbound relay can capture it cleanly.
-        # L4.94: this path now also persists thread memory (user + assistant turns).
-        print(respond_b64_reply(msg))
+        print(reply)
         return 0
     if args.cmd == "set-secret":
         value = sys.stdin.read().strip()

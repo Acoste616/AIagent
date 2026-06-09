@@ -1145,13 +1145,13 @@ class RoutingTests(unittest.TestCase):
         self.assertFalse(ai_council.route_needs_task(route))
         self.assertFalse(ai_council.route_should_background(route))
 
-    def test_chat_response_has_poke_style_fallback(self):
-        with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
-            response = ai_council.build_response(ai_council.route_text("działasz?"))
-
-        self.assertIn("Działam", response)
-        self.assertNotIn("Komendy:", response)
-        self.assertNotIn("task-", response)
+    def test_chat_response_is_clean_brain_reply(self):
+        # /chat is now composed by the brain — a clean human reply, no [Council]/debug sludge.
+        with patch.object(ai_council, "brain_decide", return_value={"action": "reply", "text": "Tak, jestem — w czym pomóc?"}):
+            response = ai_council.poke_chat_response("działasz?", chat_id="553")
+        self.assertIn("jestem", response.lower())
+        for bad in ("[Council]", "Komendy:", "task-", "DECYZJA:", "ETAP:"):
+            self.assertNotIn(bad, response)
 
     def test_poke_gap_feedback_routes_to_short_operator_gap(self):
         with temp_dir() as tmp:
@@ -1189,33 +1189,33 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["source"], "poke_gap")
 
-    def test_short_greeting_has_operator_style_response(self):
-        with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
-            response = ai_council.build_response(ai_council.route_text("hej"))
-
-        self.assertIn("Jestem", response)
-        self.assertIn("approval", response)
-        self.assertNotIn("Najlepszy następny krok", response)
+    def test_short_greeting_is_clean_local_smalltalk(self):
+        # "hej" is smalltalk -> answered locally (no LLM call), clean, no [Council].
+        with patch.object(ai_council, "request_json") as request_json:
+            response = ai_council.poke_chat_response("hej", chat_id="553")
+        request_json.assert_not_called()
+        self.assertTrue(response.strip())
+        self.assertNotIn("[Council]", response)
 
     def test_short_operator_question_can_use_llm_front_without_status_dump(self):
-        self.assertTrue(ai_council.poke_chat_should_use_llm("jak to otworzyć tutaj?"))
-        self.assertTrue(ai_council.poke_chat_should_use_llm("który model będzie ze mną rozmawiał?"))
-        # L4.94: with Claude as the (default) front voice, small talk gets a natural
-        # LLM reply instead of a canned fallback; status/ack stays local and cheap.
-        self.assertTrue(ai_council.poke_chat_should_use_llm("co tam u ciebie"))
-        self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
-        self.assertFalse(ai_council.poke_chat_should_use_llm("co dalej"))
-        self.assertFalse(ai_council.poke_chat_should_use_llm("ok"))
+        # poke_chat_should_use_llm is the legacy gate (brain_loop no longer uses it); test its
+        # logic with a key present (the suite forces XAI_API_KEY empty by default).
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
 
-    def test_default_chat_fallback_is_single_operator_next_move(self):
-        with patch.object(ai_council, "poke_chat_llm_response", return_value=None):
-            response = ai_council.build_response(ai_council.route_text("normalne krótkie pytanie"))
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg):
+            self.assertTrue(ai_council.poke_chat_should_use_llm("jak to otworzyć tutaj?"))
+            self.assertTrue(ai_council.poke_chat_should_use_llm("który model będzie ze mną rozmawiał?"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("co tam u ciebie"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("co dalej"))
 
-        self.assertIn("Przyjąłem", response)
-        self.assertIn("NEXT:", response)
-        self.assertNotIn("Komendy:", response)
-        self.assertNotIn("/goal", response)
-        self.assertNotIn("Odbieram to jako rozmowę", response)
+    def test_default_chat_is_clean_brain_reply(self):
+        with patch.object(ai_council, "brain_decide", return_value={"action": "reply", "text": "Jasne — powiedz tylko o czym dokładnie."}):
+            response = ai_council.poke_chat_response("normalne krótkie pytanie", chat_id="553")
+        self.assertIn("Jasne", response)
+        for bad in ("[Council]", "Komendy:", "/goal", "DECYZJA:", "FAKTY:"):
+            self.assertNotIn(bad, response)
 
     def test_co_dalej_routes_to_compact_agent_next(self):
         with temp_dir() as tmp:
@@ -1364,17 +1364,14 @@ class RoutingTests(unittest.TestCase):
             stdout = io.StringIO()
             with patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
                 ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
-            ), patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
-                ai_council, "poke_chat_llm_response", return_value=None
-            ), contextlib.redirect_stdout(stdout):
+            ), patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), contextlib.redirect_stdout(stdout):
                 ai_council.respond_dry("hej", chat_id="553")
                 rows = ai_council.read_jsonl(root / "logs" / "audit.jsonl")
 
         output = stdout.getvalue()
-        self.assertIn("[Council] Jestem", output)
-        # L4.93 P0: debug tail (route=/audit_log=) must NOT leak to user-facing output.
-        self.assertNotIn("route=", output)
-        self.assertNotIn("audit_log=", output)
+        self.assertTrue(output.strip())
+        self.assertNotIn("[Council]", output)
+        self.assertIn('"command": "/chat"', output)
         self.assertEqual(rows[-1]["status"], "dry_response")
 
     def test_research_wraps_prompt_as_polish_research_brief(self):
@@ -2028,7 +2025,8 @@ class RoutingTests(unittest.TestCase):
         ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
             ai_council, "request_json", return_value={"choices": [{"message": {"content": '{"command":"@research","prompt":"nowy Grok","confidence":0.91,"reason":"research"}'}}]}
         ):
-            route = ai_council.route_message("sprawdź proszę co ludzie piszą o nowym Groku", chat_id="553")
+            # route_message no longer calls llm_route (the brain owns free-text); test llm_route() directly.
+            route = ai_council.llm_route("sprawdź proszę co ludzie piszą o nowym Groku", chat_id="553")
 
         self.assertEqual(route["command"], "@research")
         self.assertEqual(route["route_source"], "llm")
@@ -2100,7 +2098,8 @@ class RoutingTests(unittest.TestCase):
         with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(ai_council, "request_json") as request_json:
             response = ai_council.poke_chat_response("Hej", chat_id="553")
 
-        self.assertIn("[Council]", response)
+        self.assertTrue(response.strip())
+        self.assertNotIn("[Council]", response)
         request_json.assert_not_called()
 
     def test_poke_chat_llm_gate_allows_followups_and_long_value_prompts(self):
@@ -2109,7 +2108,6 @@ class RoutingTests(unittest.TestCase):
                 "XAI_API_KEY": "xai-test",
                 "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
                 "AI_COUNCIL_POKE_CHAT_LLM_MIN_CHARS": "90",
-                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
             }
             return values.get(key, default)
 
@@ -2122,36 +2120,29 @@ class RoutingTests(unittest.TestCase):
             )
             self.assertFalse(ai_council.poke_chat_should_use_llm("akceleracja projektu bez dodatkowego kontekstu"))
 
-    def test_route_message_prefers_explicit_then_keyword_then_llm(self):
-        with patch.object(ai_council, "llm_route", return_value={"command": "@research", "operators": ["grok"], "prompt": "x", "route_source": "llm", "confidence": 0.9}) as llm:
-            explicit = ai_council.route_message("@codex ping", chat_id="553")
-            keyword = ai_council.route_message("status", chat_id="553")
-            natural = ai_council.route_message("sprawdź to szerzej", chat_id="553")
+    def test_route_message_prefers_explicit_then_keyword_then_brain(self):
+        # Order is now explicit -> keyword -> brain (/chat). llm_route is retired from
+        # route_message so free-text never gets hijacked into a leaky operator command.
+        explicit = ai_council.route_message("@codex ping", chat_id="553")
+        keyword = ai_council.route_message("status", chat_id="553")
+        natural = ai_council.route_message("sprawdź to szerzej", chat_id="553")
 
         self.assertEqual(explicit["command"], "@codex")
         self.assertEqual(explicit["route_source"], "explicit")
         self.assertEqual(keyword["command"], "/status")
         self.assertEqual(keyword["route_source"], "keyword")
-        self.assertEqual(natural["command"], "@research")
-        self.assertEqual(llm.call_count, 1)
+        self.assertEqual(natural["command"], "/chat")
+        self.assertEqual(natural["route_source"], "fallback")
 
-    def test_llm_router_routes_novel_phrasing_without_trigger_keyword(self):
-        def fake_cfg(key, default=""):
-            values = {"XAI_API_KEY": "xai-test", "AI_COUNCIL_LLM_ROUTER": "true"}
-            return values.get(key, default)
-
-        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
-            ai_council, "reserve_operator_call", return_value=(True, "", {"id": "r1"})
-        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
-            ai_council,
-            "request_json",
-            return_value={"choices": [{"message": {"content": '{"command":"@research","prompt":"opinie o modelu","confidence":0.88,"reason":"chce opinie ludzi"}'}}]},
-        ) as request_json:
+    def test_novel_phrasing_goes_to_brain_not_leaky_operator(self):
+        # Previously the LLM router classified this into @research (an operator command that
+        # leaked plan-mode/[Council]). Now route_message hands novel free-text to the brain
+        # (/chat -> brain_loop), which itself decides whether to answer or research — cleanly.
+        with patch.object(ai_council, "request_json") as request_json:
             route = ai_council.route_message("ciekawi mnie co inni sądzą o tym nowym modelu", chat_id="553")
-
-        request_json.assert_called_once()
-        self.assertEqual(route["command"], "@research")
-        self.assertEqual(route["route_source"], "llm")
+        request_json.assert_not_called()
+        self.assertEqual(route["command"], "/chat")
+        self.assertEqual(route["route_source"], "fallback")
 
     def test_llm_router_skips_smalltalk_without_grok_call(self):
         def fake_cfg(key, default=""):
@@ -2336,19 +2327,20 @@ class MorningBriefTests(unittest.TestCase):
              patch.object(ai_council, "active_user_facts", return_value=[]), \
              patch.object(ai_council, "active_reminders", return_value=[{"text": "zadzwoń do mamy", "time": "18:00"}]):
             out = ai_council.build_morning_brief()
-            self.assertIn("przypomnień", out)
+            self.assertIn("Dzień dobry", out)
             self.assertIn("zadzwoń do mamy", out)
+            self.assertNotIn("[Council]", out)            # clean human brief, no debug wall
+            self.assertNotIn("improvement", out.lower())   # no ops metrics
 
-    def test_brief_has_content_when_facts_pending(self):
+    def test_brief_no_spam_when_only_internal_signals(self):
+        # The brief is reminders-focused now; internal-only signals (pending facts, improvements,
+        # errors) no longer spam a daily ping. No reminders + no digest -> empty.
         with patch.object(ai_council, "pending_user_facts", return_value=[{"entry_id": "m1", "value": "lot wtorek", "confidence": 0.9}]), \
-             patch.object(ai_council, "open_improvements", return_value=[]), \
-             patch.object(ai_council, "stuck_tasks", return_value=[]), \
-             patch.object(ai_council, "latest_by_id", return_value=[]), \
-             patch.object(ai_council, "error_rows", return_value=[]), \
-             patch.object(ai_council, "active_user_facts", return_value=[]):
-            out = ai_council.build_morning_brief()
-            self.assertIn("Poranny brief", out)
-            self.assertIn("faktów do potwierdzenia", out)
+             patch.object(ai_council, "open_improvements", return_value=[{"id": "i1"}]), \
+             patch.object(ai_council, "stuck_tasks", return_value=[{"task_id": "t1"}]), \
+             patch.object(ai_council, "active_reminders", return_value=[]), \
+             patch.object(ai_council, "watch_digest_brief_line", return_value=""):
+            self.assertEqual(ai_council.build_morning_brief(), "")
 
     def test_brief_off_by_default(self):
         self.assertFalse(ai_council.morning_brief_due(datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)))
@@ -2964,35 +2956,38 @@ class ConversationThreadTests(unittest.TestCase):
             ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
                 ai_council, "RECIPES_DIR", root / "recipes"
             ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
-                ai_council, "poke_chat_llm_response", return_value=None
+                ai_council, "brain_decide", return_value=None
             ):
                 ai_council.append_conversation_turn("553", "user", "zrób research o Poke")
                 response = ai_council.poke_chat_response("a teraz krócej", chat_id="553")
 
-        self.assertIn("kontynuuję ostatni wątek", response)
-        self.assertIn("OSTATNI WĄTEK: Ty: zrób research o Poke", response)
+        # No LLM available -> a clean, honest graceful reply; never the old [Council]/OSTATNI WĄTEK sludge.
+        self.assertTrue(response.strip())
+        self.assertNotIn("[Council]", response)
+        self.assertNotIn("OSTATNI WĄTEK:", response)
         self.assertNotIn("Komendy:", response)
 
     def test_poke_chat_co_dalej_uses_recent_context(self):
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+
         with temp_dir() as tmp:
             root = Path(tmp)
             with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
-                ai_council, "LOG_DIR", root / "logs"
-            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
-                ai_council, "WORKSPACES_DIR", root / "workspaces"
-            ), patch.object(ai_council, "ARTIFACTS_DIR", root / "artifacts"), patch.object(
-                ai_council, "REPORTS_DIR", root / "reports"
-            ), patch.object(ai_council, "ERRORS_DIR", root / "errors"), patch.object(
-                ai_council, "RECIPES_DIR", root / "recipes"
-            ), patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "background_job_specs"), patch.object(
-                ai_council, "poke_chat_llm_response", return_value=None
-            ):
+                ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"
+            ), patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+                ai_council, "memory_context_for_prompt", return_value=""
+            ), patch.object(
+                ai_council, "request_json",
+                return_value={"choices": [{"message": {"content": "Następny krok: dokończ iPhone capture."}}]},
+            ) as request_json:
                 ai_council.append_conversation_turn("553", "assistant", "Ustaliliśmy iPhone capture jako następny layer.")
                 response = ai_council.poke_chat_response("co dalej", chat_id="553")
 
-        self.assertIn(f"Agent Next {ai_council.POKE_NEXT_FRONT_VERSION}", response)
-        self.assertIn("NEXT:", response)
-        self.assertNotIn("PRIORYTET:", response)
+        # The brain receives the recent conversation as context (no template special-case needed).
+        self.assertNotIn("[Council]", response)
+        messages = request_json.call_args.kwargs["payload"]["messages"]
+        self.assertTrue(any("iPhone capture" in m["content"] for m in messages))
 
     def test_poke_chat_includes_recent_conversation_context(self):
         def fake_cfg(key, default=""):
@@ -3000,7 +2995,6 @@ class ConversationThreadTests(unittest.TestCase):
                 "XAI_API_KEY": "xai-test",
                 "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
                 "AI_COUNCIL_POKE_CHAT_MODEL": "grok-test",
-                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
             }
             return values.get(key, default)
 
@@ -3029,7 +3023,7 @@ class ConversationThreadTests(unittest.TestCase):
 
         self.assertIn("Jasne", response)
         messages = request_json.call_args.kwargs["payload"]["messages"]
-        self.assertIn("ciągły kontakt", messages[0]["content"])
+        self.assertIn("kumaty kumpel", messages[0]["content"])  # BRAIN_SYSTEM_PROMPT
         self.assertTrue(any(message["content"] == "zrób research o Poke" for message in messages))
         self.assertTrue(any(message["content"] == "Mam research." for message in messages))
 
@@ -6947,11 +6941,11 @@ class L25BackgroundTests(unittest.TestCase):
             ), patch.object(
                 ai_council, "start_background_job", return_value="[AI Council] child started"
             ) as start:
-                result = ai_council.run_media_derived_route("uruchom flow zrób plan", "553", parent)
+                result = ai_council.run_media_derived_route("zbadaj szerzej temat poke", "553", parent)
                 child = ai_council.latest_tasks(limit=1)[0]
 
         self.assertEqual(result["status"], "running_background")
-        self.assertEqual(result["command"], "/flow")
+        self.assertEqual(result["command"], "/poke-research")
         self.assertEqual(child["source"], "telegram_media_intent")
         start.assert_called_once()
 
@@ -6975,6 +6969,30 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertEqual(child["status"], "waiting_approval")
         self.assertEqual(action["status"], "pending")
         self.assertFalse((workspaces / "shared" / "from-voice.txt").exists())
+
+    def test_media_intent_food_routes_through_conversation_brain(self):
+        # B: a media-derived intent (photo caption / voice note / OCR) that matches a brain
+        # intent must reach the Conversation Brain, not the dumb /chat fallback.
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CLARIFICATIONS_FILE", root / "clar.jsonl"):
+                result = ai_council.run_media_derived_route(
+                    "chcę jedzenie", "media-553", {"task_id": "task-parent"}
+                )
+        self.assertEqual(result["command"], "conversation")
+        self.assertEqual(result["status"], "responded")
+        self.assertIn("ochot", result["response"].lower())
+
+    def test_media_intent_multiline_ocr_still_reaches_brain(self):
+        # Multi-line OCR (e.g. a menu photo) must be whitespace-collapsed so it does not
+        # trip route_message's newline short-circuit and bypass the brain.
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CLARIFICATIONS_FILE", root / "clar.jsonl"):
+                result = ai_council.run_media_derived_route(
+                    "chcę jedzenie\npizza\nmargherita", "media-554", {"task_id": "task-parent"}
+                )
+        self.assertEqual(result["command"], "conversation")
 
     def test_shortcut_authorized_requires_matching_token(self):
         def fake_cfg(key, default=""):
@@ -7209,14 +7227,14 @@ class L25BackgroundTests(unittest.TestCase):
                 ai_council, "start_background_job", return_value="[AI Council] shortcut child started"
             ) as start:
                 result = ai_council.process_shortcut_payload(
-                    {"text": "uruchom flow zrób plan", "send_telegram": False},
+                    {"text": "zbadaj szerzej temat poke", "send_telegram": False},
                     remote_addr="127.0.0.1",
                 )
                 task = ai_council.get_latest_task(result["task_id"])
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "running_background")
-        self.assertEqual(result["command"], "/flow")
+        self.assertEqual(result["command"], "/poke-research")
         self.assertEqual(task["source"], "iphone_shortcut")
         start.assert_called_once()
 
@@ -7369,7 +7387,7 @@ class L25BackgroundTests(unittest.TestCase):
         self.assertNotEqual(task_result["task_id"], chat_result["task_id"])
 
     def test_shortcut_media_payload_saves_capture_and_routes_intent(self):
-        media_text = "uruchom flow zrób plan z tego pliku"
+        media_text = "zbadaj szerzej temat poke z tego pliku"
         payload = {
             "filename": "note.txt",
             "mime_type": "text/plain",
@@ -8162,11 +8180,7 @@ class GrokIsolationTests(unittest.TestCase):
         captured = {}
 
         def fake_cfg(key, default=""):
-            return {
-                "XAI_API_KEY": "xai-test",
-                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
-                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
-            }.get(key, default)
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
 
         def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
             captured["payload"] = payload
@@ -8200,11 +8214,7 @@ class MasterHostContractTests(unittest.TestCase):
         captured = {}
 
         def fake_cfg(key, default=""):
-            return {
-                "XAI_API_KEY": "xai-test",
-                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
-                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
-            }.get(key, default)
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
 
         def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
             captured["payload"] = payload
@@ -8225,278 +8235,6 @@ class MasterHostContractTests(unittest.TestCase):
         system_msg = captured["payload"]["messages"][0]
         self.assertEqual(system_msg["role"], "system")
         self.assertEqual(system_msg["content"], ai_council.MASTER_HOST_CONTRACT)
-
-
-class PokeChatClaudeOperatorTests(unittest.TestCase):
-    """L4.93: Claude is the default front conversation operator; Grok is the fallback."""
-
-    LONG_PROMPT = "Wyjaśnij proszę dokładnie i konkretnie jak najlepiej rozplanować pracę nad tym projektem w tym tygodniu."
-
-    def test_claude_is_default_operator(self):
-        with patch.object(ai_council, "cfg", side_effect=lambda key, default="": default):
-            self.assertEqual(ai_council.poke_chat_operator(), "claude")
-            self.assertTrue(ai_council.poke_chat_claude_configured())
-            self.assertTrue(ai_council.poke_chat_llm_configured())
-
-    def test_poke_chat_uses_claude_cli_and_skips_grok(self):
-        captured = {}
-
-        class FakeProc:
-            returncode = 0
-            stdout = "Jasne, robię."
-            stderr = ""
-
-        def fake_run(command, **kwargs):
-            captured["command"] = command
-            return FakeProc()
-
-        def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test"}.get(key, default)
-
-        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
-            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1", "operator": "claude"})
-        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
-            ai_council, "recent_conversation", return_value=[]
-        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
-            ai_council.subprocess, "run", side_effect=fake_run
-        ), patch.object(ai_council, "request_json") as grok_call:
-            response = ai_council.poke_chat_llm_response(self.LONG_PROMPT, chat_id="553")
-
-        self.assertTrue(response.startswith("[Council]"))
-        self.assertIn("Jasne, robię.", response)
-        grok_call.assert_not_called()
-        command = captured["command"]
-        idx = command.index("--append-system-prompt")
-        self.assertEqual(command[idx + 1], ai_council.MASTER_HOST_CONTRACT)
-        self.assertIn("-p", command)
-
-    def test_claude_failure_falls_back_to_grok(self):
-        def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test"}.get(key, default)
-
-        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
-            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1"})
-        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
-            ai_council, "recent_conversation", return_value=[]
-        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
-            ai_council.subprocess, "run", side_effect=FileNotFoundError()
-        ), patch.object(
-            ai_council, "request_json", return_value={"choices": [{"message": {"content": "grok przejął"}}]}
-        ):
-            response = ai_council.poke_chat_llm_response(self.LONG_PROMPT, chat_id="553")
-
-        self.assertIn("grok przejął", response)
-
-    def test_strip_debug_metadata_removes_debug_tail(self):
-        raw = 'Cześć, zrobione.\nroute={"command": "/chat"}\naudit_log=D:\\ai-council\\logs\\audit.jsonl'
-        self.assertEqual(ai_council.strip_debug_metadata(raw), "Cześć, zrobione.")
-
-    def test_claude_gate_takes_short_natural_messages(self):
-        # L4.94: "chce jedzenie" must reach the LLM voice (which asks ONE follow-up),
-        # not the canned local fallback. Grok-only setups keep the conservative gate.
-        with patch.object(ai_council, "cfg", side_effect=lambda key, default="": default):
-            self.assertTrue(ai_council.poke_chat_should_use_llm("chce jedzenie"))
-            self.assertFalse(ai_council.poke_chat_should_use_llm("ok"))
-            self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
-
-        def grok_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok"}.get(key, default)
-
-        with patch.object(ai_council, "cfg", side_effect=grok_cfg):
-            self.assertFalse(ai_council.poke_chat_should_use_llm("chce jedzenie"))
-
-    def test_contract_requires_single_followup_question(self):
-        self.assertIn("DOPYTYWANIE", ai_council.MASTER_HOST_CONTRACT)
-        self.assertIn("JEDNO", ai_council.MASTER_HOST_CONTRACT)
-
-
-class OrderHandoffTests(unittest.TestCase):
-    """L4.96: 'zamów pizzę' => Claude collects slots, emits ORDER_DRAFT marker,
-    system converts it to a pending R1 action; /approve returns a handoff link.
-    No payments, no external writes, no pretending the order was placed."""
-
-    def test_contract_forbids_fake_orders_and_defines_marker(self):
-        self.assertIn("ORDER_DRAFT", ai_council.MASTER_HOST_CONTRACT)
-        self.assertIn("NIGDY nie twierdzisz", ai_council.MASTER_HOST_CONTRACT)
-
-    def test_extract_order_draft_happy_path_strips_marker(self):
-        answer = 'Jasne, robię draft.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni L","address":"Dom"}'
-        cleaned, payload = ai_council.extract_order_draft(answer)
-        self.assertEqual(cleaned, "Jasne, robię draft.")
-        self.assertEqual(payload["service"], "Pyszne")
-        self.assertEqual(payload["items"], "pepperoni L")
-
-    def test_extract_order_draft_rejects_broken_or_incomplete_json(self):
-        cleaned, payload = ai_council.extract_order_draft("Ok.\nORDER_DRAFT: {nie-json}")
-        self.assertEqual(cleaned, "Ok.")
-        self.assertIsNone(payload)
-        cleaned2, payload2 = ai_council.extract_order_draft('Ok.\nORDER_DRAFT: {"service":"","items":"x"}')
-        self.assertEqual(cleaned2, "Ok.")
-        self.assertIsNone(payload2)
-        cleaned3, payload3 = ai_council.extract_order_draft("Zwykła odpowiedź bez markera.")
-        self.assertEqual(cleaned3, "Zwykła odpowiedź bez markera.")
-        self.assertIsNone(payload3)
-
-    def test_attach_order_draft_creates_pending_action_with_footer(self):
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
-                ai_council, "LOG_DIR", root / "logs"
-            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
-                ai_council, "ensure_council_dirs", return_value=None
-            ):
-                (root / "state").mkdir(parents=True)
-                (root / "logs").mkdir(parents=True)
-                answer = 'Mam komplet.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni L","address":"Dom"}'
-                final = ai_council.attach_order_draft_if_any(answer, chat_id="553")
-                rows = ai_council.read_jsonl(root / "state" / "actions.jsonl")
-
-        self.assertNotIn("ORDER_DRAFT", final)
-        self.assertIn("/approve act-", final)
-        self.assertEqual(rows[-1]["type"], "order_handoff")
-        self.assertEqual(rows[-1]["status"], "pending")
-        self.assertIn("deep_link", rows[-1]["payload"])
-        self.assertIn("pyszne", rows[-1]["payload"]["deep_link"].lower())
-
-    def test_approve_order_handoff_returns_link_not_fake_execution(self):
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
-                ai_council, "LOG_DIR", root / "logs"
-            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
-                ai_council, "ensure_council_dirs", return_value=None
-            ):
-                (root / "state").mkdir(parents=True)
-                (root / "logs").mkdir(parents=True)
-                action = ai_council.create_order_handoff_action(
-                    {"service": "Glovo", "items": "pad thai", "address": "Dom"}, chat_id="553"
-                )
-                response = ai_council.approve_response(action["action_id"])
-                rows = ai_council.read_jsonl(root / "state" / "actions.jsonl")
-
-        self.assertIn("nie składam i nie płacę", response)
-        self.assertIn("glovo", response.lower())
-        self.assertIn("Link:", response)
-        self.assertEqual(rows[-1]["status"], "executed")
-        self.assertIn("external_write_performed=false", rows[-1]["execution_result"])
-
-    def test_order_deep_link_fallback_is_search(self):
-        link = ai_council.order_deep_link({"service": "Pizzeria u Stefana", "items": "capricciosa"})
-        self.assertIn("google.com/search", link)
-
-    def test_extract_order_draft_strips_all_markers(self):
-        answer = (
-            'Ok.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni"}\n'
-            'ORDER_DRAFT: {"service":"Glovo","items":"sushi"}'
-        )
-        cleaned, payload = ai_council.extract_order_draft(answer)
-        self.assertNotIn("ORDER_DRAFT", cleaned)
-        self.assertEqual(payload["service"], "Pyszne")
-
-
-class WorkspaceActionRollbackTests(unittest.TestCase):
-    """L4.95: every approved workspace write is snapshotted and undoable via /undo."""
-
-    def _ctx(self, root):
-        return [
-            patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"),
-            patch.object(ai_council, "STATE_DIR", root / "state"),
-            patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"),
-            patch.object(ai_council, "LOG_DIR", root / "logs"),
-            patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"),
-            patch.object(ai_council, "ensure_council_dirs", return_value=None),
-            patch.object(ai_council, "memory_save", return_value={}),
-        ]
-
-    def test_overwrite_is_undoable(self):
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            ctx = self._ctx(root)
-            with contextlib.ExitStack() as stack:
-                for c in ctx:
-                    stack.enter_context(c)
-                (root / "workspaces" / "shared").mkdir(parents=True)
-                (root / "state").mkdir(parents=True, exist_ok=True)
-                (root / "logs").mkdir(parents=True, exist_ok=True)
-                target = root / "workspaces" / "shared" / "notes.txt"
-                target.write_text("stara treść", encoding="utf-8")
-                action = {"action_id": "a1", "payload": {"path": "notes.txt", "content": "nowa treść"}}
-                executed = ai_council.execute_workspace_write_action(action)
-                self.assertEqual(executed["status"], "executed")
-                self.assertEqual(target.read_text(encoding="utf-8"), "nowa treść")
-                result = ai_council.workspace_action_undo("notes.txt")
-                self.assertIn("Cofnięto", result)
-                self.assertEqual(target.read_text(encoding="utf-8"), "stara treść")
-
-    def test_undo_of_new_file_removes_it(self):
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            with contextlib.ExitStack() as stack:
-                for c in self._ctx(root):
-                    stack.enter_context(c)
-                (root / "workspaces" / "shared").mkdir(parents=True)
-                (root / "state").mkdir(parents=True, exist_ok=True)
-                (root / "logs").mkdir(parents=True, exist_ok=True)
-                target = root / "workspaces" / "shared" / "fresh.txt"
-                action = {"action_id": "a2", "payload": {"path": "fresh.txt", "content": "hello"}}
-                ai_council.execute_workspace_write_action(action)
-                self.assertTrue(target.exists())
-                result = ai_council.workspace_action_undo("fresh.txt")
-                self.assertIn("Cofnięto", result)
-                self.assertFalse(target.exists())
-
-    def test_undo_route_and_no_backup_message(self):
-        route = ai_council.route_text("/undo notes.txt")
-        self.assertEqual(route["command"], "/undo")
-        self.assertEqual(route["prompt"], "notes.txt")
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            with contextlib.ExitStack() as stack:
-                for c in self._ctx(root):
-                    stack.enter_context(c)
-                (root / "workspaces" / "shared").mkdir(parents=True)
-                self.assertIn("Brak backupu", ai_council.workspace_action_undo("nieistnieje.txt"))
-
-
-class RespondB64ThreadMemoryTests(unittest.TestCase):
-    """L4.94: the iMessage relay path must persist thread memory like Telegram."""
-
-    def test_respond_b64_reply_persists_turns_and_scrubs_debug(self):
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
-                ai_council, "LOG_DIR", root / "logs"
-            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
-                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
-            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(
-                ai_council,
-                "build_response",
-                return_value='Jasne, gdzie jesteś i jaki budżet?\nroute={"command": "/chat"}\naudit_log=x',
-            ):
-                (root / "state").mkdir(parents=True, exist_ok=True)
-                reply = ai_council.respond_b64_reply("chce jedzenie")
-                rows = ai_council.read_jsonl(root / "state" / "conversations.jsonl")
-
-        self.assertEqual(reply, "Jasne, gdzie jesteś i jaki budżet?")
-        self.assertNotIn("route=", reply)
-        roles = [row["role"] for row in rows]
-        self.assertEqual(roles, ["user", "assistant"])
-        self.assertIn("chce jedzenie", rows[0]["text"])
-        self.assertIn("gdzie jesteś", rows[1]["text"])
-        self.assertNotIn("route=", rows[1]["text"])
-
-    def test_respond_b64_reply_runs_auto_fact_capture(self):
-        with temp_dir() as tmp:
-            root = Path(tmp)
-            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
-                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
-            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(
-                ai_council, "build_response", return_value="Zapisane."
-            ), patch.object(ai_council, "maybe_auto_extract_facts") as capture:
-                (root / "state").mkdir(parents=True, exist_ok=True)
-                ai_council.respond_b64_reply("mój lot jest w piątek o 7 rano")
-
-        capture.assert_called_once_with("mój lot jest w piątek o 7 rano", "553")
 
 
 class DeterministicResearchRouteTests(unittest.TestCase):
@@ -8527,13 +8265,12 @@ class DeterministicResearchRouteTests(unittest.TestCase):
         route = ai_council.route_text("deep research x Poke Apple Messages")
         self.assertEqual(route["command"], "/xresearch")
 
-    def test_ambiguous_message_still_falls_through_to_llm(self):
-        # "sprawdź to szerzej" has no web/research marker -> must reach the LLM router.
-        sentinel = {"command": "@research", "operators": ["grok"], "prompt": "x", "route_source": "llm", "confidence": 0.9}
-        with patch.object(ai_council, "llm_route", return_value=sentinel) as llm:
-            route = ai_council.route_message("sprawdź to szerzej", chat_id="553")
-        llm.assert_called_once()
-        self.assertEqual(route["route_source"], "llm")
+    def test_ambiguous_message_goes_to_brain(self):
+        # "sprawdź to szerzej" has no web/research keyword -> the brain owns it (/chat),
+        # not the retired llm_route operator path (which used to leak plan-mode/[Council]).
+        route = ai_council.route_message("sprawdź to szerzej", chat_id="553")
+        self.assertEqual(route["command"], "/chat")
+        self.assertEqual(route["route_source"], "fallback")
 
 
 class CouncilAllVerdictTests(unittest.TestCase):
@@ -8978,6 +8715,304 @@ class SecretRotationTests(unittest.TestCase):
     def test_rejects_empty_value(self):
         res = ai_council.update_env_secret("XAI_API_KEY", "   ", path=self._env)
         self.assertFalse(res["ok"])
+
+
+class ConversationBrainTests(unittest.TestCase):
+    """Capability A — unified Conversation Brain.
+
+    Covers the Definition of Done: intent taxonomy, clarify-before-act slot flow,
+    food + coding flows, the anti-debug/JSON sanitizer, conservatism (does not hijack
+    existing explicit/keyword/llm/fallback routes), and iMessage thread persistence.
+    """
+
+    def setUp(self):
+        self._tmp = temp_dir()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self._p1 = patch.object(ai_council, "CLARIFICATIONS_FILE", base / "clarifications.jsonl")
+        self._p2 = patch.object(ai_council, "CONVERSATIONS_FILE", base / "conversations.jsonl")
+        self._p1.start(); self.addCleanup(self._p1.stop)
+        self._p2.start(); self.addCleanup(self._p2.stop)
+        self.cid = "brainA-553"
+
+    # --- (c) taxonomy: detects the full intent set ---
+    def test_classify_intent_covers_full_taxonomy(self):
+        cases = {
+            "chcę jedzenie": "food_local",
+            "popraw kod w utils.py": "coding",
+            "przypomnij mi jutro o lekach": "reminder",
+            "zapamiętaj że lubię kawę": "memory_save",
+            "co wiesz o moim projekcie": "memory_recall",
+            "zrób research o agentach AI": "research",
+            "stwórz recipe codziennie o 8 health digest": "recipe",
+            "zatwierdź": "approval_cancel",
+            "usuń wszystkie pliki": "risky_action",
+            "hej": "casual_chat",
+            "qwerty asdf zxcv": "unknown",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(ai_council.classify_intent(text)["intent"], expected, f"{text!r}")
+
+    # --- (d,g) food: clarify-before-act, one slot per turn, options + approval ---
+    def test_food_flow_fills_slots_then_delivers_clean_search(self):
+        r = ai_council.route_message("chcę jedzenie", chat_id=self.cid)
+        self.assertEqual(r["command"], "conversation")
+        self.assertEqual(r["intent"], "food_local")
+        self.assertIn("ochotę", ai_council.build_response(r, chat_id=self.cid))
+        ai_council.route_message("włoska", chat_id=self.cid)
+        ai_council.route_message("do 60 zł", chat_id=self.cid)
+        captured = {}
+
+        def fake_research(query, *a, **k):
+            captured["q"] = query
+            return "Trattoria Roma — ~50 zł, dostawa. Pizza Nuova — ~40 zł, na wynos."
+
+        with patch.object(ai_council, "grok_x_research_response", side_effect=fake_research):
+            r = ai_council.route_message("centrum", chat_id=self.cid)
+        # all slots filled -> ONE clean delivered result (not an @research route, no [Council])
+        self.assertEqual(r["command"], "conversation")
+        self.assertEqual(r["intent"], "food_local")
+        self.assertIn("Trattoria", r["reply"])
+        self.assertNotIn("[Council]", r["reply"])
+        self.assertIn("włoska", captured["q"])
+        self.assertIn("centrum", captured["q"])
+        self.assertIsNone(ai_council.get_pending_clarification(self.cid))
+
+    def test_food_flow_cancel_clears_pending(self):
+        ai_council.route_message("chcę jedzenie", chat_id=self.cid)
+        self.assertIsNotNone(ai_council.get_pending_clarification(self.cid))
+        r = ai_council.route_message("anuluj", chat_id=self.cid)
+        self.assertEqual(r["command"], "conversation")
+        self.assertIn("odpuszczam", ai_council.build_response(r, chat_id=self.cid).lower())
+        self.assertIsNone(ai_council.get_pending_clarification(self.cid))
+
+    def test_food_flow_location_starting_with_nie_is_not_cancelled(self):
+        # Regression for the live "asked what I'd eat but couldn't continue" bug: a location
+        # answer like "nie wiem"/"niedaleko"/a street "Niemcewicza" must NOT be treated as the
+        # cancel word "nie" (startswith) — that silently killed the flow.
+        ai_council.route_message("chcę jedzenie", chat_id=self.cid)
+        ai_council.route_message("włoska", chat_id=self.cid)
+        ai_council.route_message("bez limitu", chat_id=self.cid)  # -> asks location
+        captured = {}
+        with patch.object(ai_council, "grok_x_research_response",
+                          side_effect=lambda q, *a, **k: captured.update(q=q) or "Miejsce A, Miejsce B."):
+            r = ai_council.route_message("niedaleko Niemcewicza", chat_id=self.cid)
+        self.assertEqual(r["command"], "conversation")
+        self.assertNotIn("odpuszczam", r["reply"].lower())   # NOT cancelled
+        self.assertIn("Niemcewicza", captured["q"])           # used as the location
+        self.assertIsNone(ai_council.get_pending_clarification(self.cid))
+
+    # --- (i) coding: plan/job/test path via delegation ---
+    def test_coding_with_target_routes_to_delegate(self):
+        r = ai_council.route_message("popraw kod w utils.py", chat_id=self.cid)
+        self.assertEqual(r["command"], "/delegate")
+        self.assertEqual(r["intent"], "coding")
+        self.assertIn("utils.py", r["prompt"])
+
+    def test_coding_without_target_asks_then_delegates(self):
+        r = ai_council.route_message("popraw kod", chat_id=self.cid)
+        self.assertEqual(r["command"], "conversation")
+        self.assertEqual(r["intent"], "coding")
+        r = ai_council.route_message("w pliku api.py dodaj retry", chat_id=self.cid)
+        self.assertEqual(r["command"], "/delegate")
+        self.assertIn("api.py", r["prompt"])
+        self.assertIsNone(ai_council.get_pending_clarification(self.cid))
+
+    # --- (a,b,h,j) conservatism: do not hijack existing routes ---
+    def test_brain_does_not_hijack_explicit_keyword_or_fallback(self):
+        self.assertEqual(ai_council.route_message("@codex ping", chat_id=self.cid)["command"], "@codex")
+        self.assertEqual(ai_council.route_message("status", chat_id=self.cid)["command"], "/status")
+        rr = ai_council.route_message("zrób research o agentach", chat_id=self.cid)
+        self.assertEqual(rr["command"], "@research")
+        self.assertEqual(rr["route_source"], "keyword")
+        self.assertEqual(ai_council.route_message("hej", chat_id=self.cid)["command"], "/chat")
+        self.assertEqual(ai_council.route_message("qwerty asdf zxcv", chat_id=self.cid)["command"], "/chat")
+
+    def test_explicit_command_escapes_pending_clarification(self):
+        ai_council.route_message("chcę jedzenie", chat_id=self.cid)
+        r = ai_council.route_message("/status", chat_id=self.cid)
+        self.assertEqual(r["command"], "/status")
+        self.assertIsNotNone(ai_council.get_pending_clarification(self.cid))
+
+    def test_pending_answer_wins_over_keyword_router(self):
+        ai_council.route_message("chcę jedzenie", chat_id=self.cid)
+        r = ai_council.route_message("włoska", chat_id=self.cid)
+        self.assertEqual(r["command"], "conversation")
+        self.assertEqual(r["intent"], "food_local")
+
+    # --- (e) enforced anti-debug/JSON sanitizer ---
+    def test_sanitize_brain_reply_strips_debug_and_json(self):
+        self.assertEqual(
+            ai_council.sanitize_brain_reply("route=secret\n[Codex] noise\nNormalna odpowiedź"),
+            "Normalna odpowiedź",
+        )
+        self.assertNotIn("{", ai_council.sanitize_brain_reply('{"command":"/x"}'))
+        self.assertTrue(ai_council.sanitize_brain_reply("   ").strip())
+
+    def test_conversation_command_returns_sanitized_reply(self):
+        out = ai_council.build_response(
+            {"command": "conversation", "reply": "route=secret\n[Codex] x\nCześć Bartek"},
+            chat_id=self.cid,
+        )
+        self.assertEqual(out, "Cześć Bartek")
+
+    # --- (B Step 2) Shortcuts plain text shares the brain; URL/command preserved ---
+    def test_shortcut_plain_text_routes_through_brain(self):
+        route = ai_council.shortcut_route_for_text({"text": "chcę jedzenie"}, "chcę jedzenie", chat_id=self.cid)
+        self.assertEqual(route["command"], "conversation")
+        self.assertEqual(route["intent"], "food_local")
+
+    def test_shortcut_url_research_and_explicit_command_preserved(self):
+        url_route = ai_council.shortcut_route_for_text(
+            {"url": "https://x.com/a", "mode": "url"}, "https://x.com/a", chat_id=self.cid
+        )
+        self.assertIn("research_brief", str(url_route.get("prompt", "")))
+        cmd_route = ai_council.shortcut_route_for_text({"command": "/status"}, "x", chat_id=self.cid)
+        self.assertEqual(cmd_route["command"], "/status")
+
+    # --- (B Step 3) GPS location extraction + food-slot auto-fill via Shortcuts ---
+    def test_shortcut_text_from_payload_extracts_gps(self):
+        text = ai_council.shortcut_text_from_payload(
+            {"latitude": 52.261, "longitude": 20.989, "place_name": "Żoliborz"}
+        )
+        self.assertIn("lokalizacja", text.lower())
+        self.assertIn("Żoliborz", text)
+        self.assertIn("52.26100", text)
+
+    def test_shortcut_gps_fills_food_location_then_searches(self):
+        ai_council.route_message("chcę jedzenie", chat_id=self.cid)   # -> asks cuisine
+        ai_council.route_message("włoska", chat_id=self.cid)          # -> asks budget
+        ai_council.route_message("do 60 zł", chat_id=self.cid)        # -> asks location
+        payload = {"latitude": 52.261, "longitude": 20.989, "place_name": "Żoliborz"}
+        text = ai_council.shortcut_text_from_payload(payload)
+        captured = {}
+        with patch.object(ai_council, "grok_x_research_response",
+                          side_effect=lambda q, *a, **k: captured.update(q=q) or "Miejsce A, Miejsce B."):
+            route = ai_council.shortcut_route_for_text(payload, text, chat_id=self.cid)
+        # GPS pin fills the location slot -> all slots filled -> clean delivered search
+        self.assertEqual(route["command"], "conversation")
+        self.assertIn("Żoliborz", captured["q"])
+        self.assertIsNone(ai_council.get_pending_clarification(self.cid))
+
+    def test_telegram_location_fills_food_slot_via_brain(self):
+        loc_text = ai_council.telegram_location_to_text({"latitude": 52.261, "longitude": 20.989})
+        self.assertIn("lokalizacja", loc_text)
+        self.assertIn("52.26100", loc_text)
+        ai_council.route_message("chcę jedzenie", chat_id=self.cid)   # -> cuisine
+        ai_council.route_message("sushi", chat_id=self.cid)           # -> budget
+        ai_council.route_message("do 80 zł", chat_id=self.cid)        # -> location
+        captured = {}
+        with patch.object(ai_council, "grok_x_research_response",
+                          side_effect=lambda q, *a, **k: captured.update(q=q) or "Sushi A, Sushi B."):
+            r = ai_council.route_message(loc_text, chat_id=self.cid)  # GPS pin as the location answer
+        self.assertEqual(r["command"], "conversation")
+        self.assertIn("sushi", captured["q"])
+        self.assertIsNone(ai_council.get_pending_clarification(self.cid))
+
+    # --- (P1) the LLM brain composes clean conversational replies ---
+    def test_brain_loop_uses_llm_with_system_prompt_and_context(self):
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+
+        ai_council.append_conversation_turn(self.cid, "user", "lecę jutro do Pragi")
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "memory_context_for_prompt", return_value=""
+        ), patch.object(
+            ai_council, "request_json",
+            return_value={"choices": [{"message": {"content": "Jasne — co konkretnie ogarniamy przed wyjazdem?"}}]},
+        ) as rj:
+            reply = ai_council.brain_loop("co mam zrobić?", chat_id=self.cid)
+        self.assertIn("Jasne", reply)
+        self.assertNotIn("[Council]", reply)
+        msgs = rj.call_args.kwargs["payload"]["messages"]
+        self.assertIn("kumaty kumpel", msgs[0]["content"])            # BRAIN_SYSTEM_PROMPT
+        self.assertTrue(any("Pragi" in m["content"] for m in msgs))   # recent conversation included
+
+    def test_brain_loop_without_llm_is_clean_and_honest(self):
+        # No key (suite default) -> graceful, clean, non-template reply (never the old sludge).
+        reply = ai_council.brain_loop("zaplanuj mi tydzień", chat_id=self.cid)
+        self.assertTrue(reply.strip())
+        for bad in ("[Council]", "DECYZJA:", "FAKTY:", "NEXT:", "task-", "Przyjąłem. Najlepszy"):
+            self.assertNotIn(bad, reply)
+
+    def test_brain_loop_smalltalk_is_local_no_network(self):
+        with patch.object(ai_council, "request_json") as rj:
+            reply = ai_council.brain_loop("siema", chat_id=self.cid)
+        rj.assert_not_called()
+        self.assertTrue(reply.strip())
+        self.assertNotIn("[Council]", reply)
+
+    def test_brain_reply_strips_debug_and_operator_labels(self):
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+
+        leaky = "[Grok] noise\nroute=secret\nNormalna odpowiedź dla Bartka."
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "memory_context_for_prompt", return_value=""
+        ), patch.object(
+            ai_council, "request_json", return_value={"choices": [{"message": {"content": leaky}}]}
+        ):
+            reply = ai_council.brain_loop("opowiedz coś", chat_id=self.cid)
+        self.assertIn("Normalna odpowiedź", reply)
+        self.assertNotIn("[Grok]", reply)
+        self.assertNotIn("route=secret", reply)
+
+    # --- (P2/P3) brain tool-calling: act, don't just chat ---
+    def test_brain_decide_parses_tool_call(self):
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+
+        tool_resp = {"choices": [{"message": {"content": None, "tool_calls": [
+            {"function": {"name": "save_fact", "arguments": '{"fact": "Bartek lubi kawę bez cukru"}'}}]}}]}
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "memory_context_for_prompt", return_value=""
+        ), patch.object(ai_council, "request_json", return_value=tool_resp):
+            decision = ai_council.brain_decide("zapisz że lubię kawę bez cukru", chat_id=self.cid)
+        self.assertEqual(decision["action"], "save_fact")
+        self.assertEqual(decision["args"]["fact"], "Bartek lubi kawę bez cukru")
+
+    def test_brain_execute_save_then_recall_fact_end_to_end(self):
+        with temp_dir() as tmp:
+            with patch.object(ai_council, "MEMORY_DB", Path(tmp) / "memory.sqlite"):
+                saved = ai_council.brain_execute_tool("save_fact", {"fact": "mój lot jest w piątek"}, "zapisz to", self.cid)
+                recalled = ai_council.brain_execute_tool("recall_fact", {"query": "kiedy mam lot"}, "kiedy lot", self.cid)
+        self.assertIn("Zapamiętane", saved)
+        self.assertIn("piątek", recalled)
+        self.assertNotIn("[Council]", recalled)
+
+    def test_brain_loop_dispatches_reminder_with_clean_confirmation(self):
+        leaky = "[Council] Przypomnienie ✅ (rem-1): „leki” — jutro o 15. Lista: /reminders"
+        with patch.object(ai_council, "brain_decide", return_value={"action": "set_reminder", "args": {"what": "leki", "when": "jutro o 15"}}), \
+             patch.object(ai_council, "add_reminder", return_value=leaky):
+            reply = ai_council.brain_loop("przypomnij mi jutro o 15 o lekach", chat_id=self.cid)
+        self.assertIn("przypomn", reply.lower())
+        for bad in ("[Council]", "rem-", "/reminders"):
+            self.assertNotIn(bad, reply)
+
+    def test_brain_loop_dispatches_save_fact_tool(self):
+        with temp_dir() as tmp:
+            with patch.object(ai_council, "MEMORY_DB", Path(tmp) / "memory.sqlite"), patch.object(
+                ai_council, "brain_decide", return_value={"action": "save_fact", "args": {"fact": "lubię sushi"}}
+            ):
+                reply = ai_council.brain_loop("zapamiętaj że lubię sushi", chat_id=self.cid)
+        self.assertIn("Zapamiętane", reply)
+        self.assertIn("sushi", reply)
+        self.assertNotIn("[Council]", reply)
+
+    # --- (a) iMessage shares ONE thread: respond-b64 persists turns ---
+    def test_imessage_respond_b64_persists_user_and_assistant_turns(self):
+        b64 = base64.b64encode("hej".encode("utf-8")).decode("ascii")
+        argv = ["ai_council.py", "respond-b64", "--b64", b64]
+        with patch.object(ai_council, "configure_utf8_stdio", lambda: None), \
+             patch.object(sys, "argv", argv), \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc = ai_council.main()
+        self.assertEqual(rc, 0)
+        turns = ai_council.read_jsonl(ai_council.CONVERSATIONS_FILE)
+        roles = [t.get("role") for t in turns]
+        self.assertIn("user", roles)
+        self.assertIn("assistant", roles)
+        self.assertGreaterEqual(len(turns), 2)
 
 
 if __name__ == "__main__":
