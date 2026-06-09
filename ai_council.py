@@ -25,7 +25,7 @@ import time
 import traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, quote_plus, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -848,6 +848,13 @@ def front_quality_issues(text: str, route: dict | None = None) -> list[str]:
     if not allow_long and len(command_lines) > int_cfg("AI_COUNCIL_FRONT_QUALITY_MAX_COMMAND_LINES", 6):
         issues.append(f"command_spam:{len(command_lines)}")
     return issues
+
+
+def strip_debug_metadata(text: str) -> str:
+    """L4.93 P0: user-facing replies must never carry route=/audit_log= debug tails
+    (Poke polish). Applied to `respond` and `respond-b64` (iMessage relay) output."""
+    kept = [line for line in str(text or "").splitlines() if not re.match(r"^\s*(route=|audit_log=)", line)]
+    return "\n".join(kept).strip()
 
 
 def record_front_quality_if_needed(response: str, route: dict | None, event: dict | None = None, chat_id: str = "", force: bool = False) -> list[str]:
@@ -9578,6 +9585,71 @@ def create_workspace_patch_action(prompt: str) -> dict | None:
     )
 
 
+def workspace_action_snapshot(target: Path) -> bool:
+    """L4.95 (OpenClaw hands): before an APPROVED workspace write executes, snapshot
+    the previous state into the hands backup journal (outside the workspace), so every
+    approved write is undoable via `/undo <path>`. No rollback => no write."""
+    meta_path, data_path = _hands_backup_keys(target)
+    existed = target.exists()
+    try:
+        if existed:
+            data_path.write_bytes(target.read_bytes())
+        elif data_path.exists():
+            data_path.unlink()
+        meta_path.write_text(
+            json.dumps({"target": str(target), "existed": existed, "ts": utc_now(), "scope": "workspace_action"}),
+            encoding="utf-8",
+        )
+    except OSError:
+        return False
+    return True
+
+
+def workspace_action_undo(raw_path: str) -> str:
+    """L4.95: restore a workspace file to its pre-action state — the counterpart of
+    fs_undo for approved workspace writes. Undo is risk-REDUCING, so it needs no
+    extra flag; resolver keeps it inside the workspace sandbox."""
+    target, error = resolve_workspace_path(raw_path)
+    if error or target is None:
+        return f"[Council] Odrzucono: {error}"
+    meta_path, data_path = _hands_backup_keys(target)
+    if not meta_path.exists():
+        return "[Council] Brak backupu dla tego pliku (nie był zapisany przez approved action)."
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return "[Council] Backup uszkodzony."
+    if meta.get("target") != str(target):
+        return "[Council] Backup nie pasuje do celu."
+    try:
+        if meta.get("existed"):
+            _hands_safe_write_bytes(target, data_path.read_bytes())
+            if data_path.exists():
+                data_path.unlink()
+            meta_path.unlink()
+            result = f"przywrócono poprzednią treść {target.name}"
+        else:
+            if target.exists():
+                target.unlink()
+            meta_path.unlink()
+            result = f"usunięto {target.name} (wrócił do stanu „nie istniał”)"
+    except OSError as exc:
+        return f"[Council] Błąd cofania: {exc}"
+    audit({"command": "/undo", "operators": ["host"], "status": "restored", "duration_ms": 0, "output_preview": str(target)[:200]})
+    return f"[Council] Cofnięto ✅ {result}."
+
+
+def _workspace_snapshot_failed(action: dict) -> dict:
+    executed = {
+        **action,
+        "status": "failed",
+        "updated_at": utc_now(),
+        "execution_result": "blocked: backup snapshot failed (no rollback => no write)",
+    }
+    append_jsonl(ACTIONS_FILE, executed)
+    return executed
+
+
 def execute_workspace_write_action(action: dict) -> dict:
     payload = action.get("payload") or {}
     target, error = resolve_workspace_path(str(payload.get("path", "")))
@@ -9601,6 +9673,8 @@ def execute_workspace_write_action(action: dict) -> dict:
         append_jsonl(ACTIONS_FILE, executed)
         return executed
     target.parent.mkdir(parents=True, exist_ok=True)
+    if not workspace_action_snapshot(target):
+        return _workspace_snapshot_failed(action)
     target.write_text(content, encoding="utf-8")
     executed = {
         **action,
@@ -9635,6 +9709,8 @@ def execute_workspace_append_action(action: dict) -> dict:
         append_jsonl(ACTIONS_FILE, executed)
         return executed
     target.parent.mkdir(parents=True, exist_ok=True)
+    if not workspace_action_snapshot(target):
+        return _workspace_snapshot_failed(action)
     target.write_text(new_content, encoding="utf-8")
     executed = {**action, "status": "executed", "updated_at": utc_now(), "execution_result": f"appended {target}"}
     append_jsonl(ACTIONS_FILE, executed)
@@ -9665,6 +9741,8 @@ def execute_workspace_patch_action(action: dict) -> dict:
         executed = {**action, "status": "failed", "updated_at": utc_now(), "execution_result": "blocked: content too large"}
         append_jsonl(ACTIONS_FILE, executed)
         return executed
+    if not workspace_action_snapshot(target):
+        return _workspace_snapshot_failed(action)
     target.write_text(new_content, encoding="utf-8")
     executed = {**action, "status": "executed", "updated_at": utc_now(), "execution_result": f"patched {target}"}
     append_jsonl(ACTIONS_FILE, executed)
@@ -10642,18 +10720,44 @@ def approve_response(prompt: str) -> str:
     if updated.get("type") == "workspace_write" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_write_action(updated)
         if executed.get("status") == "executed":
-            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
+            return (
+                f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}\n"
+                f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
+            )
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
     if updated.get("type") == "workspace_append" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_append_action(updated)
         if executed.get("status") == "executed":
-            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
+            return (
+                f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}\n"
+                f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
+            )
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
     if updated.get("type") == "workspace_patch" and updated.get("risk") in AUTO_EXECUTABLE_WORKSPACE_RISKS:
         executed = execute_workspace_patch_action(updated)
         if executed.get("status") == "executed":
-            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
+            return (
+                f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}\n"
+                f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
+            )
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
+    if updated.get("type") == "order_handoff":
+        payload = updated.get("payload") or {}
+        executed = {
+            **updated,
+            "status": "executed",
+            "updated_at": utc_now(),
+            "execution_result": "handoff delivered in chat; external_write_performed=false",
+        }
+        append_jsonl(ACTIONS_FILE, executed)
+        address = compact_line(str(payload.get("address", "")), 100)
+        return (
+            "[Council] Zamówienie GOTOWE DO ZŁOŻENIA (ja nie składam i nie płacę):\n"
+            f"{compact_line(str(payload.get('items', '')), 160)} | {compact_line(str(payload.get('service', '')), 80)}"
+            + (f" | {address}" if address else "")
+            + f"\nLink: {payload.get('deep_link', '')}\n"
+            "Otwórz link, potwierdź koszyk i zapłać sam."
+        )
     if updated.get("type") == "planner_proposal":
         payload = updated.get("payload") or {}
         task_id = str(payload.get("task_id") or "")
@@ -15476,6 +15580,8 @@ def route_text(text: str) -> dict:
         return {"command": "/append", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "append"}
     if lower.startswith("/patch"):
         return {"command": "/patch", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "patch"}
+    if lower.startswith("/undo"):
+        return {"command": "/undo", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "undo"}
     if lower.startswith("/task"):
         return {"command": "/task", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "task"}
     if lower.startswith("/queue"):
@@ -15998,7 +16104,7 @@ def build_research_prompt(prompt: str) -> str:
 # wall of commands, logs, jargon or small talk. Truthful about system state; external
 # side effects always route to POTRZEBUJĘ ZGODY.
 MASTER_HOST_CONTRACT = (
-    "Jesteś frontowym operatorem Bartek Agent OS w Telegramie — styl Poke. Mówisz po polsku.\n"
+    "Jesteś frontowym operatorem Bartek Agent OS w iMessage i Telegramie — styl Poke. Mówisz po polsku.\n"
     "GŁOS: krótko i decyzyjnie. Maks 3 zdania albo 4 punkty. Zero ściany komend, logów, żargonu i small talku ('co u Ciebie').\n"
     "STATUS-FIRST: zaczynaj od jednego stanu, gdy coś robisz lub coś trzeba zrobić:\n"
     "  • ROBIĘ: … — gdy realnie startujesz bezpieczny krok/task teraz.\n"
@@ -16006,7 +16112,13 @@ MASTER_HOST_CONTRACT = (
     "  • POTRZEBUJĘ ZGODY: … — dla akcji zewnętrznych/nieodwracalnych (mail, kalendarz, GitHub write, publikacja, płatność, usuwanie, deploy).\n"
     "  • NIE MOGĘ: … — gdy czegoś nie wolno/nie da się; powiedz to wprost i podaj alternatywę.\n"
     "Dla zwykłego pytania po prostu odpowiedz krótko — bez sztucznego nagłówka statusu.\n"
-    "PAMIĘĆ WĄTKU: Telegram to jeden ciągły kontakt. Używaj historii rozmowy; nie proś o powtórzenie kontekstu, jeśli już był.\n"
+    "PAMIĘĆ WĄTKU: iMessage/Telegram to jeden ciągły kontakt. Używaj historii rozmowy; nie proś o powtórzenie kontekstu, jeśli już był.\n"
+    "DOPYTYWANIE: gdy w prośbie brakuje kluczowej danej (miejsce, czas, budżet, format, zakres), zadaj dokładnie JEDNO najważniejsze pytanie "
+    "i od razu zaproponuj sensowny default — zamiast odpowiadać ogólnikiem albo prosić o 'doprecyzowanie celu'.\n"
+    "ZAMÓWIENIA (jedzenie/zakupy/rezerwacje): nie masz dostępu do żadnego systemu zamówień i NIGDY nie twierdzisz, że coś zamówiłeś, złożyłeś albo opłaciłeś. "
+    "Zbieraj dane jedno pytanie na turę (co, skąd, adres, budżet), używając sekcji 'Co wiem o Tobie' jako defaultów. "
+    "Gdy masz komplet (minimum: pozycje + restauracja/serwis), zakończ odpowiedź OSOBNĄ ostatnią linią dokładnie w formacie: "
+    "ORDER_DRAFT: {\"service\":\"...\",\"items\":\"...\",\"address\":\"...\",\"notes\":\"...\"} — system zamieni ją w draft do /approve. Żadnych płatności.\n"
     "PRAWDA O STANIE: jeśli Bartek pyta o cel/Poke parity/health — mów prawdę: system nie jest ukończony, brakuje pełnych connectorów oraz iPhone/iMessage layer. "
     "Nigdy 'wszystko działa' bez sprawdzenia health.\n"
     "TRYB: jeśli wiadomość to większe zadanie, nazwij najlepszy tryb (research, plan, Council, task albo approval) i zaproponuj jeden następny krok."
@@ -16033,8 +16145,24 @@ BRAIN_SYSTEM_PROMPT = (
 )
 
 
-def poke_chat_llm_configured() -> bool:
+def poke_chat_operator() -> str:
+    """L4.93: default front conversation operator. Claude is the voice of the
+    assistant (subscription CLI, no per-token cost); Grok stays as fallback here
+    and as the dedicated research/red-team operator."""
+    value = cfg("AI_COUNCIL_POKE_CHAT_OPERATOR", "claude").strip().lower()
+    return value if value in {"claude", "grok"} else "claude"
+
+
+def poke_chat_claude_configured() -> bool:
+    return poke_chat_operator() == "claude" and bool_cfg("AI_COUNCIL_POKE_CHAT_USE_CLAUDE", True)
+
+
+def poke_chat_grok_configured() -> bool:
     return bool_cfg("AI_COUNCIL_POKE_CHAT_USE_GROK", True) and bool(cfg("XAI_API_KEY"))
+
+
+def poke_chat_llm_configured() -> bool:
+    return poke_chat_claude_configured() or poke_chat_grok_configured()
 
 
 def poke_gap_feedback_fallback(lower: str) -> bool:
@@ -16158,6 +16286,13 @@ def poke_chat_should_use_llm(prompt: str) -> bool:
 
     if any(has_marker(marker) for marker in local_markers):
         return False
+    # L4.94: with Claude (subscription CLI) as the front voice the marginal cost of a
+    # natural reply is ~0, so EVERY remaining natural message goes to the LLM. This is
+    # what makes short messages like "chce jedzenie" feel alive — the voice contract
+    # then asks ONE follow-up question instead of returning a canned status. Grok-only
+    # setups keep the old conservative gate below (per-token API cost).
+    if poke_chat_claude_configured() and bool_cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_ALL_CHAT", True):
+        return True
     question_prefixes = (
         "czy ",
         "jak ",
@@ -16199,8 +16334,170 @@ def poke_chat_should_use_llm(prompt: str) -> bool:
     return len(text) >= max(min_chars, 140) or any(marker in lower for marker in value_markers)
 
 
+def poke_chat_history_messages(chat_id: str) -> list[dict]:
+    messages: list[dict] = []
+    if chat_id:
+        for row in recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_CHAT_HISTORY_TURNS", 6)):
+            role = row.get("role") if row.get("role") in {"user", "assistant"} else "user"
+            content = str(row.get("text") or "").strip()
+            if content:
+                messages.append({"role": role, "content": content})
+    return messages
+
+
+def poke_chat_claude_prompt(prompt: str, chat_id: str = "") -> str:
+    text = prompt.strip()
+    memory_context = memory_context_for_prompt(text)
+    memory_block = f"\n\nKontekst z pamięci AI Council:\n{memory_context}" if memory_context else ""
+    history_lines = []
+    for message in poke_chat_history_messages(chat_id):
+        speaker = "Bartek" if message["role"] == "user" else "Ty"
+        history_lines.append(f"{speaker}: {compact_line(message['content'], 400)}")
+    history_block = ("Ostatnia rozmowa:\n" + "\n".join(history_lines) + "\n\n") if history_lines else ""
+    return f"{history_block}Bartek pisze: {text}{memory_block}\n\nOdpowiedz Bartkowi zgodnie z kontraktem głosu."
+
+
+ORDER_DRAFT_RE = re.compile(r"^\s*ORDER_DRAFT:\s*(\{.*\})\s*$", re.MULTILINE)
+
+
+def extract_order_draft(answer: str) -> tuple[str, dict | None]:
+    """L4.96: parse the front operator's ORDER_DRAFT marker line into a payload.
+    Always strips the marker from the user-visible text; returns payload only when
+    the JSON is valid AND has the minimum fields (service + items)."""
+    text = str(answer or "")
+    matches = list(ORDER_DRAFT_RE.finditer(text))
+    if not matches:
+        return text, None
+    # Audit L4.96: strip ALL marker lines (a hallucinated second marker must never
+    # reach the user raw); only the FIRST one is considered for the draft payload.
+    cleaned = ORDER_DRAFT_RE.sub("", text).strip()
+    try:
+        payload = json.loads(matches[0].group(1))
+    except (json.JSONDecodeError, TypeError):
+        return cleaned, None
+    if not isinstance(payload, dict):
+        return cleaned, None
+    if not str(payload.get("service", "")).strip() or not str(payload.get("items", "")).strip():
+        return cleaned, None
+    return cleaned, payload
+
+
+def order_deep_link(payload: dict) -> str:
+    """Best-effort handoff link (NO requests, just a URL string). Checkout and
+    payment always stay with Bartek."""
+    service = str(payload.get("service", "")).strip()
+    lower = service.lower()
+    query = quote_plus(" ".join(part for part in [service, str(payload.get("items", ""))[:60]] if part).strip())
+    if "pyszne" in lower:
+        return "https://www.pyszne.pl/"
+    if "glovo" in lower:
+        return "https://glovoapp.com/pl/"
+    if "uber" in lower:
+        return "https://www.ubereats.com/pl"
+    if "wolt" in lower:
+        return "https://wolt.com/pl"
+    return f"https://www.google.com/search?q={query}+zamow+online"
+
+
+def create_order_handoff_action(payload: dict, chat_id: str = "") -> dict:
+    summary = compact_line(f"{payload.get('items', '')} @ {payload.get('service', '')}", 160)
+    return create_action(
+        f"Order handoff: {summary}",
+        action_type="order_handoff",
+        risk="R1",
+        payload={**payload, "deep_link": order_deep_link(payload), "chat_id": str(chat_id)},
+    )
+
+
+def attach_order_draft_if_any(answer: str, chat_id: str = "", max_chars: int | None = None) -> str:
+    """L4.96: shared hook for front-chat LLM answers — parses the ORDER_DRAFT marker
+    BEFORE truncation (so it is never cut in half), truncates the visible text, then
+    appends the /approve footer AFTER truncation (so the action id is never cut off).
+    Never raises into the chat path."""
+    cleaned, payload = extract_order_draft(answer)
+    limit = max_chars if max_chars is not None else int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)
+    body = cleaned[:limit]
+    if not payload:
+        return body
+    try:
+        action = create_order_handoff_action(payload, chat_id=chat_id)
+    except Exception:
+        return body
+    return f"{body}\n\nDraft zamówienia gotowy: /approve {action['action_id']} albo /deny {action['action_id']}"
+
+
+def poke_chat_claude_response(prompt: str, chat_id: str = "") -> str | None:
+    """L4.93: Claude (subscription CLI, no tools) as the default front conversation
+    operator. Returns None on any failure so the caller can fall back to Grok/local."""
+    if not poke_chat_claude_configured():
+        return None
+    started = time.time()
+    allowed, reason, reservation = reserve_operator_call("claude", detail="poke_chat")
+    if not allowed:
+        return None
+    command = [
+        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--append-system-prompt",
+        MASTER_HOST_CONTRACT,
+    ]
+    model = cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_MODEL").strip()
+    if model:
+        command.extend(["--model", model])
+    command.extend(["-p", poke_chat_claude_prompt(prompt, chat_id=chat_id)])
+    timeout = int_cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_TIMEOUT", 90)
+    try:
+        proc = subprocess.run(
+            command,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            input="",
+            capture_output=True,
+            timeout=timeout,
+            cwd=str(PROJECT_DIR),
+            env=operator_env(),
+        )
+    except subprocess.TimeoutExpired:
+        finalize_operator_call(
+            reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="poke_chat claude timeout"
+        )
+        record_error("poke_chat_claude", message=f"timeout after {timeout}s", severity="warning")
+        return None
+    except FileNotFoundError:
+        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="poke_chat claude missing")
+        return None
+    duration_ms = int((time.time() - started) * 1000)
+    if proc.returncode != 0:
+        detail = compact_line(redact_secrets(proc.stderr or proc.stdout or ""), 220)
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"poke_chat claude: {detail}")
+        record_error("poke_chat_claude", message=detail or f"exit {proc.returncode}", severity="warning")
+        return None
+    answer = clean_operator_output(redact_secrets(proc.stdout or "")).strip()
+    if not answer:
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="poke_chat claude: empty response")
+        return None
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="poke_chat claude")
+    return "[Council]\n" + attach_order_draft_if_any(answer, chat_id=chat_id)
+
+
 def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
+    """Front chat LLM dispatcher: Claude is the default voice, Grok is the fallback;
+    cheap local fallback stays in the caller (poke_chat_response)."""
     if not poke_chat_should_use_llm(prompt):
+        return None
+    claude_answer = poke_chat_claude_response(prompt, chat_id=chat_id)
+    if claude_answer:
+        return claude_answer
+    return poke_chat_grok_response(prompt, chat_id=chat_id)
+
+
+def poke_chat_grok_response(prompt: str, chat_id: str = "") -> str | None:
+    if not poke_chat_grok_configured():
         return None
     started = time.time()
     allowed, reason, reservation = reserve_operator_call("grok", detail="poke_chat")
@@ -16215,12 +16512,7 @@ def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
             "content": MASTER_HOST_CONTRACT,
         }
     ]
-    if chat_id:
-        for row in recent_conversation(chat_id, limit=int_cfg("AI_COUNCIL_CHAT_HISTORY_TURNS", 6)):
-            role = row.get("role") if row.get("role") in {"user", "assistant"} else "user"
-            content = str(row.get("text") or "").strip()
-            if content:
-                messages.append({"role": role, "content": content})
+    messages.extend(poke_chat_history_messages(chat_id))
     messages.append({"role": "user", "content": f"{text}{memory_block}"})
     payload = {
         "model": cfg("AI_COUNCIL_POKE_CHAT_MODEL", cfg("AI_COUNCIL_GROK_MODEL", "grok-4.3")),
@@ -16247,7 +16539,7 @@ def poke_chat_llm_response(prompt: str, chat_id: str = "") -> str | None:
         finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="poke_chat: empty response")
         return None
     finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="poke_chat")
-    return "[Council]\n" + answer[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 900)]
+    return "[Council]\n" + attach_order_draft_if_any(answer, chat_id=chat_id)
 
 
 BRAIN_TOOLS = [
@@ -17152,6 +17444,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return setup_response()
     if command == "/watch":
         return watch_response(prompt, task_id=task_id)
+    if command == "/undo":
+        return workspace_action_undo(prompt)
     if command == "/chat":
         return poke_chat_response(prompt, chat_id=chat_id)
     if command == "/agent":
@@ -17390,6 +17684,23 @@ def dry_route(text: str) -> None:
     print(f"audit_log={AUDIT_LOG}")
 
 
+def respond_b64_reply(msg: str) -> str:
+    """L4.94: iMessage inbound relay pipeline. Persists BOTH conversation turns
+    (thread memory — same as the Telegram listener) and returns ONLY the clean
+    user-facing reply (debug metadata scrubbed)."""
+    cid = cfg("TELEGRAM_ALLOWED_CHAT_ID")
+    route = route_message(msg, chat_id=cid)
+    append_conversation_turn(cid, "user", msg, route)
+    response = strip_debug_metadata(build_response(route, chat_id=cid))
+    if not response.strip():
+        response = "[Council] Przyjąłem."  # audit L4.96: never relay an empty iMessage
+    append_conversation_turn(cid, "assistant", response, route)
+    # L4.94: Hermes memory parity with the Telegram listener — gated, heuristic,
+    # never-raising auto fact capture (quarantine) also for iMessage messages.
+    maybe_auto_extract_facts(msg, cid)
+    return response
+
+
 def respond_dry(text: str, chat_id: str = "") -> None:
     started = time.time()
     clean_chat_id = chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID")
@@ -17409,9 +17720,12 @@ def respond_dry(text: str, chat_id: str = "") -> None:
         "output_preview": response[:300],
     }
     audit(event)
-    print(response)
-    print(f"\nroute={json.dumps(sanitize_for_audit(route), ensure_ascii=False)}")
-    print(f"audit_log={AUDIT_LOG}")
+    print(strip_debug_metadata(response))
+    # L4.93 P0: the debug tail leaked into user-facing channels (iMessage/CLI relay).
+    # It is now opt-in for diagnostics only.
+    if bool_cfg("AI_COUNCIL_RESPOND_DEBUG_TAIL", False):
+        print(f"\nroute={json.dumps(sanitize_for_audit(route), ensure_ascii=False)}")
+        print(f"audit_log={AUDIT_LOG}")
 
 
 def is_allowed_message(message: dict) -> bool:
@@ -17918,15 +18232,10 @@ def main() -> int:
         except Exception:
             print("[Council] (decode error)")
             return 1
-        cid = cfg("TELEGRAM_ALLOWED_CHAT_ID")
-        # A: persist the inbound turn so iMessage shares ONE continuous thread with
-        # Telegram (was missing here — iMessage had no conversation memory).
-        append_conversation_turn(cid, "user", msg)
-        route = route_message(msg, chat_id=cid)
-        reply = build_response(route, chat_id=cid)
-        append_conversation_turn(cid, "assistant", reply, route)
         # Print ONLY the reply so the iMessage inbound relay can capture it cleanly.
-        print(reply)
+        # L4.94: persists thread memory (user + assistant turns) + auto fact capture
+        # + debug scrub + never-empty reply (merged with Windows 'A' patch intent).
+        print(respond_b64_reply(msg))
         return 0
     if args.cmd == "set-secret":
         value = sys.stdin.read().strip()

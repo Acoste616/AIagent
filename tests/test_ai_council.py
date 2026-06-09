@@ -1200,15 +1200,29 @@ class RoutingTests(unittest.TestCase):
     def test_short_operator_question_can_use_llm_front_without_status_dump(self):
         # poke_chat_should_use_llm is the legacy gate (brain_loop no longer uses it); test its
         # logic with a key present (the suite forces XAI_API_KEY empty by default).
-        def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+        def grok_cfg(key, default=""):
+            return {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
+            }.get(key, default)
 
-        with patch.object(ai_council, "cfg", side_effect=fake_cfg):
+        with patch.object(ai_council, "cfg", side_effect=grok_cfg):
             self.assertTrue(ai_council.poke_chat_should_use_llm("jak to otworzyć tutaj?"))
             self.assertTrue(ai_council.poke_chat_should_use_llm("który model będzie ze mną rozmawiał?"))
             self.assertFalse(ai_council.poke_chat_should_use_llm("co tam u ciebie"))
             self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
             self.assertFalse(ai_council.poke_chat_should_use_llm("co dalej"))
+
+        # L4.94: with Claude as the (default) front voice, small talk gets a natural
+        # LLM reply instead of a canned fallback; status/ack stays local and cheap.
+        def claude_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=claude_cfg):
+            self.assertTrue(ai_council.poke_chat_should_use_llm("co tam u ciebie"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("ok"))
 
     def test_default_chat_is_clean_brain_reply(self):
         with patch.object(ai_council, "brain_decide", return_value={"action": "reply", "text": "Jasne — powiedz tylko o czym dokładnie."}):
@@ -1371,7 +1385,9 @@ class RoutingTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertTrue(output.strip())
         self.assertNotIn("[Council]", output)
-        self.assertIn('"command": "/chat"', output)
+        # L4.93 P0: debug tail (route=/audit_log=) must NOT leak to user-facing output.
+        self.assertNotIn("route=", output)
+        self.assertNotIn("audit_log=", output)
         self.assertEqual(rows[-1]["status"], "dry_response")
 
     def test_research_wraps_prompt_as_polish_research_brief(self):
@@ -2108,6 +2124,7 @@ class RoutingTests(unittest.TestCase):
                 "XAI_API_KEY": "xai-test",
                 "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
                 "AI_COUNCIL_POKE_CHAT_LLM_MIN_CHARS": "90",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
             }
             return values.get(key, default)
 
@@ -2995,6 +3012,7 @@ class ConversationThreadTests(unittest.TestCase):
                 "XAI_API_KEY": "xai-test",
                 "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
                 "AI_COUNCIL_POKE_CHAT_MODEL": "grok-test",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
             }
             return values.get(key, default)
 
@@ -8180,7 +8198,11 @@ class GrokIsolationTests(unittest.TestCase):
         captured = {}
 
         def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+            return {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
+            }.get(key, default)
 
         def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
             captured["payload"] = payload
@@ -8214,7 +8236,11 @@ class MasterHostContractTests(unittest.TestCase):
         captured = {}
 
         def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+            return {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
+            }.get(key, default)
 
         def fake_request_json(url, headers=None, method="GET", payload=None, timeout=30):
             captured["payload"] = payload
@@ -8235,6 +8261,282 @@ class MasterHostContractTests(unittest.TestCase):
         system_msg = captured["payload"]["messages"][0]
         self.assertEqual(system_msg["role"], "system")
         self.assertEqual(system_msg["content"], ai_council.MASTER_HOST_CONTRACT)
+
+
+class PokeChatClaudeOperatorTests(unittest.TestCase):
+    """L4.93: Claude is the default front conversation operator; Grok is the fallback."""
+
+    LONG_PROMPT = "Wyjaśnij proszę dokładnie i konkretnie jak najlepiej rozplanować pracę nad tym projektem w tym tygodniu."
+
+    def test_claude_is_default_operator(self):
+        with patch.object(ai_council, "cfg", side_effect=lambda key, default="": default):
+            self.assertEqual(ai_council.poke_chat_operator(), "claude")
+            self.assertTrue(ai_council.poke_chat_claude_configured())
+            self.assertTrue(ai_council.poke_chat_llm_configured())
+
+    def test_poke_chat_uses_claude_cli_and_skips_grok(self):
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = "Jasne, robię."
+            stderr = ""
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            return FakeProc()
+
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1", "operator": "claude"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "recent_conversation", return_value=[]
+        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
+            ai_council.subprocess, "run", side_effect=fake_run
+        ), patch.object(ai_council, "request_json") as grok_call:
+            response = ai_council.poke_chat_llm_response(self.LONG_PROMPT, chat_id="553")
+
+        self.assertTrue(response.startswith("[Council]"))
+        self.assertIn("Jasne, robię.", response)
+        grok_call.assert_not_called()
+        command = captured["command"]
+        idx = command.index("--append-system-prompt")
+        self.assertEqual(command[idx + 1], ai_council.MASTER_HOST_CONTRACT)
+        self.assertIn("-p", command)
+
+    def test_claude_failure_falls_back_to_grok(self):
+        def fake_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "recent_conversation", return_value=[]
+        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
+            ai_council.subprocess, "run", side_effect=FileNotFoundError()
+        ), patch.object(
+            ai_council, "request_json", return_value={"choices": [{"message": {"content": "grok przejął"}}]}
+        ):
+            response = ai_council.poke_chat_llm_response(self.LONG_PROMPT, chat_id="553")
+
+        self.assertIn("grok przejął", response)
+
+    def test_strip_debug_metadata_removes_debug_tail(self):
+        raw = 'Cześć, zrobione.\nroute={"command": "/chat"}\naudit_log=D:\\ai-council\\logs\\audit.jsonl'
+        self.assertEqual(ai_council.strip_debug_metadata(raw), "Cześć, zrobione.")
+
+    def test_claude_gate_takes_short_natural_messages(self):
+        # L4.94: "chce jedzenie" must reach the LLM voice (which asks ONE follow-up),
+        # not the canned local fallback. Grok-only setups keep the conservative gate.
+        with patch.object(ai_council, "cfg", side_effect=lambda key, default="": default):
+            self.assertTrue(ai_council.poke_chat_should_use_llm("chce jedzenie"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("ok"))
+            self.assertFalse(ai_council.poke_chat_should_use_llm("status"))
+
+        def grok_cfg(key, default=""):
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok"}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=grok_cfg):
+            self.assertFalse(ai_council.poke_chat_should_use_llm("chce jedzenie"))
+
+    def test_contract_requires_single_followup_question(self):
+        self.assertIn("DOPYTYWANIE", ai_council.MASTER_HOST_CONTRACT)
+        self.assertIn("JEDNO", ai_council.MASTER_HOST_CONTRACT)
+
+
+class OrderHandoffTests(unittest.TestCase):
+    """L4.96: 'zamów pizzę' => Claude collects slots, emits ORDER_DRAFT marker,
+    system converts it to a pending R1 action; /approve returns a handoff link.
+    No payments, no external writes, no pretending the order was placed."""
+
+    def test_contract_forbids_fake_orders_and_defines_marker(self):
+        self.assertIn("ORDER_DRAFT", ai_council.MASTER_HOST_CONTRACT)
+        self.assertIn("NIGDY nie twierdzisz", ai_council.MASTER_HOST_CONTRACT)
+
+    def test_extract_order_draft_happy_path_strips_marker(self):
+        answer = 'Jasne, robię draft.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni L","address":"Dom"}'
+        cleaned, payload = ai_council.extract_order_draft(answer)
+        self.assertEqual(cleaned, "Jasne, robię draft.")
+        self.assertEqual(payload["service"], "Pyszne")
+        self.assertEqual(payload["items"], "pepperoni L")
+
+    def test_extract_order_draft_rejects_broken_or_incomplete_json(self):
+        cleaned, payload = ai_council.extract_order_draft("Ok.\nORDER_DRAFT: {nie-json}")
+        self.assertEqual(cleaned, "Ok.")
+        self.assertIsNone(payload)
+        cleaned2, payload2 = ai_council.extract_order_draft('Ok.\nORDER_DRAFT: {"service":"","items":"x"}')
+        self.assertEqual(cleaned2, "Ok.")
+        self.assertIsNone(payload2)
+        cleaned3, payload3 = ai_council.extract_order_draft("Zwykła odpowiedź bez markera.")
+        self.assertEqual(cleaned3, "Zwykła odpowiedź bez markera.")
+        self.assertIsNone(payload3)
+
+    def test_attach_order_draft_creates_pending_action_with_footer(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "ensure_council_dirs", return_value=None
+            ):
+                (root / "state").mkdir(parents=True)
+                (root / "logs").mkdir(parents=True)
+                answer = 'Mam komplet.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni L","address":"Dom"}'
+                final = ai_council.attach_order_draft_if_any(answer, chat_id="553")
+                rows = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertNotIn("ORDER_DRAFT", final)
+        self.assertIn("/approve act-", final)
+        self.assertEqual(rows[-1]["type"], "order_handoff")
+        self.assertEqual(rows[-1]["status"], "pending")
+        self.assertIn("deep_link", rows[-1]["payload"])
+        self.assertIn("pyszne", rows[-1]["payload"]["deep_link"].lower())
+
+    def test_approve_order_handoff_returns_link_not_fake_execution(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "ensure_council_dirs", return_value=None
+            ):
+                (root / "state").mkdir(parents=True)
+                (root / "logs").mkdir(parents=True)
+                action = ai_council.create_order_handoff_action(
+                    {"service": "Glovo", "items": "pad thai", "address": "Dom"}, chat_id="553"
+                )
+                response = ai_council.approve_response(action["action_id"])
+                rows = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertIn("nie składam i nie płacę", response)
+        self.assertIn("glovo", response.lower())
+        self.assertIn("Link:", response)
+        self.assertEqual(rows[-1]["status"], "executed")
+        self.assertIn("external_write_performed=false", rows[-1]["execution_result"])
+
+    def test_order_deep_link_fallback_is_search(self):
+        link = ai_council.order_deep_link({"service": "Pizzeria u Stefana", "items": "capricciosa"})
+        self.assertIn("google.com/search", link)
+
+    def test_extract_order_draft_strips_all_markers(self):
+        answer = (
+            'Ok.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni"}\n'
+            'ORDER_DRAFT: {"service":"Glovo","items":"sushi"}'
+        )
+        cleaned, payload = ai_council.extract_order_draft(answer)
+        self.assertNotIn("ORDER_DRAFT", cleaned)
+        self.assertEqual(payload["service"], "Pyszne")
+
+
+class WorkspaceActionRollbackTests(unittest.TestCase):
+    """L4.95: every approved workspace write is snapshotted and undoable via /undo."""
+
+    def _ctx(self, root):
+        return [
+            patch.object(ai_council, "WORKSPACES_DIR", root / "workspaces"),
+            patch.object(ai_council, "STATE_DIR", root / "state"),
+            patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"),
+            patch.object(ai_council, "LOG_DIR", root / "logs"),
+            patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"),
+            patch.object(ai_council, "ensure_council_dirs", return_value=None),
+            patch.object(ai_council, "memory_save", return_value={}),
+        ]
+
+    def test_overwrite_is_undoable(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            ctx = self._ctx(root)
+            with contextlib.ExitStack() as stack:
+                for c in ctx:
+                    stack.enter_context(c)
+                (root / "workspaces" / "shared").mkdir(parents=True)
+                (root / "state").mkdir(parents=True, exist_ok=True)
+                (root / "logs").mkdir(parents=True, exist_ok=True)
+                target = root / "workspaces" / "shared" / "notes.txt"
+                target.write_text("stara treść", encoding="utf-8")
+                action = {"action_id": "a1", "payload": {"path": "notes.txt", "content": "nowa treść"}}
+                executed = ai_council.execute_workspace_write_action(action)
+                self.assertEqual(executed["status"], "executed")
+                self.assertEqual(target.read_text(encoding="utf-8"), "nowa treść")
+                result = ai_council.workspace_action_undo("notes.txt")
+                self.assertIn("Cofnięto", result)
+                self.assertEqual(target.read_text(encoding="utf-8"), "stara treść")
+
+    def test_undo_of_new_file_removes_it(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with contextlib.ExitStack() as stack:
+                for c in self._ctx(root):
+                    stack.enter_context(c)
+                (root / "workspaces" / "shared").mkdir(parents=True)
+                (root / "state").mkdir(parents=True, exist_ok=True)
+                (root / "logs").mkdir(parents=True, exist_ok=True)
+                target = root / "workspaces" / "shared" / "fresh.txt"
+                action = {"action_id": "a2", "payload": {"path": "fresh.txt", "content": "hello"}}
+                ai_council.execute_workspace_write_action(action)
+                self.assertTrue(target.exists())
+                result = ai_council.workspace_action_undo("fresh.txt")
+                self.assertIn("Cofnięto", result)
+                self.assertFalse(target.exists())
+
+    def test_undo_route_and_no_backup_message(self):
+        route = ai_council.route_text("/undo notes.txt")
+        self.assertEqual(route["command"], "/undo")
+        self.assertEqual(route["prompt"], "notes.txt")
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with contextlib.ExitStack() as stack:
+                for c in self._ctx(root):
+                    stack.enter_context(c)
+                (root / "workspaces" / "shared").mkdir(parents=True)
+                self.assertIn("Brak backupu", ai_council.workspace_action_undo("nieistnieje.txt"))
+
+
+class RespondB64ThreadMemoryTests(unittest.TestCase):
+    """L4.94: the iMessage relay path must persist thread memory like Telegram."""
+
+    def test_respond_b64_reply_persists_turns_and_scrubs_debug(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "CLARIFICATIONS_FILE", root / "state" / "clarifications.jsonl"
+            ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
+                ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
+            ), patch.object(
+                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(
+                ai_council,
+                "build_response",
+                return_value='Jasne, gdzie jesteś i jaki budżet?\nroute={"command": "/chat"}\naudit_log=x',
+            ):
+                (root / "state").mkdir(parents=True, exist_ok=True)
+                reply = ai_council.respond_b64_reply("chce jedzenie")
+                rows = ai_council.read_jsonl(root / "state" / "conversations.jsonl")
+
+        self.assertEqual(reply, "Jasne, gdzie jesteś i jaki budżet?")
+        self.assertNotIn("route=", reply)
+        roles = [row["role"] for row in rows]
+        self.assertEqual(roles, ["user", "assistant"])
+        self.assertIn("chce jedzenie", rows[0]["text"])
+        self.assertIn("gdzie jesteś", rows[1]["text"])
+        self.assertNotIn("route=", rows[1]["text"])
+
+    def test_respond_b64_reply_runs_auto_fact_capture(self):
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
+                ai_council, "CLARIFICATIONS_FILE", root / "state" / "clarifications.jsonl"
+            ), patch.object(
+                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
+            ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(
+                ai_council, "build_response", return_value="Zapisane."
+            ), patch.object(ai_council, "maybe_auto_extract_facts") as capture:
+                (root / "state").mkdir(parents=True, exist_ok=True)
+                ai_council.respond_b64_reply("mój lot jest w piątek o 7 rano")
+
+        capture.assert_called_once_with("mój lot jest w piątek o 7 rano", "553")
 
 
 class DeterministicResearchRouteTests(unittest.TestCase):
