@@ -1,0 +1,35 @@
+{
+  "name": "evolution_factory_daily",
+  "recipe_version": "L4.104",
+  "cadence": "daily",
+  "description": "L4.104 fabryka ewolucji: zwiad (Grok) -> plan (Claude) -> gated wdrozenie przez self-repair albo improvement -> jedna krotka wiadomosc do Bartka.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "0 7 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "capture_improvement": false,
+  "planner_selectable": true,
+  "intent_keywords": [
+    "ewolucja",
+    "evolution",
+    "fabryka ulepszen",
+    "fabryka ulepszeń",
+    "rozwijaj się sam",
+    "rozwijaj sie sam"
+  ],
+  "integrations": [
+    "grok",
+    "claude",
+    "improvements",
+    "actions"
+  ],
+  "steps": [
+    {
+      "command": "/evolve",
+      "prompt": ""
+    }
+  ]
+}

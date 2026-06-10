@@ -5,6 +5,7 @@ import argparse
 import ast
 import base64
 import csv
+import importlib.util
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
 import difflib
@@ -137,6 +138,7 @@ SIDE_EFFECT_COMMANDS = {"/write", "/append", "/patch", "/propose"}
 BACKGROUND_COMMANDS = {
     "codex_default",
     "/self-repair",
+    "/evolve",
     "@codex",
     "@claude-flow",
     "/flow",
@@ -161,6 +163,7 @@ PROGRESS_STAGE_PERCENT = {
 }
 READONLY_RECIPE_COMMANDS = {
     "/health",
+    "/self-repair",  # L4.104 fix: nightly self-repair recipe was POLICY-BLOCKED since L4.101 (never ran)
     "/selftest",
     "/front",
     "/status",
@@ -206,6 +209,7 @@ READONLY_RECIPE_COMMANDS = {
     "@claude-flow",
     "/flow",
     "/council",
+    "/evolve",
 }
 RECIPE_CONNECTOR_READ_ACTIONS = {"check", "status", "auth", "setup", "connect", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
 INTEGRATION_DRAFT_CONNECTORS = {"gmail", "calendar", "drive", "github"}
@@ -269,6 +273,8 @@ LOOP_SYNTHESIS_VERSION = "L4.55"
 CLAUDE_FLOW_WATCHDOG_VERSION = "L4.56"
 IMPROVEMENT_REPAIR_VERSION = "L4.57"
 GROK_BUDGET_HYGIENE_VERSION = "L4.58"
+DEEPAGENTS_ADAPTER_VERSION = "L4.104"
+EVOLUTION_FACTORY_VERSION = "L4.104"
 GENERIC_IMPROVEMENT_TITLES = {
     "research gotowy",
     "plan workflow gotowy",
@@ -366,6 +372,7 @@ AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS = {
 DEFAULT_RECIPE_MANAGED_KEYS = {
     "error_audit_twice_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
     "feature_evolution_loop": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
+    "evolution_factory_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
 }
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
@@ -5706,6 +5713,22 @@ def default_recipes() -> dict[str, dict]:
                 },
             ],
         },
+        "evolution_factory_daily": {
+            "name": "evolution_factory_daily",
+            "recipe_version": EVOLUTION_FACTORY_VERSION,
+            "cadence": "daily",
+            "description": "L4.104 fabryka ewolucji: zwiad (Grok) -> plan (Claude) -> gated wdrozenie przez self-repair albo improvement -> jedna krotka wiadomosc do Bartka.",
+            "enabled": True,
+            # 7:00 czasu lokalnego hosta: po quiet hours — fabryka nie pisze do Bartka w nocy.
+            "trigger": {"type": "schedule", "cron": f"0 {max(0, min(23, int_cfg('AI_COUNCIL_EVOLUTION_HOUR_UTC', 7)))} * * *"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "capture_improvement": False,
+            "planner_selectable": True,
+            "intent_keywords": ["ewolucja", "evolution", "fabryka ulepszen", "fabryka ulepszeń", "rozwijaj się sam", "rozwijaj sie sam"],
+            "integrations": ["grok", "claude", "improvements", "actions"],
+            "steps": [{"command": "/evolve", "prompt": ""}],
+        },
         "project_next_action": {
             "name": "project_next_action",
             "description": "Claude Flow wybiera najbliższy bezpieczny krok dla projektu.",
@@ -7533,6 +7556,134 @@ def codex_worker_delegate_response(prompt: str, chat_id: str = "") -> str:
     return codex_worker_pack_response(text, chat_id=chat_id)
 
 
+def deepagent_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_DEEPAGENT_ENABLED", False)
+
+
+def deepagent_model() -> str:
+    return cfg("AI_COUNCIL_DEEPAGENT_MODEL", "").strip()
+
+
+def deepagent_module_available() -> bool:
+    return importlib.util.find_spec("deepagents") is not None
+
+
+def deepagent_status_dict() -> dict:
+    model = deepagent_model()
+    return {
+        "version": DEEPAGENTS_ADAPTER_VERSION,
+        "enabled": deepagent_enabled(),
+        "installed": deepagent_module_available(),
+        "model": model,
+        "armed": deepagent_enabled() and deepagent_module_available() and bool(model),
+    }
+
+
+def deepagent_status_response() -> str:
+    status = deepagent_status_dict()
+    state = "armed" if status["armed"] else ("gated" if status["enabled"] else "off")
+    lines = [
+        f"[DeepAgent] {DEEPAGENTS_ADAPTER_VERSION} {state}",
+        f"enabled: {status['enabled']} (AI_COUNCIL_DEEPAGENT_ENABLED)",
+        f"installed: {status['installed']} (optional: deepagents>=0.6.8,<0.7)",
+        f"model: {status['model'] or 'unset'} (AI_COUNCIL_DEEPAGENT_MODEL)",
+        "scope: ręczny eksperyment /deepagent; nie zastępuje brain, /delegate ani approval gates.",
+        "safety: pierwsza wersja nie podaje custom tools; built-in filesystem jest blokowany przez deny-all permissions.",
+        "limits: AI_COUNCIL_DEEPAGENT_DAILY_CALL_LIMIT oraz AI_COUNCIL_DEEPAGENT_ESTIMATED_COST_USD.",
+    ]
+    if not status["installed"]:
+        lines.append('install: python -m pip install "deepagents>=0.6.8,<0.7"')
+    if status["installed"] and not status["model"]:
+        lines.append("next: ustaw AI_COUNCIL_DEEPAGENT_MODEL na model LangChain z tool calling + provider credentials.")
+    return "\n".join(lines)
+
+
+def deepagent_system_prompt(prompt: str, chat_id: str = "") -> str:
+    memory_context = memory_context_for_prompt(prompt)
+    memory_block = f"\n\nKontekst z pamięci AI Council:\n{memory_context}" if memory_context else ""
+    chat_hint = f"\nchat_id_hash: {short_hash(chat_id)}" if chat_id else ""
+    return (
+        "Jesteś eksperymentalnym DeepAgentem wewnątrz prywatnego Bartek Agent OS. "
+        "Odpowiadasz po polsku, krótko i operacyjnie. Nie wykonuj zewnętrznych write/send/publish, "
+        "nie dotykaj sekretów, auth, DNS, billing, płatności, kontaktów ani daemonów. "
+        "Dla zmian w kodzie zaproponuj plan i testy; właściwe wdrożenie idzie przez /delegate i host audit. "
+        "Jeżeli potrzebujesz plików lub shell access, poproś o jawne przejście na bezpieczny, osobny task."
+        f"{chat_hint}{memory_block}"
+    )
+
+
+def create_deepagent_runner(model: str, system_prompt: str):
+    from deepagents import FilesystemPermission, create_deep_agent
+
+    return create_deep_agent(
+        model=model,
+        tools=[],
+        system_prompt=system_prompt,
+        permissions=[
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ],
+    )
+
+
+def deepagent_extract_text(result) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        messages = result.get("messages")
+        if isinstance(messages, list) and messages:
+            last = messages[-1]
+            content = last.get("content") if isinstance(last, dict) else getattr(last, "content", "")
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        parts.append(str(item.get("text") or item.get("content") or ""))
+                    else:
+                        parts.append(str(item))
+                return "\n".join(part for part in parts if part.strip()).strip()
+            return str(content or "").strip()
+        if result.get("output"):
+            return str(result["output"]).strip()
+    return str(result or "").strip()
+
+
+def deepagent_response(prompt: str, chat_id: str = "") -> str:
+    clean = prompt.strip()
+    if not clean or normalize_intent_text(clean) in {"status", "health"}:
+        return deepagent_status_response()
+    status = deepagent_status_dict()
+    if not status["enabled"]:
+        return deepagent_status_response()
+    if not status["installed"]:
+        return deepagent_status_response()
+    if not status["model"]:
+        return deepagent_status_response()
+
+    allowed, reason, reservation = reserve_operator_call("deepagent", detail="deepagent invoke")
+    if not allowed:
+        return f"[DeepAgent] blocked: {compact_line(reason, 260)}"
+    started = time.time()
+    try:
+        agent = create_deepagent_runner(str(status["model"]), deepagent_system_prompt(clean, chat_id=chat_id))
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": clean}]},
+            config={"configurable": {"thread_id": f"ai-council-deepagent-{short_hash(chat_id or 'cli')}"}},
+        )
+    except Exception as exc:
+        duration_ms = int((time.time() - started) * 1000)
+        detail = compact_line(redact_secrets(str(exc)), 240)
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=detail)
+        record_error("deepagent", message=detail, severity="warning")
+        return f"[DeepAgent] failed: {detail}"
+
+    duration_ms = int((time.time() - started) * 1000)
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="deepagent invoke")
+    text = sanitize_brain_reply(deepagent_extract_text(result))
+    if not text:
+        text = "DeepAgent zwrócił pustą odpowiedź."
+    return f"[DeepAgent] {text}"
+
+
 def capabilities_response() -> str:
     ensure_council_dirs()
     return (
@@ -7645,6 +7796,8 @@ def health_response() -> str:
     nudges_open = [row for row in latest_nudges(limit=50) if row.get("status") in {"open", "sent"}]
     route_counts = route_source_summary()
     route_counts_text = ", ".join(f"{key}:{route_counts[key]}" for key in sorted(route_counts)) or "brak"
+    deepagent_status = deepagent_status_dict()
+    deepagent_state = "armed" if deepagent_status["armed"] else ("gated" if deepagent_status["enabled"] else "off")
     offset = read_offset()
     lines = [
         "[Council] Health",
@@ -7659,6 +7812,7 @@ def health_response() -> str:
         f"control: kill={control.get('global_kill_switch')} models_paused={control.get('model_calls_paused')} scheduler_paused={control.get('scheduled_recipes_paused')}",
         f"llm_router: {'on' if llm_router_enabled() and cfg('XAI_API_KEY') else 'off'}",
         f"front: claude_delegate={CLAUDE_DELEGATE_HANDOFF_VERSION} poke_handoff={POKE_RESEARCH_HANDOFF_VERSION} poke_prepass={POKE_RESEARCH_PREPASS_VERSION} poke_next={POKE_NEXT_FRONT_VERSION} grok_budget_hygiene={GROK_BUDGET_HYGIENE_VERSION} improvement_repair={IMPROVEMENT_REPAIR_VERSION} grok_research={GROK_RESEARCH_VERSION}:x_web claude_watchdog={CLAUDE_FLOW_WATCHDOG_VERSION} poke_gap={POKE_GAP_VERSION} memory_front={POKE_FRONT_VERSION} front_quality={FRONT_QUALITY_VERSION} recipe_creator={RECIPE_CREATOR_VERSION} recipe_activation={RECIPE_ACTIVATION_VERSION} recipe_test_followup={RECIPE_TEST_FOLLOWUP_VERSION} loop_synthesis={LOOP_SYNTHESIS_VERSION} delegate_loop={CODEX_WORKER_VERSION}:{'armed' if codex_worker_enabled() else 'gated'} loop_cadence=on default_front=on shortcuts_recipe_pack={SHORTCUTS_VERSION} shortcuts_guided_setup=on agent_mobile_advisor={AGENT_INBOX_VERSION} provider_read_before_write={'on' if provider_read_before_write_enabled() else 'off'} drive_document_executor={'armed' if drive_file_write_enabled() and google_oauth_configured() else 'gated'} host_contract=on provider_dedupe=on action_cards=on poke_gap=on safe_autostart={'on' if action_planner_safe_autostart_enabled() else 'off'} github_issue_executor={'armed' if github_issue_write_enabled() and github_token() else 'gated'} gmail_draft_executor={'armed' if gmail_draft_write_enabled() and google_oauth_configured() else 'gated'} calendar_event_executor={'armed' if calendar_event_write_enabled() and google_oauth_configured() else 'gated'} provider_write_gate=on provider_manifests=on execution_packs=on drafts=on shortcuts=on agent_inbox=on local_short_chat=on progress_timeline=on poke_chat_llm={'gated' if poke_chat_llm_configured() else 'off'} imessage_bridge={IMESSAGE_BRIDGE_VERSION}:{imessage_bridge_status_label()} mail_bridge={'armed' if mail_enabled() and on_macos() else 'gated'} command=/front",
+        f"deepagent: {DEEPAGENTS_ADAPTER_VERSION}:{deepagent_state} installed={deepagent_status['installed']} model={deepagent_status['model'] or 'unset'} command=/deepagent",
         f"route_sources: {route_counts_text}",
     ]
     for name, item in status.items():
@@ -15947,6 +16101,8 @@ def route_text(text: str) -> dict:
         return {"command": "/poke-gap", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "poke_gap"}
     if lower.startswith("/self-repair"):
         return {"command": "/self-repair", "operators": ["host", "claude"], "prompt": stripped[12:].strip(), "mode": "self_repair"}
+    if lower.startswith("/evolve"):
+        return {"command": "/evolve", "operators": ["host"], "prompt": stripped[7:].strip(), "mode": "evolution"}
     if lower.startswith("/imessage") or lower.startswith("/imsg"):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/imessage", "operators": ["host"], "prompt": prompt, "mode": "imessage"}
@@ -15968,6 +16124,8 @@ def route_text(text: str) -> dict:
             "prompt": stripped[9:].strip(),
             "mode": "delegate",
         }
+    if lower.startswith("/deepagent"):
+        return {"command": "/deepagent", "operators": ["deepagent", "host"], "prompt": stripped[10:].strip(), "mode": "deepagent"}
     if lower == "/shortcuts" or lower.startswith("/shortcuts ") or lower == "/shortcut" or lower.startswith("/shortcut "):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/shortcuts", "operators": ["host"], "prompt": prompt, "mode": "shortcuts"}
@@ -18015,6 +18173,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return poke_gap_response(prompt)
     if command == "/self-repair":
         return run_self_repair_once(send=False, chat_id=chat_id)
+    if command == "/evolve":
+        return evolution_cycle(send=True)
     if command == "/imessage":
         return imessage_response(prompt)
     if command == "/setup":
@@ -18031,6 +18191,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return shortcuts_response(prompt)
     if command == "/delegate":
         return codex_worker_delegate_response(prompt, chat_id=chat_id)
+    if command == "/deepagent":
+        return deepagent_response(prompt, chat_id=chat_id)
     if command == "/drafts":
         return integration_drafts_response(prompt)
     if command == "/plan-action":
@@ -18196,6 +18358,11 @@ def operator_binary_status() -> dict:
             "budget_cap": cfg("AI_COUNCIL_CLAUDE_FLOW_MAX_BUDGET_USD", ""),
         },
         "grok": {"configured": bool(cfg("XAI_API_KEY"))},
+        "deepagent": {
+            "configured": deepagent_module_available(),
+            "enabled": deepagent_enabled(),
+            "model": deepagent_model(),
+        },
     }
 
 
@@ -18820,7 +18987,22 @@ def self_repair_source_excerpt(context: str, radius: int = 60) -> str:
     return "\n".join(chunks)[:12000]
 
 
+def self_repair_goal_section(candidate: dict) -> list[str]:
+    """L4.104: shared prompt section for a FEATURE goal (Evolution Factory) routed
+    through the same gated repair pipeline. Not an error — one small improvement."""
+    return [
+        "",
+        "ZADANIE DO WDROZENIA (L4.104 evolution — to NIE jest blad, tylko jedno male ulepszenie):",
+        f"tytul: {candidate.get('title') or candidate.get('context')}",
+        f"zadanie: {candidate.get('message')}",
+        "Wdroz MINIMALNA dzialajaca wersje tego ulepszenia i dodaj/rozszerz test w tests/.",
+        "Jezeli zadanie jest za duze, niejasne albo ryzykowne, odpowiedz: NO_SAFE_PATCH <powod>.",
+    ]
+
+
 def self_repair_prompt(candidate: dict) -> str:
+    if candidate.get("kind") == "goal":
+        return "\n".join([SELF_REPAIR_CONTRACT, *self_repair_goal_section(candidate)])
     excerpt = self_repair_source_excerpt(str(candidate.get("context") or ""))
     parts = [
         SELF_REPAIR_CONTRACT,
@@ -18839,6 +19021,8 @@ def self_repair_prompt(candidate: dict) -> str:
 
 
 def self_repair_tools_prompt(candidate: dict) -> str:
+    if candidate.get("kind") == "goal":
+        return "\n".join([SELF_REPAIR_TOOLS_CONTRACT, *self_repair_goal_section(candidate)])
     parts = [
         SELF_REPAIR_TOOLS_CONTRACT,
         "",
@@ -19236,16 +19420,33 @@ def claude_self_repair_response(prompt: str) -> str | None:
     return proc.stdout
 
 
-def run_self_repair_once(send: bool = False, chat_id: str = "") -> str:
+def run_self_repair_once(send: bool = False, chat_id: str = "", goal: dict | None = None) -> str:
     if not self_repair_enabled():
         return "[Self-Repair] wylaczony (AI_COUNCIL_SELF_REPAIR=false)."
     paused = control_paused_reason("model")
     if paused:
         return f"[Self-Repair] pominiety: {paused}"
-    candidates = self_repair_candidates()
-    if not candidates:
-        return "[Self-Repair] Brak kandydatow — errors bez swiezych, nieprobowanych wzorcow."
-    candidate = candidates[0]
+    if goal is not None:
+        # L4.104 Evolution Factory: a FEATURE task rides the SAME gated pipeline
+        # (isolated copy -> full pytest -> R2 action / guarded auto-apply). Only
+        # the candidate source differs; every guard downstream stays untouched.
+        task = str(goal.get("task") or "").strip()
+        if not task:
+            return "[Self-Repair] goal bez zadania — nic do zrobienia."
+        candidate = {
+            "context": compact_line(str(goal.get("context") or "goal:feature"), 120),
+            "count": 0,
+            "message": task,
+            "traceback": "",
+            "exception_type": "",
+            "kind": "goal",
+            "title": compact_line(str(goal.get("title") or ""), 140),
+        }
+    else:
+        candidates = self_repair_candidates()
+        if not candidates:
+            return "[Self-Repair] Brak kandydatow — errors bez swiezych, nieprobowanych wzorcow."
+        candidate = candidates[0]
     context = str(candidate.get("context") or "")
     repair_id = f"repair-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(context + str(time.time_ns()))[:6]}"
     self_repair_record(repair_id, context, "started", detail=f"count={candidate.get('count')} tools={self_repair_tools_enabled()}")
@@ -19436,6 +19637,300 @@ def self_repair_undo(repair_id: str) -> str:
     return f"[Self-Repair] Przywrocono z backupu: {', '.join(restored) or '(nic)'}."
 
 
+# ---------------------------------------------------------------------------
+# L4.104 — EVOLUTION FACTORY (5 stacji: ZWIAD -> LUSTRO -> PLAN -> BUDOWA ->
+# KONTROLA). BUDOWA i KONTROLA to ISTNIEJACY gated self-repair pipeline
+# (izolowana kopia, pelny pytest, guardy, R2 /approve) — tu jest tylko
+# orkiestracja + jedna krotka ludzka wiadomosc do Bartka dziennie.
+# ---------------------------------------------------------------------------
+
+EVOLUTION_PLAN_CONTRACT = """Jestes planistą rozwoju prywatnego asystenta AI Bartka (jednoplikowy ai_council.py, Python stdlib, Telegram+iMessage).
+Dostajesz: raport zwiadu (nowosci u innych agentow), top bledy z 24h, metryke uzycia (tury Bartka) i ostatnie improvements.
+Wybierz JEDNA najwartosciowsza zmiane DLA UZYTKOWNIKA (nie kosmetyke kodu, nie refaktor) i odpowiedz WYLACZNIE jednym obiektem JSON, bez markdown:
+{"title": "<krotki tytul>", "why_for_bartek": "<1 proste zdanie po polsku, zero zargonu>", "kind": "self_repair" | "manual", "task": "<precyzyjne zadanie techniczne dla pipeline'u napraw: co dodac/zmienic w ai_council.py + jaki test>"}
+kind=self_repair tylko gdy zmiana jest mala, samowystarczalna i mierzalna testem; w innym wypadku kind=manual."""
+
+
+def evolution_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_EVOLUTION_ENABLED", True)
+
+
+def _evolution_marker_path() -> Path:
+    return STATE_DIR / "evolution_factory.json"
+
+
+def _evolution_marker_load() -> str:
+    try:
+        data = json.loads(_evolution_marker_path().read_text(encoding="utf-8"))
+        return str(data.get("last_cycle_day") or "")
+    except (OSError, json.JSONDecodeError, AttributeError, ValueError):
+        return ""
+
+
+def _evolution_marker_save(day: str) -> None:
+    p = _evolution_marker_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps({"last_cycle_day": day, "updated_at": utc_now()}), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def evolution_research_report_path(now: datetime | None = None) -> Path:
+    day = (now or datetime.now(timezone.utc)).strftime("%Y%m%d")
+    return REPORTS_DIR / f"evolution-research-{day}.md"
+
+
+def evolution_research_pack() -> str:
+    """STACJA ZWIAD: jedno wywolanie Groka (reserve/finalize wewnatrz grok_response).
+    Zapisuje raport do REPORTS_DIR/evolution-research-YYYYMMDD.md.
+    Grok niedostepny/zablokowany -> '' i cykl idzie dalej (fail-safe)."""
+    path = evolution_research_report_path()
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    prompt = (
+        "Research brief (nie 4 zdania): zeskanuj NOWOSCI i wzorce dla osobistych agentow AI "
+        "z ostatnich tygodni — X/Twitter, Reddit, GitHub trending, oficjalne blogi. "
+        "Fokus: iMessage/Poke-like UX, pamiec dlugoterminowa, narzedzia/skille agentow, "
+        "integracje (mail/kalendarz/zakupy), proaktywnosc, lokalna egzekucja. "
+        "Zwroc 5-8 KONKRETNYCH pomyslow do skopiowania w prywatnym agencie (Telegram+iMessage, "
+        "jednoplikowy Python), kazdy z 1-zdaniowym uzasadnieniem wartosci dla uzytkownika. "
+        "Lista numerowana, bez lania wody."
+    )
+    try:
+        raw = grok_response(prompt, max_chars=6000)
+    except Exception as exc:
+        record_error("evolution_research", exc=exc, severity="warning")
+        return ""
+    if not raw or not raw.startswith("[Grok]\n"):
+        record_error("evolution_research", message=compact_line(raw or "pusta odpowiedz", 240), severity="warning")
+        return ""
+    text = raw[len("[Grok]\n"):].strip()
+    if not text:
+        return ""
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# Evolution research {today_utc()}\n\n{text}\n", encoding="utf-8")
+    except OSError as exc:
+        record_error("evolution_research_write", exc=exc, severity="warning")
+    return text
+
+
+def evolution_user_turn_counts(now: datetime | None = None) -> dict:
+    """Metryka uzycia: ile tur BARTKA (role=user) dzis i wczoraj. Tail-first."""
+    now = now or datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    yesterday = (now - timedelta(days=1)).date().isoformat()
+    counts = {"today": 0, "yesterday": 0}
+    for row in iter_jsonl_reverse(CONVERSATIONS_FILE):
+        day = str(row.get("created_at") or "")[:10]
+        if not day or day > today:
+            continue
+        if day < yesterday:
+            break  # plik jest chronologiczny — starsze wpisy nas nie interesuja
+        if row.get("role") != "user":
+            continue
+        counts["today" if day == today else "yesterday"] += 1
+    return counts
+
+
+def evolution_top_errors(limit: int = 3) -> list[str]:
+    grouped: dict[str, int] = {}
+    for row in actionable_error_rows(error_rows(days=1)):
+        context = str(row.get("context") or "").strip() or "(bez kontekstu)"
+        grouped[context] = grouped.get(context, 0) + 1
+    ranked = sorted(grouped.items(), key=lambda kv: -kv[1])[:limit]
+    return [f"{context} ({count}x)" for context, count in ranked]
+
+
+def evolution_plan_prompt(research: str = "") -> str:
+    counts = evolution_user_turn_counts()
+    errors = evolution_top_errors()
+    improvements = latest_improvements(limit=3)
+    parts = ["WSAD DO PLANU EWOLUCJI:"]
+    parts.append(f"Uzycie: tury Bartka dzis={counts['today']}, wczoraj={counts['yesterday']}.")
+    parts.append("Top bledy actionable 24h: " + ("; ".join(errors) if errors else "(brak)"))
+    if improvements:
+        parts.append("Ostatnie improvements:")
+        parts.extend(
+            f"- [{item.get('status', 'open')}] {compact_line(str(item.get('title') or ''), 120)}"
+            for item in improvements
+        )
+    else:
+        parts.append("Ostatnie improvements: (brak)")
+    if research:
+        parts.append("\nRAPORT ZWIADU:\n" + research[:8000])
+    else:
+        parts.append("\nRAPORT ZWIADU: (Grok niedostepny — planuj z bledow, uzycia i improvements)")
+    return "\n".join(parts)
+
+
+def parse_evolution_plan(raw: str) -> dict | None:
+    """Defensywne parsowanie JSON planu. Zepsuty/niepelny JSON -> None."""
+    text = str(raw or "")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    title = compact_line(str(data.get("title") or ""), 140)
+    task = str(data.get("task") or "").strip()
+    kind = str(data.get("kind") or "").strip().lower()
+    if not title or not task or kind not in {"self_repair", "manual"}:
+        return None
+    return {
+        "title": title,
+        "why_for_bartek": compact_line(str(data.get("why_for_bartek") or ""), 220),
+        "kind": kind,
+        "task": task,
+    }
+
+
+def evolution_claude_plan(prompt: str) -> str | None:
+    """Jedno wywolanie Claude CLI (subskrypcja, bez tools) — wzor poke_chat_claude_response."""
+    started = time.time()
+    allowed, reason, reservation = reserve_operator_call("claude", detail="evolution")
+    if not allowed:
+        record_error("evolution_reserve", message=reason, severity="warning")
+        return None
+    command = [
+        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--append-system-prompt",
+        EVOLUTION_PLAN_CONTRACT,
+    ]
+    model = (cfg("AI_COUNCIL_EVOLUTION_MODEL") or cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_MODEL")).strip()
+    if model:
+        command.extend(["--model", model])
+    command.extend(["-p", prompt])
+    timeout = int_cfg("AI_COUNCIL_EVOLUTION_TIMEOUT", 180)
+    try:
+        proc = subprocess.run(
+            command, text=True, encoding="utf-8", errors="replace", input="",
+            capture_output=True, timeout=timeout, cwd=str(PROJECT_DIR), env=operator_env(),
+        )
+    except subprocess.TimeoutExpired:
+        finalize_operator_call(reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="evolution plan timeout")
+        record_error("evolution_plan", message=f"timeout po {timeout}s", severity="warning")
+        return None
+    except FileNotFoundError:
+        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="evolution claude missing")
+        return None
+    duration_ms = int((time.time() - started) * 1000)
+    if proc.returncode != 0:
+        detail = compact_line(redact_secrets(proc.stderr or proc.stdout or ""), 220)
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"evolution: {detail}")
+        record_error("evolution_plan", message=detail or f"exit {proc.returncode}", severity="warning")
+        return None
+    answer = clean_operator_output(redact_secrets(proc.stdout or "")).strip()
+    if not answer:
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="evolution: empty response")
+        return None
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="evolution plan")
+    return answer
+
+
+def evolution_analyze_and_plan(research: str = "") -> dict | None:
+    """STACJE LUSTRO+PLAN: wsad (zwiad + bledy + uzycie + improvements) -> jedna
+    najwartosciowsza zmiana jako JSON. Zepsuty JSON / brak Claude -> None."""
+    raw = evolution_claude_plan(evolution_plan_prompt(research))
+    if raw is None:
+        return None
+    plan = parse_evolution_plan(raw)
+    if plan is None:
+        record_error("evolution_plan_parse", message=compact_line(raw, 240), severity="warning")
+    return plan
+
+
+def evolution_usage_pulse_message() -> str:
+    """PULS UZYCIA: 0 tur Bartka dzis -> zacheta z JEDNA konkretna propozycja
+    uzycia, oparta o pamiec faktow (zamiast raportu z fabryki)."""
+    fact_value = ""
+    try:
+        facts = active_user_facts(limit=3)
+        if facts:
+            fact_value = compact_line(str(facts[0].get("value") or ""), 90)
+    except Exception:
+        fact_value = ""
+    if fact_value:
+        proposal = f"Napisz np.: „co u mnie z tym: {fact_value}?” — sprawdzę i podpowiem."
+    else:
+        proposal = "Napisz np.: „przypomnij mi jutro o 9 o najważniejszej rzeczy dnia”."
+    return f"Hej, dziś jeszcze nie rozmawialiśmy. {proposal}"
+
+
+def evolution_result_message(plan: dict | None, detail: str) -> str:
+    """JEDNA krotka ludzka wiadomosc po polsku — niezaleznie od wyniku cyklu."""
+    if not plan:
+        return "Dziś w nocy przejrzałem nowości i błędy — nie znalazłem jednej pewnej zmiany. Jutro spróbuję znowu."
+    why = plan.get("why_for_bartek") or ""
+    if plan["kind"] == "self_repair":
+        if "ZASTOSOWANY automatycznie" in detail:
+            return compact_line(f"Dziś w nocy dodałem: {plan['title']}. {why} Sprawdź — po prostu do mnie napisz.", 420)
+        match = re.search(r"/approve (\S+)", detail)
+        if match:
+            return compact_line(f"Mam gotową zmianę: {plan['title']}. {why} Wdrożyć? Odpisz: /approve {match.group(1)}", 420)
+        return compact_line(f"Pracowałem nad: {plan['title']}, ale jeszcze nie jest gotowe do wdrożenia. {why}", 420)
+    return compact_line(f"Mam propozycję: {plan['title']}. {why} Zapisałem ją na liście ulepszeń (/improvements).", 420)
+
+
+def evolution_cycle(send: bool = False, force: bool = False) -> str:
+    """Orkiestracja fabryki: zwiad -> plan -> (gated self-repair | improvement) ->
+    jedna wiadomosc do Bartka. Marker dzienny: MAKS 1 cykl i 1 wiadomosc dziennie."""
+    if not evolution_enabled():
+        return "[Evolution] wylaczona (AI_COUNCIL_EVOLUTION_ENABLED=false)."
+    today = today_utc()
+    if not force and _evolution_marker_load() == today:
+        return "[Evolution] dzisiejszy cykl juz byl (maks 1 dziennie)."
+    _evolution_marker_save(today)  # marker NAJPIERW — nigdy nie spamujemy przy retry/crashu
+    research = evolution_research_pack()
+    plan = evolution_analyze_and_plan(research)
+    detail = ""
+    if plan and plan["kind"] == "self_repair":
+        slug = re.sub(r"[^a-z0-9]+", "-", plan["title"].lower()).strip("-")[:40] or "feature"
+        try:
+            detail = run_self_repair_once(
+                send=False,
+                goal={"context": f"goal:{slug}", "task": plan["task"], "title": plan["title"]},
+            )
+        except Exception as exc:
+            record_error("evolution_build", exc=exc)
+            detail = f"self-repair wyjatek: {exc}"
+    elif plan:
+        item = create_improvement(
+            source="evolution_factory",
+            title=plan["title"],
+            summary=f"{plan.get('why_for_bartek') or ''}\n\nZadanie: {plan['task']}".strip(),
+            priority="P2",
+        )
+        detail = f"improvement {item.get('improvement_id')} zapisany"
+    counts = evolution_user_turn_counts()
+    if counts.get("today", 0) == 0:
+        message = evolution_usage_pulse_message()
+    else:
+        message = evolution_result_message(plan, detail)
+    if send:
+        deliver_proactive(cfg("TELEGRAM_ALLOWED_CHAT_ID"), message)
+    summary = f"[Evolution] {message}"
+    if detail:
+        summary += f"\nszczegoly: {compact_line(detail, 300)}"
+    return summary
+
+
 def doctor() -> int:
     log_startup()
     ok = print_env_status()
@@ -19513,6 +20008,9 @@ def main() -> int:
     sr.add_argument("--send", action="store_true", help="Deliver the proposal over the proactive channel (iMessage primary)")
     sru = sub.add_parser("self-repair-undo", help="L4.101: restore production files from a self-repair backup")
     sru.add_argument("--id", required=True, dest="repair_id")
+    evo = sub.add_parser("evolution", help="L4.104: one Evolution Factory cycle (zwiad -> plan -> gated build -> one message)")
+    evo.add_argument("--send", action="store_true", help="Deliver the daily message over the proactive channel (iMessage primary)")
+    evo.add_argument("--force", action="store_true", help="Ignore the daily marker (manual testing)")
     respb64 = sub.add_parser("respond-b64", help="respond() to a base64 message and print ONLY the reply (quote-safe iMessage inbound relay)")
     respb64.add_argument("--b64", required=True)
     respb64.add_argument("--sender", default="", help="iMessage thread handle (verified against AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS)")
@@ -19568,6 +20066,9 @@ def main() -> int:
         return 0
     if args.cmd == "self-repair-undo":
         print(self_repair_undo(args.repair_id))
+        return 0
+    if args.cmd == "evolution":
+        print(evolution_cycle(send=args.send, force=args.force))
         return 0
     if args.cmd == "respond-b64":
         try:
