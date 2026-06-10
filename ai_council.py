@@ -630,12 +630,41 @@ def compact_line(value: str, limit: int = 100) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# L4.100 (audit 1.2): rows we could not persist anywhere are no longer silent.
+# Counter is process-local, surfaced via the .dropped.jsonl companion file which
+# the reconcile pass self-heals back into the main file when I/O recovers.
+APPEND_JSONL_DROPS = 0
+
+
+def _write_sidecar_line(sidecar: Path, line: str) -> None:
+    with sidecar.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def _note_append_drop(path: Path, line: str, exc: BaseException) -> None:
+    """Last-resort visibility for a row that could not be persisted. MUST NOT
+    raise and MUST NOT call record_error (record_error re-enters append_jsonl)."""
+    global APPEND_JSONL_DROPS
+    APPEND_JSONL_DROPS += 1
+    try:
+        _write_sidecar_line(path.with_name(path.name + ".dropped.jsonl"), line)
+    except OSError:
+        try:
+            print(f"[ai-council] DROPPED jsonl row for {path.name}: {exc}", file=sys.stderr)
+        except Exception:
+            pass
+
+
 def _reconcile_append_sidecars(path: Path) -> None:
-    """Merge any pending per-process sidecar lines into `path`. The caller MUST
-    already hold the file lock. Sidecars exist only when a prior append hit a
-    lock timeout (see append_jsonl); this self-heals them in order."""
+    """Merge any pending per-process sidecar lines (and .dropped.jsonl rows from
+    earlier I/O failures) into `path`. The caller MUST already hold the file
+    lock. Sidecars exist only when a prior append hit a lock timeout (see
+    append_jsonl); this self-heals them in order."""
     try:
         sidecars = sorted(path.parent.glob(path.name + ".sidecar-*.jsonl"))
+        dropped = path.with_name(path.name + ".dropped.jsonl")
+        if dropped.exists():
+            sidecars.append(dropped)
     except OSError:
         return
     for sidecar in sidecars:
@@ -646,9 +675,17 @@ def _reconcile_append_sidecars(path: Path) -> None:
                     data += "\n"
                 with path.open("a", encoding="utf-8") as f:
                     f.write(data)
-            sidecar.unlink()
+            try:
+                sidecar.unlink()
+            except OSError:
+                # If we appended but cannot unlink, the next reconcile would
+                # DUPLICATE these rows (cost ledger!). Truncate instead.
+                try:
+                    sidecar.write_text("", encoding="utf-8")
+                except OSError as exc:
+                    print(f"[ai-council] sidecar stuck (possible duplicates): {sidecar.name}: {exc}", file=sys.stderr)
         except OSError:
-            pass
+            continue
 
 
 def append_jsonl(path: Path, payload: dict) -> None:
@@ -665,13 +702,12 @@ def append_jsonl(path: Path, payload: dict) -> None:
             _reconcile_append_sidecars(path)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
-    except TimeoutError:
+    except TimeoutError as exc:
         try:
-            sidecar = path.with_name(f"{path.name}.sidecar-{os.getpid()}.jsonl")
-            with sidecar.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            _write_sidecar_line(path.with_name(f"{path.name}.sidecar-{os.getpid()}.jsonl"), line)
         except OSError:
-            pass
+            # audit 1.2: a cost-ledger/audit row must never vanish silently.
+            _note_append_drop(path, line, exc)
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -7478,6 +7514,20 @@ def selftest_response() -> str:
     return "\n".join(lines)
 
 
+def _migrate_memory_columns(conn: sqlite3.Connection) -> None:
+    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
+    for col_ddl in (
+        "status TEXT NOT NULL DEFAULT 'active'",
+        "confidence REAL NOT NULL DEFAULT 1.0",
+        "norm_key TEXT NOT NULL DEFAULT ''",
+        "chat_id_hash TEXT NOT NULL DEFAULT ''",
+    ):
+        col = col_ddl.split()[0]
+        if col not in existing_cols:
+            # col_ddl values are hardcoded literals above (not user input).
+            conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {col_ddl}")
+
+
 def init_memory_db() -> None:
     ensure_council_dirs()
     with sqlite3.connect(MEMORY_DB) as conn:
@@ -7503,18 +7553,11 @@ def init_memory_db() -> None:
         # L4.65: additive migration so pre-existing memory DBs gain the
         # user-fact columns without data loss.
         try:
-            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
-            for col_ddl in (
-                "status TEXT NOT NULL DEFAULT 'active'",
-                "confidence REAL NOT NULL DEFAULT 1.0",
-                "norm_key TEXT NOT NULL DEFAULT ''",
-                "chat_id_hash TEXT NOT NULL DEFAULT ''",
-            ):
-                col = col_ddl.split()[0]
-                if col not in existing_cols:
-                    conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {col_ddl}")
-        except sqlite3.Error:
-            pass
+            _migrate_memory_columns(conn)
+        except sqlite3.Error as exc:
+            # audit 1.2: a failed migration must be visible — later queries on a
+            # missing column blow up far from this root cause.
+            record_error("memory_db_migration", exc=exc, severity="warning")
         try:
             conn.execute(
                 """
@@ -8770,7 +8813,10 @@ def project_memory_rebuild(limit: int = 100) -> list[dict]:
 def project_memory_context_for_prompt(prompt: str, limit: int = 4) -> str:
     try:
         rows = project_memory_rows(prompt, limit=limit)
-    except Exception:
+    except Exception as exc:
+        # audit 1.2: losing memory context silently degrades operator answers
+        # with no trace; keep the graceful "" fallback but leave evidence.
+        record_error("project_memory_context", exc=exc, severity="warning")
         return ""
     lines = []
     for row in rows:
