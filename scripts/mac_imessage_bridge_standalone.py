@@ -36,6 +36,10 @@ ALIAS = os.environ.get("AI_COUNCIL_HOST_SSH_ALIAS", "ai-council-desktop")
 HOST_DIR = os.environ.get("AI_COUNCIL_HOST_DIR", "D:\\ai-council")
 HOST_PY = os.environ.get("AI_COUNCIL_HOST_PYTHON", "python")
 TO = os.environ.get("AI_COUNCIL_IMESSAGE_TO", "").strip()
+# L4.99: the SAME Apple ID self-conversation is split per handle (phone vs email).
+# The bridge reads ALL listed handles and replies in the thread the message came from
+# ("answers where you write"), so the user experiences ONE channel.
+IDS = [s.strip() for s in os.environ.get("AI_COUNCIL_IMESSAGE_IDS", "").split(",") if s.strip()]
 ENABLED = os.environ.get("AI_COUNCIL_IMESSAGE_ENABLED", "").lower() in ("1", "true", "yes", "on")
 INBOUND = os.environ.get("AI_COUNCIL_IMESSAGE_INBOUND", "").lower() in ("1", "true", "yes", "on")
 INTERVAL = int(os.environ.get("AI_COUNCIL_IMESSAGE_INTERVAL", "15") or "15")
@@ -201,16 +205,20 @@ def inbound_cycle() -> int:
     """Read NEW messages in the self-channel chat ONLY, reply to genuine user messages.
     Privacy: only the chat whose identifier == TO is ever read. Loop-safe via the
     sent-text dedup + a ROWID cursor that starts at the current max (no history replay)."""
-    if not (INBOUND and TO and CHAT_DB.exists()):
+    identifiers = IDS or ([TO] if TO else [])
+    if not (INBOUND and identifiers and CHAT_DB.exists()):
         return 0
     try:
         conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True, timeout=5)
     except sqlite3.Error:
         return 0
     try:
-        self_ids = [r[0] for r in conn.execute("SELECT ROWID FROM chat WHERE chat_identifier=?", (TO,))]
-        if not self_ids:
+        ph_ids = ",".join("?" * len(identifiers))
+        chat_map = {r[0]: r[1] for r in conn.execute(
+            f"SELECT ROWID, chat_identifier FROM chat WHERE chat_identifier IN ({ph_ids})", tuple(identifiers))}
+        if not chat_map:
             return 0
+        self_ids = list(chat_map)
         ph = ",".join("?" * len(self_ids))
         cur = _read_cursor()
         if cur is None:  # first run: anchor at current max, do NOT replay history
@@ -220,7 +228,7 @@ def inbound_cycle() -> int:
             _write_cursor(int((row and row[0]) or 0))
             return 0
         rows = conn.execute(
-            f"SELECT m.ROWID, m.text, m.attributedBody FROM message m "
+            f"SELECT m.ROWID, m.text, m.attributedBody, cmj.chat_id FROM message m "
             f"JOIN chat_message_join cmj ON cmj.message_id=m.ROWID "
             f"WHERE cmj.chat_id IN ({ph}) AND m.ROWID > ? ORDER BY m.ROWID ASC LIMIT 20",
             tuple(self_ids) + (cur,)).fetchall()
@@ -231,7 +239,7 @@ def inbound_cycle() -> int:
     sent_norms = recent_sent_norms()
     processed = 0
     max_id = cur
-    for rid, text, ab in rows:
+    for rid, text, ab, chat_rowid in rows:
         max_id = max(max_id, rid)
         body = _msg_text(text, ab).strip()
         if not body or _norm(body) in sent_norms:
@@ -239,10 +247,10 @@ def inbound_cycle() -> int:
         reply = host_respond(body)
         if reply:
             record_sent(reply)          # record BEFORE sending so the echo is deduped
-            ok, _ = send(reply)
+            ok, _ = send(reply, to=chat_map.get(chat_rowid, TO))  # reply where he wrote
             if ok:
                 processed += 1
-                print(f"inbound replied to {rid}")
+                print(f"inbound replied to {rid} in {chat_map.get(chat_rowid, TO)}")
     _write_cursor(max_id)
     return processed
 
