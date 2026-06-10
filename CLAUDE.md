@@ -19,7 +19,7 @@ Your job is to drive the system to real Poke parity or better, then extend it wi
 - Windows SSH alias from Mac: `ai-council-desktop`
 - Telegram task: `Bartek AI Council Telegram`
 - Main runtime file: `ai_council.py`
-- Main tests: `tests/test_ai_council.py`
+- Main tests: `tests/` (split per domain in L4.100 audit: `test_council_*.py` + contract/policy suites; shared header in `tests/council_test_shared.py`)
 - Target doc: `docs/POKE_CLONE_TARGET.md`
 - Latest transfer doc: `docs/handoffs/CLAUDE_PRIMARY_OWNER_TRANSFER_2026-06-08.md`
 
@@ -119,15 +119,15 @@ Mac:
 
 ```bash
 git status --short
-PYTHONPYCACHEPREFIX=/tmp/ai-council-pycache python3 -m py_compile ai_council.py tests/test_ai_council.py
-python3 -m pytest -q tests/test_ai_council.py
+PYTHONPYCACHEPREFIX=/tmp/ai-council-pycache python3 -m py_compile ai_council.py
+python3 -m pytest -q tests
 ```
 
 Windows:
 
 ```bash
 ssh ai-council-desktop "powershell -NoProfile -ExecutionPolicy Bypass -File 'D:\ai-council\windows-deploy\status-ai-council.ps1'"
-ssh ai-council-desktop 'powershell -NoProfile -ExecutionPolicy Bypass -Command "cd D:\ai-council; python -m pytest -q tests\test_ai_council.py"'
+ssh ai-council-desktop 'powershell -NoProfile -ExecutionPolicy Bypass -Command "cd D:\ai-council; python -m pytest -q tests"'
 ssh ai-council-desktop 'powershell -NoProfile -ExecutionPolicy Bypass -Command "cd D:\ai-council; python ai_council.py respond /health"'
 ```
 

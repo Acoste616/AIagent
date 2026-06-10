@@ -23,7 +23,9 @@ jobs:
       - name: Lint (ruff)
         run: python -m ruff check ai_council.py tests scripts
       - name: Byte-compile
-        run: python -m py_compile ai_council.py tests/test_ai_council.py
+        run: |
+          python -m py_compile ai_council.py
+          python -m compileall -q tests
       - name: Tests
         env:
           PYTHONUTF8: "1"
