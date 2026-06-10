@@ -135,6 +135,7 @@ FRONT_OPERATOR_COMMANDS = {
 SIDE_EFFECT_COMMANDS = {"/write", "/append", "/patch", "/propose"}
 BACKGROUND_COMMANDS = {
     "codex_default",
+    "/self-repair",
     "@codex",
     "@claude-flow",
     "/flow",
@@ -10938,6 +10939,11 @@ def approve_response(prompt: str) -> str:
                 f"Cofnięcie: /undo {compact_line(str((executed.get('payload') or {}).get('path', '')), 120)}"
             )
         return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
+    if updated.get("type") == "self_repair":
+        executed = execute_self_repair_action(updated)
+        if executed.get("status") == "executed":
+            return f"[Council] Approved + executed: {executed['action_id']}.\n{executed.get('execution_result')}"
+        return f"[Council] Approved, ale wykonanie zablokowane: {executed.get('execution_result')}"
     if updated.get("type") == "order_handoff":
         payload = updated.get("payload") or {}
         executed = {
@@ -14736,6 +14742,9 @@ def _nat_status_diagnostics(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/selftest", "operators": ["host"], "prompt": "", "mode": "selftest", "intent": "natural"}
 
+    if lower in {"self repair", "self-repair", "samonaprawa", "napraw się sam", "napraw sie sam", "napraw system"}:
+        return {"command": "/self-repair", "operators": ["host", "claude"], "prompt": "", "mode": "self_repair", "intent": "natural"}
+
     if lower in {"co umiesz", "co potrafisz", "co możesz", "co mozesz", "capabilities", "możliwości", "mozliwosci"} or lower.startswith(
         ("pokaż możliwości", "pokaz mozliwosci", "pokaż capabilities", "pokaz capabilities", "jak działasz", "jak dzialasz", "jak dziś działasz", "jak dzis dzialasz")
     ):
@@ -15842,6 +15851,8 @@ def route_text(text: str) -> dict:
         return {"command": "/goal", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "goal"}
     if lower.startswith("/poke-gap"):
         return {"command": "/poke-gap", "operators": ["host"], "prompt": stripped[9:].strip(), "mode": "poke_gap"}
+    if lower.startswith("/self-repair"):
+        return {"command": "/self-repair", "operators": ["host", "claude"], "prompt": stripped[12:].strip(), "mode": "self_repair"}
     if lower.startswith("/imessage") or lower.startswith("/imsg"):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/imessage", "operators": ["host"], "prompt": prompt, "mode": "imessage"}
@@ -17874,6 +17885,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return goal_response()
     if command == "/poke-gap":
         return poke_gap_response(prompt)
+    if command == "/self-repair":
+        return run_self_repair_once(send=False, chat_id=chat_id)
     if command == "/imessage":
         return imessage_response(prompt)
     if command == "/setup":
@@ -18566,6 +18579,394 @@ def serve(send: bool = True, limit: int = 10, sleep_seconds: float = 1.5) -> int
         listener_lock.release()
 
 
+# === L4.101 SELF-REPAIR LOOP ==================================================
+# Closes the second half of the error loop: detect -> diagnose (Claude) ->
+# patch in an ISOLATED working copy -> full pytest -> pending action (R2) ->
+# Bartek's /approve applies to production with a backup + undo. No silent
+# self-modification: the live tree changes ONLY through the approval path.
+SELF_REPAIR_VERSION = "L4.101"
+
+SELF_REPAIR_CONTRACT = """Jestes inzynierem naprawiajacym blad w jednoplikowym systemie ai_council.py (Python, wylacznie stdlib).
+ZWROC WYLACZNIE bloki patcha w DOKLADNIE tym formacie (bez markdown, bez tekstu poza blokami):
+
+PATCH_FILE: <sciezka wzgledna: ai_council.py albo tests/<plik>.py>
+<<<<FIND
+<istniejacy fragment skopiowany 1:1, unikalny w pliku>
+====
+<nowa tresc fragmentu>
+>>>>
+
+Zasady:
+- minimalny patch usuwajacy ROOT CAUSE bledu, zero refaktoryzacji przy okazji;
+- maksymalnie 6 blokow; kazdy FIND musi wystepowac w pliku DOKLADNIE raz;
+- jesli mozesz, rozszerz test w tests/ (FIND na istniejacej kotwicy, np. ostatniej metodzie klasy);
+- zadnych nowych zaleznosci;
+- jezeli nie da sie naprawic bezpiecznie, zwroc dokladnie: NO_SAFE_PATCH <powod>."""
+
+REPAIR_BLOCK_RE = re.compile(
+    r"PATCH_FILE:[ \t]*(?P<file>[^\n]+)\n<<<<FIND\n(?P<find>.*?)\n====\n(?P<replace>.*?)\n>>>>",
+    re.DOTALL,
+)
+
+
+def self_repair_file() -> Path:
+    return STATE_DIR / "self_repair.jsonl"
+
+
+def self_repair_dir() -> Path:
+    return STATE_DIR / "self_repair"
+
+
+def self_repair_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_SELF_REPAIR", True)
+
+
+def self_repair_allowed_files() -> tuple[str, ...]:
+    raw = cfg("AI_COUNCIL_SELF_REPAIR_FILES").strip() or "ai_council.py,tests/"
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def self_repair_file_allowed(rel: str) -> bool:
+    rel = (rel or "").replace("\\", "/").strip()
+    # traversal/absolute checks BEFORE any normalization (lstrip would eat "..")
+    if not rel or rel.startswith("/") or ":" in rel or ".." in rel.split("/"):
+        return False
+    while rel.startswith("./"):
+        rel = rel[2:]
+    for allowed in self_repair_allowed_files():
+        allowed = allowed.replace("\\", "/")
+        if allowed.endswith("/"):
+            if rel.startswith(allowed) and rel.endswith(".py") and "/" not in rel[len(allowed):]:
+                return True
+        elif rel == allowed:
+            return True
+    return False
+
+
+def self_repair_record(repair_id: str, context: str, status: str, detail: str = "", **fields) -> dict:
+    row = {
+        "repair_id": repair_id,
+        "ts": utc_now(),
+        "context": compact_line(context, 120),
+        "status": status,
+        "detail": compact_line(redact_secrets(detail), 400),
+        **fields,
+    }
+    append_jsonl(self_repair_file(), row)
+    return row
+
+
+def self_repair_attempted_contexts(days: int = 3) -> set[str]:
+    cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+    contexts: set[str] = set()
+    for row in read_jsonl(self_repair_file()):
+        parsed = parse_utc(str(row.get("ts") or ""))
+        if parsed and parsed.timestamp() >= cutoff and row.get("context"):
+            contexts.add(str(row["context"]))
+    return contexts
+
+
+def self_repair_candidates(days: int | None = None, limit: int = 3) -> list[dict]:
+    days = int_cfg("AI_COUNCIL_SELF_REPAIR_WINDOW_DAYS", 2) if days is None else days
+    attempted = self_repair_attempted_contexts()
+    groups: dict[str, dict] = {}
+    for row in error_rows(days):
+        context = str(row.get("context") or "").strip()
+        if not context or context in attempted or str(row.get("severity") or "") == "info":
+            continue
+        group = groups.setdefault(
+            context,
+            {"context": context, "count": 0, "message": "", "traceback": "", "exception_type": ""},
+        )
+        group["count"] += 1
+        if row.get("message"):
+            group["message"] = str(row["message"])
+        if row.get("traceback"):
+            group["traceback"] = str(row["traceback"])[-3000:]
+        if row.get("exception_type"):
+            group["exception_type"] = str(row["exception_type"])
+    return sorted(groups.values(), key=lambda g: -g["count"])[:limit]
+
+
+def self_repair_source_excerpt(context: str, radius: int = 60) -> str:
+    try:
+        lines = (PROJECT_DIR / "ai_council.py").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    needle = f'record_error("{context}"'
+    hits = [i for i, line in enumerate(lines) if needle in line]
+    if not hits:
+        hits = [i for i, line in enumerate(lines) if line.startswith(f"def {context}")]
+    chunks: list[str] = []
+    for i in hits[:2]:
+        a, b = max(0, i - radius), min(len(lines), i + radius)
+        chunks.append(f"# --- ai_council.py linie {a + 1}-{b} ---")
+        chunks.extend(lines[a:b])
+    return "\n".join(chunks)[:12000]
+
+
+def self_repair_prompt(candidate: dict) -> str:
+    excerpt = self_repair_source_excerpt(str(candidate.get("context") or ""))
+    parts = [
+        SELF_REPAIR_CONTRACT,
+        "",
+        "BLAD DO NAPRAWY:",
+        f"context: {candidate.get('context')}",
+        f"wystapienia (ostatnie dni): {candidate.get('count')}",
+        f"exception: {candidate.get('exception_type') or '(brak)'}",
+        f"message: {candidate.get('message') or '(brak)'}",
+    ]
+    if candidate.get("traceback"):
+        parts.append(f"traceback (ogon):\n{candidate['traceback']}")
+    if excerpt:
+        parts.append("\nFRAGMENT ZRODLA (okolice record_error):\n" + excerpt)
+    return "\n".join(parts)
+
+
+def parse_repair_blocks(text: str) -> tuple[list[dict], str]:
+    text = (text or "").replace("\r\n", "\n")
+    blocks: list[dict] = []
+    for match in REPAIR_BLOCK_RE.finditer(text):
+        rel = match.group("file").strip().replace("\\", "/")
+        find = match.group("find")
+        if not self_repair_file_allowed(rel):
+            return [], f"plik poza allowlista: {rel}"
+        if not find.strip():
+            return [], f"pusty blok FIND dla {rel}"
+        blocks.append({"file": rel, "find": find, "replace": match.group("replace")})
+    if not blocks:
+        return [], "brak blokow PATCH_FILE w odpowiedzi modelu"
+    max_blocks = int_cfg("AI_COUNCIL_SELF_REPAIR_MAX_BLOCKS", 6)
+    if len(blocks) > max_blocks:
+        return [], f"za duzo blokow ({len(blocks)} > {max_blocks})"
+    return blocks, ""
+
+
+def apply_repair_blocks(blocks: list[dict], root: Path) -> tuple[bool, str]:
+    for n, block in enumerate(blocks, start=1):
+        target = root / str(block.get("file") or "")
+        try:
+            body = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            return False, f"blok {n}: nie moge czytac {block.get('file')}: {exc}"
+        occurrences = body.count(block["find"])
+        if occurrences != 1:
+            return False, f"blok {n}: FIND wystapien={occurrences} (wymagane dokladnie 1) w {block.get('file')}"
+        target.write_text(body.replace(block["find"], block["replace"], 1), encoding="utf-8")
+    return True, f"zastosowano {len(blocks)} blok(ow)"
+
+
+def prepare_repair_workspace(repair_id: str) -> Path:
+    workdir = self_repair_dir() / repair_id / "work"
+    (workdir / "tests").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PROJECT_DIR / "ai_council.py", workdir / "ai_council.py")
+    if (PROJECT_DIR / "pyproject.toml").exists():
+        shutil.copy2(PROJECT_DIR / "pyproject.toml", workdir / "pyproject.toml")
+    for test_file in sorted((PROJECT_DIR / "tests").glob("*.py")):
+        shutil.copy2(test_file, workdir / "tests" / test_file.name)
+    return workdir
+
+
+def verify_repair_workspace(workdir: Path) -> dict:
+    """py_compile + FULL pytest in the working copy, with writable dirs sandboxed
+    so a candidate patch can never touch production state."""
+    sandbox = workdir.parent / "sandbox-state"
+    env = dict(os.environ)
+    for var, sub in (
+        ("AI_COUNCIL_STATE_DIR", "state"),
+        ("AI_COUNCIL_LOG_DIR", "logs"),
+        ("AI_COUNCIL_ERRORS_DIR", "errors"),
+        ("AI_COUNCIL_ARTIFACTS_DIR", "artifacts"),
+        ("AI_COUNCIL_REPORTS_DIR", "reports"),
+        ("AI_COUNCIL_WORKSPACES_DIR", "workspaces"),
+    ):
+        target = sandbox / sub
+        target.mkdir(parents=True, exist_ok=True)
+        env[var] = str(target)
+    timeout = int_cfg("AI_COUNCIL_SELF_REPAIR_TEST_TIMEOUT", 900)
+    proc = None
+    for step, command in (
+        ("py_compile", [sys.executable, "-m", "py_compile", "ai_council.py"]),
+        ("pytest", [sys.executable, "-m", "pytest", "-q", "tests"]),
+    ):
+        try:
+            proc = subprocess.run(
+                command, cwd=str(workdir), env=env, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "step": step, "detail": f"{step} timeout po {timeout}s"}
+        if proc.returncode != 0:
+            tail = compact_line(redact_secrets(((proc.stdout or "") + (proc.stderr or ""))[-1500:]), 700)
+            return {"ok": False, "step": step, "detail": f"{step} exit {proc.returncode}: {tail}"}
+    summary = ""
+    for line in reversed((proc.stdout or "").splitlines()):
+        if "passed" in line:
+            summary = line.strip()
+            break
+    return {"ok": True, "step": "pytest", "detail": summary or "pytest zielony"}
+
+
+def claude_self_repair_response(prompt: str) -> str | None:
+    started = time.time()
+    allowed, reason, reservation = reserve_operator_call("claude", detail="self_repair")
+    if not allowed:
+        record_error("self_repair_reserve", message=reason, severity="warning")
+        return None
+    command = [
+        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+    ]
+    model = (cfg("AI_COUNCIL_SELF_REPAIR_MODEL") or cfg("AI_COUNCIL_CLAUDE_FLOW_MODEL")).strip()
+    if model:
+        command.extend(["--model", model])
+    command.extend(["-p", prompt])
+    timeout = int_cfg("AI_COUNCIL_SELF_REPAIR_TIMEOUT", 300)
+    try:
+        proc = subprocess.run(
+            command, text=True, encoding="utf-8", errors="replace", input="",
+            capture_output=True, timeout=timeout, cwd=str(PROJECT_DIR), env=operator_env(),
+        )
+    except subprocess.TimeoutExpired:
+        finalize_operator_call(reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="self_repair claude timeout")
+        record_error("self_repair_claude", message=f"timeout po {timeout}s", severity="warning")
+        return None
+    except FileNotFoundError:
+        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="self_repair claude missing")
+        return None
+    duration_ms = int((time.time() - started) * 1000)
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="self_repair claude failed")
+        record_error("self_repair_claude", message=compact_line(redact_secrets(proc.stderr or proc.stdout or "(puste)"), 300), severity="warning")
+        return None
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="self_repair claude")
+    return proc.stdout
+
+
+def run_self_repair_once(send: bool = False, chat_id: str = "") -> str:
+    if not self_repair_enabled():
+        return "[Self-Repair] wylaczony (AI_COUNCIL_SELF_REPAIR=false)."
+    paused = control_paused_reason("model")
+    if paused:
+        return f"[Self-Repair] pominiety: {paused}"
+    candidates = self_repair_candidates()
+    if not candidates:
+        return "[Self-Repair] Brak kandydatow — errors bez swiezych, nieprobowanych wzorcow."
+    candidate = candidates[0]
+    context = str(candidate.get("context") or "")
+    repair_id = f"repair-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(context + str(time.time_ns()))[:6]}"
+    self_repair_record(repair_id, context, "started", detail=f"count={candidate.get('count')}")
+    raw = claude_self_repair_response(self_repair_prompt(candidate))
+    if raw is None:
+        self_repair_record(repair_id, context, "model_failed")
+        return f"[Self-Repair] {context}: wywolanie Claude nieudane (szczegoly w errors)."
+    if "NO_SAFE_PATCH" in raw[:2000]:
+        reason = compact_line(raw.split("NO_SAFE_PATCH", 1)[1], 200)
+        self_repair_record(repair_id, context, "no_safe_patch", detail=reason)
+        return f"[Self-Repair] {context}: model odmowil bezpiecznego patcha: {reason or '(bez powodu)'}"
+    blocks, parse_error = parse_repair_blocks(raw)
+    if parse_error:
+        self_repair_record(repair_id, context, "parse_failed", detail=parse_error)
+        return f"[Self-Repair] {context}: {parse_error}"
+    workdir = prepare_repair_workspace(repair_id)
+    applied, apply_detail = apply_repair_blocks(blocks, workdir)
+    if not applied:
+        self_repair_record(repair_id, context, "apply_failed", detail=apply_detail)
+        return f"[Self-Repair] {context}: patch nie pasuje: {apply_detail}"
+    verdict = verify_repair_workspace(workdir)
+    if not verdict["ok"]:
+        self_repair_record(repair_id, context, "verify_failed", detail=verdict["detail"], step=verdict["step"])
+        return f"[Self-Repair] {context}: weryfikacja CZERWONA ({verdict['step']}): {verdict['detail']}"
+    files = sorted({str(b["file"]) for b in blocks})
+    action = create_action(
+        f"SELF-REPAIR {context}: {len(blocks)} blok(ow) w {', '.join(files)}; weryfikacja: {verdict['detail']}",
+        action_type="self_repair",
+        risk="R2",
+        payload={"repair_id": repair_id, "context": context, "blocks": blocks, "files": files, "evidence": verdict["detail"]},
+    )
+    self_repair_record(repair_id, context, "proposed", action_id=action["action_id"], files=files)
+    summary = (
+        f"🔧 Self-Repair: ZIELONY patch na `{context}` ({candidate.get('count')}x w errors).\n"
+        f"Pliki: {', '.join(files)} | weryfikacja: {verdict['detail']}\n"
+        f"Zatwierdz: /approve {action['action_id']} | odrzuc: /deny {action['action_id']}"
+    )
+    if send:
+        deliver_proactive(chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID"), summary)
+    return summary
+
+
+def self_repair_backup_dir(repair_id: str) -> Path:
+    return self_repair_dir() / repair_id / "backup"
+
+
+def _self_repair_failed(action: dict, detail: str) -> dict:
+    failed = {**action, "status": "failed", "updated_at": utc_now(), "execution_result": compact_line(detail, 400)}
+    append_jsonl(ACTIONS_FILE, failed)
+    return failed
+
+
+def execute_self_repair_action(action: dict) -> dict:
+    payload = action.get("payload") or {}
+    repair_id = str(payload.get("repair_id") or "")
+    blocks = list(payload.get("blocks") or [])
+    files = sorted({str(b.get("file") or "") for b in blocks})
+    if not repair_id or not blocks or not all(self_repair_file_allowed(f) for f in files):
+        return _self_repair_failed(action, "payload niekompletny lub plik poza allowlista")
+    backup = self_repair_backup_dir(repair_id)
+    try:
+        for rel in files:
+            dest = backup / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes((PROJECT_DIR / rel).read_bytes())
+    except OSError as exc:
+        return _self_repair_failed(action, f"backup nieudany: {exc}")
+    applied, detail = apply_repair_blocks(blocks, PROJECT_DIR)
+    if applied:
+        proc = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(PROJECT_DIR / "ai_council.py")],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if proc.returncode != 0:
+            applied, detail = False, "py_compile po patchu czerwony: " + compact_line(proc.stderr or "", 300)
+    if not applied:
+        self_repair_undo(repair_id)
+        return _self_repair_failed(action, f"{detail}; produkcja przywrocona z backupu")
+    executed = {
+        **action,
+        "status": "executed",
+        "updated_at": utc_now(),
+        "execution_result": (
+            f"patch zastosowany do produkcji ({detail}); RESTART listenera wymagany; "
+            f"cofniecie: self-repair-undo --id {repair_id}"
+        ),
+    }
+    append_jsonl(ACTIONS_FILE, executed)
+    self_repair_record(repair_id, str(payload.get("context") or ""), "executed", detail=detail, files=files)
+    return executed
+
+
+def self_repair_undo(repair_id: str) -> str:
+    backup = self_repair_backup_dir(repair_id)
+    if not backup.exists():
+        return f"[Self-Repair] Brak backupu dla {repair_id}."
+    restored: list[str] = []
+    for path in sorted(backup.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(backup)
+        try:
+            (PROJECT_DIR / rel).write_bytes(path.read_bytes())
+        except OSError as exc:
+            return f"[Self-Repair] Blad przywracania {rel}: {exc}"
+        restored.append(str(rel))
+    self_repair_record(repair_id, "", "undone", files=restored)
+    return f"[Self-Repair] Przywrocono z backupu: {', '.join(restored) or '(nic)'}."
+
+
 def doctor() -> int:
     log_startup()
     ok = print_env_status()
@@ -18631,6 +19032,10 @@ def main() -> int:
     sub.add_parser("seed-profile", help="Persist Bartek's durable profile/preferences to memory")
     set_secret = sub.add_parser("set-secret", help="Rotate one allowlisted secret in .env from STDIN (value never echoed)")
     set_secret.add_argument("--key", required=True)
+    sr = sub.add_parser("self-repair", help="L4.101: one self-repair cycle (diagnose -> patch -> isolated verify -> pending action)")
+    sr.add_argument("--send", action="store_true", help="Deliver the proposal over the proactive channel (iMessage primary)")
+    sru = sub.add_parser("self-repair-undo", help="L4.101: restore production files from a self-repair backup")
+    sru.add_argument("--id", required=True, dest="repair_id")
     respb64 = sub.add_parser("respond-b64", help="respond() to a base64 message and print ONLY the reply (quote-safe iMessage inbound relay)")
     respb64.add_argument("--b64", required=True)
     respb64.add_argument("--sender", default="", help="iMessage thread handle (verified against AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS)")
@@ -18680,6 +19085,12 @@ def main() -> int:
     if args.cmd == "seed-profile":
         saved = seed_bartek_profile()
         print(f"profile_facts_saved={saved}")
+        return 0
+    if args.cmd == "self-repair":
+        print(run_self_repair_once(send=args.send))
+        return 0
+    if args.cmd == "self-repair-undo":
+        print(self_repair_undo(args.repair_id))
         return 0
     if args.cmd == "respond-b64":
         try:

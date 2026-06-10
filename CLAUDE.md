@@ -120,6 +120,11 @@ As of 2026-06-10 (L4.100, Mac worktree, NOT deployed; pushed to GitHub after Bar
 - CI exists (`.github/workflows/ci.yml`: ruff+pytest, ubuntu+windows). Routing contract suite guards `natural_intent_route`, which is now a 9-line dispatcher over `NATURAL_INTENT_RULE_GROUPS` (8 ordered rule groups, semantics preserved).
 - Cost ledger sharded per day (`costs-YYYY-MM-DD.jsonl` + legacy fallback + retention). Real tail reads (`iter_jsonl_reverse`). Silent failures now record evidence. State retention in `doctor` (`prune_state_files`). Tests split into `tests/test_council_*.py`. Mac tests: 525/525.
 
+As of 2026-06-10 later (L4.100 DEPLOYED; L4.101 Mac worktree):
+
+- L4.100 DEPLOYED to `D:\ai-council` (backup `backups\pre-L4.100`): Windows pytest 525/525, listener restarted, canonical bridge installed via `scripts/deploy/install_imessage_bridge.sh` (`--check` clean), allowlist `+48573465367,bdomanskyy@icloud.com` set in Windows .env, smoke: allowed sender gets reply, foreign sender gets silence. iMessage channel LIVE on the phone-number thread.
+- L4.101 SELF-REPAIR LOOP: errors -> Claude diagnosis -> FIND/REPLACE patch in isolated copy -> full pytest -> pending action R2 -> `/approve` applies with backup + `self-repair-undo`. Recipe daily 21:30. Doc: `docs/implementation/L4_101_SELF_REPAIR_LOOP.md`. Mac tests: 540/540.
+
 ## Required Verification Commands
 
 Mac:

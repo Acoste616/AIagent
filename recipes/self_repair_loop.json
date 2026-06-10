@@ -1,0 +1,39 @@
+{
+  "name": "self_repair_loop",
+  "recipe_version": "L4.101",
+  "cadence": "daily",
+  "description": "Raz dziennie domyka pętlę błędów: diagnoza Claude -> patch w izolowanej kopii -> pełny pytest -> pending action do /approve. Bez approval nic nie dotyka produkcji.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "30 21 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "capture_improvement": true,
+  "planner_selectable": true,
+  "intent_keywords": [
+    "self repair",
+    "samonaprawa",
+    "napraw się sam",
+    "napraw sie sam",
+    "auto fix",
+    "autofix"
+  ],
+  "integrations": [
+    "errors",
+    "claude",
+    "actions"
+  ],
+  "improvement_policy": {
+    "enabled": true,
+    "source": "self_repair_loop",
+    "priority": "P1"
+  },
+  "steps": [
+    {
+      "command": "/self-repair",
+      "prompt": ""
+    }
+  ]
+}
