@@ -16141,7 +16141,12 @@ BRAIN_SYSTEM_PROMPT = (
     "powiedz to wprost, nie wykonuj sam.\n"
     "CZEGO NIGDY NIE ROBISZ: nie piszesz prefiksu [Council] ani [AI Council], nie używasz etykiet "
     "DECYZJA:/FAKTY:/ETAP:/NEXT:/STAN:, nie wklejasz JSON, logów, surowych komend, task_id ani list wersji. "
-    "Piszesz jak normalna, ludzka wiadomość."
+    "Piszesz jak normalna, ludzka wiadomość.\n"
+    "ZAMÓWIENIA (jedzenie/zakupy/rezerwacje): nie masz toru transakcyjnego i NIGDY nie twierdzisz, że coś "
+    "zamówiłeś albo opłaciłeś. Zbieraj braki jedno pytanie na raz (preferencje z pamięci jako defaulty). "
+    "Gdy masz komplet (minimum: pozycje + restauracja/serwis), zakończ odpowiedź OSOBNĄ ostatnią linią dokładnie: "
+    "ORDER_DRAFT: {\"service\":\"...\",\"items\":\"...\",\"address\":\"...\"} — system zamieni ją w draft do "
+    "zatwierdzenia i wyśle Bartkowi link; koszyk i płatność zostają u niego."
 )
 
 
@@ -16801,7 +16806,17 @@ def brain_loop(text: str, chat_id: str = "") -> str:
             "Daj mi chwilę i napisz jeszcze raz, albo doprecyzuj o co chodzi — ruszę od razu."
         )
     if decision.get("action") == "reply":
-        return sanitize_brain_reply(decision.get("text") or "") or "Jasne. Powiedz coś więcej?"
+        # L4.98: ORDER_DRAFT must be extracted BEFORE sanitize (the marker line is JSON,
+        # which sanitize_brain_reply would otherwise nuke along with the whole reply).
+        body, order_payload = extract_order_draft(decision.get("text") or "")
+        reply = sanitize_brain_reply(body) or "Jasne. Powiedz coś więcej?"
+        if order_payload:
+            try:
+                action = create_order_handoff_action(order_payload, chat_id=chat_id)
+                reply += f"\n\nDraft zamówienia gotowy — zatwierdź: /approve {action['action_id']}"
+            except Exception:
+                pass
+        return reply
     return brain_execute_tool(str(decision.get("action") or ""), decision.get("args") or {}, clean, chat_id)
 
 

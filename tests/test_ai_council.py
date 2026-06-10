@@ -8391,6 +8391,35 @@ class PokeChatClaudeOperatorTests(unittest.TestCase):
             decision = ai_council.brain_decide_claude("ogarnij temat", chat_id="553")
         self.assertEqual(decision, {"action": "reply", "text": "Jasne, ogarniam to."})
 
+    def test_brain_reply_converts_order_draft_to_pending_action(self):
+        # L4.98: order flow is alive on the LIVE path (brain), not only in legacy poke_chat.
+        self.assertIn("ORDER_DRAFT", ai_council.BRAIN_SYSTEM_PROMPT)
+        self.assertIn("NIGDY", ai_council.BRAIN_SYSTEM_PROMPT)
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            with patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), patch.object(
+                ai_council, "LOG_DIR", root / "logs"
+            ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.object(
+                ai_council, "ensure_council_dirs", return_value=None
+            ), patch.object(
+                ai_council,
+                "brain_decide",
+                return_value={
+                    "action": "reply",
+                    "text": 'Mam komplet, robię draft.\nORDER_DRAFT: {"service":"Pyszne","items":"pepperoni L"}',
+                },
+            ):
+                (root / "state").mkdir(parents=True)
+                (root / "logs").mkdir(parents=True)
+                reply = ai_council.brain_loop("zamow mi pizze pepperoni z pyszne", chat_id="553")
+                rows = ai_council.read_jsonl(root / "state" / "actions.jsonl")
+
+        self.assertNotIn("ORDER_DRAFT", reply)
+        self.assertIn("/approve act-", reply)
+        self.assertNotIn("[Council]", reply)
+        self.assertEqual(rows[-1]["type"], "order_handoff")
+        self.assertEqual(rows[-1]["status"], "pending")
+
     def test_brain_decide_claude_disabled_for_grok_operator(self):
         def grok_cfg(key, default=""):
             return {"AI_COUNCIL_POKE_CHAT_OPERATOR": "grok"}.get(key, default)
