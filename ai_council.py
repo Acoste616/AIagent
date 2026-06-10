@@ -724,8 +724,46 @@ def read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def iter_jsonl_reverse(path: Path, *, block_size: int = 65536):
+    """Yield parsed rows from a JSONL file last-to-first WITHOUT reading the
+    whole file (audit 2.4). Malformed lines are skipped, matching read_jsonl."""
+    if not path.exists():
+        return
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        position = f.tell()
+        carry = b""
+        while position > 0:
+            read_size = min(block_size, position)
+            position -= read_size
+            f.seek(position)
+            chunk = f.read(read_size) + carry
+            lines = chunk.split(b"\n")
+            # First element may be a partial line continued in the next
+            # (earlier) block — keep it as carry unless we're at file start.
+            carry = lines.pop(0) if position > 0 else b""
+            for raw in reversed(lines):
+                text = raw.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    yield json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+
+
 def read_jsonl_tail(path: Path, limit: int = 8) -> list[dict]:
-    return read_jsonl(path)[-limit:]
+    """Last `limit` rows in file order. Reads from the END of the file (audit
+    2.4) instead of parsing the entire history on every call."""
+    if limit <= 0:
+        return []
+    rows: list[dict] = []
+    for row in iter_jsonl_reverse(path):
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    rows.reverse()
+    return rows
 
 
 class SingleInstanceLock:
@@ -1510,8 +1548,12 @@ def create_task(
 
 def get_latest_task(task_id: str) -> dict | None:
     task_id = task_id.strip()
-    latest = {row.get("task_id"): row for row in read_jsonl(TASKS_FILE) if row.get("task_id")}
-    return latest.get(task_id)
+    # audit 2.4: scan backwards — the first hit from the end IS the latest row
+    # for this task_id; no need to parse the whole history per lookup.
+    for row in iter_jsonl_reverse(TASKS_FILE):
+        if row.get("task_id") == task_id:
+            return row
+    return None
 
 
 def latest_tasks(limit: int = 8) -> list[dict]:

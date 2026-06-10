@@ -117,5 +117,42 @@ class ProjectMemoryContextVisibilityTests(unittest.TestCase):
         self.assertEqual(rec.call_args.args[0], "project_memory_context")
 
 
+class ReverseJsonlTests(unittest.TestCase):
+    """Audit task 2.4: read_jsonl_tail must read from the END of the file."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = Path(self._tmp.name) / "rows.jsonl"
+
+    def test_tail_matches_full_read_semantics(self):
+        rows = [{"i": i, "tekst": f"ąężółć-{i}"} for i in range(250)]
+        with self.path.open("w", encoding="utf-8") as f:
+            f.write("not json\n")
+            for row in rows:
+                f.write(__import__("json").dumps(row, ensure_ascii=False) + "\n")
+        self.assertEqual(ai_council.read_jsonl_tail(self.path, 8), ai_council.read_jsonl(self.path)[-8:])
+        self.assertEqual(ai_council.read_jsonl_tail(self.path, 5000), ai_council.read_jsonl(self.path))
+        self.assertEqual(ai_council.read_jsonl_tail(self.path, 0), [])
+        self.assertEqual(ai_council.read_jsonl_tail(Path(self._tmp.name) / "missing.jsonl", 8), [])
+
+    def test_tail_crosses_block_boundaries(self):
+        big = "x" * 70000  # bigger than one 64k read block
+        with self.path.open("w", encoding="utf-8") as f:
+            for i in range(3):
+                f.write(__import__("json").dumps({"i": i, "pad": big}) + "\n")
+        tail = ai_council.read_jsonl_tail(self.path, 2)
+        self.assertEqual([row["i"] for row in tail], [1, 2])
+
+    def test_get_latest_task_returns_last_row_for_id(self):
+        with patch.object(ai_council, "TASKS_FILE", self.path):
+            for status in ("created", "running", "done"):
+                ai_council.append_jsonl(self.path, {"task_id": "task-z", "status": status})
+            ai_council.append_jsonl(self.path, {"task_id": "task-other", "status": "created"})
+            row = ai_council.get_latest_task("task-z")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "done")
+
+
 if __name__ == "__main__":
     unittest.main()
