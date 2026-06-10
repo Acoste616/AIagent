@@ -18723,6 +18723,21 @@ def self_repair_prompt(candidate: dict) -> str:
     return "\n".join(parts)
 
 
+def self_repair_tools_prompt(candidate: dict) -> str:
+    parts = [
+        SELF_REPAIR_TOOLS_CONTRACT,
+        "",
+        "BLAD DO NAPRAWY:",
+        f"context: {candidate.get('context')}",
+        f"wystapienia (ostatnie dni): {candidate.get('count')}",
+        f"exception: {candidate.get('exception_type') or '(brak)'}",
+        f"message: {candidate.get('message') or '(brak)'}",
+    ]
+    if candidate.get("traceback"):
+        parts.append(f"traceback (ogon):\n{candidate['traceback']}")
+    return "\n".join(parts)
+
+
 def parse_repair_blocks(text: str) -> tuple[list[dict], str]:
     text = (text or "").replace("\r\n", "\n")
     blocks: list[dict] = []
@@ -18756,15 +18771,26 @@ def apply_repair_blocks(blocks: list[dict], root: Path) -> tuple[bool, str]:
     return True, f"zastosowano {len(blocks)} blok(ow)"
 
 
+def _copy_repo_into(dest: Path) -> None:
+    (dest / "tests").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PROJECT_DIR / "ai_council.py", dest / "ai_council.py")
+    if (PROJECT_DIR / "pyproject.toml").exists():
+        shutil.copy2(PROJECT_DIR / "pyproject.toml", dest / "pyproject.toml")
+    for test_file in sorted((PROJECT_DIR / "tests").glob("*.py")):
+        shutil.copy2(test_file, dest / "tests" / test_file.name)
+
+
 def prepare_repair_workspace(repair_id: str) -> Path:
     workdir = self_repair_dir() / repair_id / "work"
-    (workdir / "tests").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(PROJECT_DIR / "ai_council.py", workdir / "ai_council.py")
-    if (PROJECT_DIR / "pyproject.toml").exists():
-        shutil.copy2(PROJECT_DIR / "pyproject.toml", workdir / "pyproject.toml")
-    for test_file in sorted((PROJECT_DIR / "tests").glob("*.py")):
-        shutil.copy2(test_file, workdir / "tests" / test_file.name)
+    _copy_repo_into(workdir)
     return workdir
+
+
+def prepare_repair_pristine(repair_id: str) -> Path:
+    """Untouched reference copy used to diff the model's edits (L4.102 tools mode)."""
+    pristine = self_repair_dir() / repair_id / "pristine"
+    _copy_repo_into(pristine)
+    return pristine
 
 
 def verify_repair_workspace(workdir: Path) -> dict:
@@ -18805,6 +18831,118 @@ def verify_repair_workspace(workdir: Path) -> dict:
             summary = line.strip()
             break
     return {"ok": True, "step": "pytest", "detail": summary or "pytest zielony"}
+
+
+def self_repair_tools_enabled() -> bool:
+    """L4.102: run the repair model WITH file tools (Read/Write/Edit/Bash) inside
+    the isolated working copy, so it can read the whole file and edit precisely
+    instead of guessing FIND/REPLACE from an excerpt. Production stays gated."""
+    return bool_cfg("AI_COUNCIL_SELF_REPAIR_TOOLS", True)
+
+
+def self_repair_auto_apply_enabled() -> bool:
+    """L4.102: when ON, a GREEN (full pytest) repair is applied to production
+    automatically — still with backup + py_compile rollback + self-repair-undo.
+    OFF by default: production change waits for /approve."""
+    return bool_cfg("AI_COUNCIL_SELF_REPAIR_AUTO_APPLY", False)
+
+
+SELF_REPAIR_TOOLS_CONTRACT = """Jestes inzynierem naprawiajacym blad w jednoplikowym systemie ai_council.py (Python, wylacznie stdlib).
+Masz narzedzia plikowe (Read/Edit/Write) i Bash. Pracujesz w BIEZACYM katalogu, ktory jest IZOLOWANA KOPIA repo
+(ai_council.py + tests/ + pyproject.toml). To nie jest produkcja — smialo czytaj i edytuj pliki tutaj.
+
+Zadanie:
+1. Przeczytaj ai_council.py i pliki testow, zrozum ROOT CAUSE bledu ponizej.
+2. Wprowadz MINIMALNA poprawke usuwajaca przyczyne (zero refaktoryzacji przy okazji, zero nowych zaleznosci).
+3. Jezeli to sensowne, dodaj/rozszerz test w tests/ pokrywajacy ten blad.
+4. Mozesz uruchomic `python -m pytest -q tests` Bashem, zeby potwierdzic, ze jest zielono.
+5. Edytuj WYLACZNIE ai_council.py oraz pliki w tests/. Nie tworz nowych plikow poza tests/. Nie ruszaj pyproject.toml.
+
+Na koniec napisz jedna linie: REPAIR_DONE <krotkie podsumowanie>, albo NO_SAFE_PATCH <powod>, jezeli nie da sie naprawic bezpiecznie."""
+
+
+def claude_self_repair_tools_run(prompt: str, workdir: Path) -> tuple[bool, str]:
+    """Run Claude WITH full file tools in the isolated workdir. Returns
+    (ran_ok, transcript_tail). The model edits files in `workdir` directly."""
+    started = time.time()
+    allowed, reason, reservation = reserve_operator_call("claude", detail="self_repair_tools")
+    if not allowed:
+        record_error("self_repair_reserve", message=reason, severity="warning")
+        return False, "reservation denied"
+    command = [
+        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
+        "--no-session-persistence",
+        "--permission-mode",
+        "bypassPermissions",
+    ]
+    model = (cfg("AI_COUNCIL_SELF_REPAIR_MODEL") or cfg("AI_COUNCIL_CLAUDE_FLOW_MODEL")).strip()
+    if model:
+        command.extend(["--model", model])
+    command.extend(["-p", prompt])
+    timeout = int_cfg("AI_COUNCIL_SELF_REPAIR_TOOLS_TIMEOUT", 600)
+    try:
+        proc = subprocess.run(
+            command, text=True, encoding="utf-8", errors="replace", input="",
+            capture_output=True, timeout=timeout, cwd=str(workdir), env=operator_env(),
+        )
+    except subprocess.TimeoutExpired:
+        finalize_operator_call(reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="self_repair tools timeout")
+        record_error("self_repair_claude", message=f"tools timeout po {timeout}s", severity="warning")
+        return False, "timeout"
+    except FileNotFoundError:
+        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="self_repair claude missing")
+        return False, "claude missing"
+    duration_ms = int((time.time() - started) * 1000)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="self_repair tools failed")
+        record_error("self_repair_claude", message=compact_line(redact_secrets(out), 300), severity="warning")
+        return False, compact_line(redact_secrets(out), 300)
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="self_repair tools")
+    return True, compact_line(redact_secrets(out[-1200:]), 600)
+
+
+def self_repair_changeset(workdir: Path, pristine: Path) -> tuple[list[dict], str]:
+    """Diff the edited working copy against the pristine snapshot. Returns a list
+    of {file, content} for every CHANGED allowlisted file (full new content), or
+    an error if the model touched something outside the allowlist."""
+    changed: list[dict] = []
+    candidates = [workdir / "ai_council.py"] + sorted((workdir / "tests").glob("*.py"))
+    for path in candidates:
+        rel = path.relative_to(workdir).as_posix()
+        if not path.is_file():
+            continue
+        new_text = path.read_text(encoding="utf-8", errors="replace")
+        old_path = pristine / rel
+        old_text = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else None
+        if new_text == old_text:
+            continue
+        if not self_repair_file_allowed(rel):
+            return [], f"model zmienil plik poza allowlista: {rel}"
+        changed.append({"file": rel, "content": new_text})
+    # guard against brand-new files dropped outside tests/ or pyproject edits
+    for path in sorted(workdir.rglob("*.py")):
+        rel = path.relative_to(workdir).as_posix()
+        if rel == "ai_council.py" or rel.startswith("tests/"):
+            continue
+        return [], f"model utworzyl niedozwolony plik: {rel}"
+    if not changed:
+        return [], "model nie zmienil zadnego pliku"
+    return changed, ""
+
+
+def apply_repair_changeset(changeset: list[dict], root: Path) -> tuple[bool, str]:
+    for n, change in enumerate(changeset, start=1):
+        rel = str(change.get("file") or "")
+        if not self_repair_file_allowed(rel):
+            return False, f"zmiana {n}: plik poza allowlista: {rel}"
+        target = root / rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(change["content"], encoding="utf-8")
+        except OSError as exc:
+            return False, f"zmiana {n}: zapis {rel} nieudany: {exc}"
+    return True, f"zapisano {len(changeset)} plik(ow)"
 
 
 def claude_self_repair_response(prompt: str) -> str | None:
@@ -18859,39 +18997,81 @@ def run_self_repair_once(send: bool = False, chat_id: str = "") -> str:
     candidate = candidates[0]
     context = str(candidate.get("context") or "")
     repair_id = f"repair-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(context + str(time.time_ns()))[:6]}"
-    self_repair_record(repair_id, context, "started", detail=f"count={candidate.get('count')}")
-    raw = claude_self_repair_response(self_repair_prompt(candidate))
-    if raw is None:
-        self_repair_record(repair_id, context, "model_failed")
-        return f"[Self-Repair] {context}: wywolanie Claude nieudane (szczegoly w errors)."
-    if "NO_SAFE_PATCH" in raw[:2000]:
-        reason = compact_line(raw.split("NO_SAFE_PATCH", 1)[1], 200)
-        self_repair_record(repair_id, context, "no_safe_patch", detail=reason)
-        return f"[Self-Repair] {context}: model odmowil bezpiecznego patcha: {reason or '(bez powodu)'}"
-    blocks, parse_error = parse_repair_blocks(raw)
-    if parse_error:
-        self_repair_record(repair_id, context, "parse_failed", detail=parse_error)
-        return f"[Self-Repair] {context}: {parse_error}"
-    workdir = prepare_repair_workspace(repair_id)
-    applied, apply_detail = apply_repair_blocks(blocks, workdir)
-    if not applied:
-        self_repair_record(repair_id, context, "apply_failed", detail=apply_detail)
-        return f"[Self-Repair] {context}: patch nie pasuje: {apply_detail}"
+    self_repair_record(repair_id, context, "started", detail=f"count={candidate.get('count')} tools={self_repair_tools_enabled()}")
+
+    # Produce a change for the ISOLATED working copy. Two modes:
+    #  - tools (L4.102, default): Claude edits the workdir directly with file
+    #    tools; we diff vs a pristine copy to get the changeset (full contents).
+    #  - blocks (L4.101 fallback): Claude returns FIND/REPLACE text we apply.
+    if self_repair_tools_enabled():
+        workdir = prepare_repair_workspace(repair_id)
+        pristine = prepare_repair_pristine(repair_id)
+        ran, tail = claude_self_repair_tools_run(self_repair_tools_prompt(candidate), workdir)
+        if not ran:
+            self_repair_record(repair_id, context, "model_failed", detail=tail)
+            return f"[Self-Repair] {context}: tryb tools nieudany ({tail})."
+        if "NO_SAFE_PATCH" in tail:
+            reason = compact_line(tail.split("NO_SAFE_PATCH", 1)[1], 200)
+            self_repair_record(repair_id, context, "no_safe_patch", detail=reason)
+            return f"[Self-Repair] {context}: model odmowil bezpiecznego patcha: {reason or '(bez powodu)'}"
+        changeset, change_error = self_repair_changeset(workdir, pristine)
+        if change_error:
+            self_repair_record(repair_id, context, "apply_failed", detail=change_error)
+            return f"[Self-Repair] {context}: {change_error}"
+        payload_change = {"changeset": changeset}
+        files = sorted({str(c["file"]) for c in changeset})
+        change_count = f"{len(changeset)} plik(ow) edytowanych przez model (tools)"
+    else:
+        workdir = prepare_repair_workspace(repair_id)
+        raw = claude_self_repair_response(self_repair_prompt(candidate))
+        if raw is None:
+            self_repair_record(repair_id, context, "model_failed")
+            return f"[Self-Repair] {context}: wywolanie Claude nieudane (szczegoly w errors)."
+        if "NO_SAFE_PATCH" in raw[:2000]:
+            reason = compact_line(raw.split("NO_SAFE_PATCH", 1)[1], 200)
+            self_repair_record(repair_id, context, "no_safe_patch", detail=reason)
+            return f"[Self-Repair] {context}: model odmowil bezpiecznego patcha: {reason or '(bez powodu)'}"
+        blocks, parse_error = parse_repair_blocks(raw)
+        if parse_error:
+            self_repair_record(repair_id, context, "parse_failed", detail=parse_error)
+            return f"[Self-Repair] {context}: {parse_error}"
+        applied, apply_detail = apply_repair_blocks(blocks, workdir)
+        if not applied:
+            self_repair_record(repair_id, context, "apply_failed", detail=apply_detail)
+            return f"[Self-Repair] {context}: patch nie pasuje: {apply_detail}"
+        payload_change = {"blocks": blocks}
+        files = sorted({str(b["file"]) for b in blocks})
+        change_count = f"{len(blocks)} blok(ow)"
+
     verdict = verify_repair_workspace(workdir)
     if not verdict["ok"]:
         self_repair_record(repair_id, context, "verify_failed", detail=verdict["detail"], step=verdict["step"])
         return f"[Self-Repair] {context}: weryfikacja CZERWONA ({verdict['step']}): {verdict['detail']}"
-    files = sorted({str(b["file"]) for b in blocks})
     action = create_action(
-        f"SELF-REPAIR {context}: {len(blocks)} blok(ow) w {', '.join(files)}; weryfikacja: {verdict['detail']}",
+        f"SELF-REPAIR {context}: {change_count} w {', '.join(files)}; weryfikacja: {verdict['detail']}",
         action_type="self_repair",
         risk="R2",
-        payload={"repair_id": repair_id, "context": context, "blocks": blocks, "files": files, "evidence": verdict["detail"]},
+        payload={"repair_id": repair_id, "context": context, "files": files, "evidence": verdict["detail"], **payload_change},
     )
+
+    # L4.102: optional full autonomy — apply a GREEN repair to production now.
+    if self_repair_auto_apply_enabled():
+        approved = update_action_status(action["action_id"], "approved", "auto-apply (AI_COUNCIL_SELF_REPAIR_AUTO_APPLY)")
+        executed = execute_self_repair_action(approved or action)
+        ok = executed.get("status") == "executed"
+        self_repair_record(repair_id, context, "auto_applied" if ok else "auto_apply_failed", action_id=action["action_id"], files=files)
+        summary = (
+            f"🔧 Self-Repair {'ZASTOSOWANY automatycznie' if ok else 'auto-apply NIEUDANY'}: `{context}` ({candidate.get('count')}x).\n"
+            f"Pliki: {', '.join(files)} | weryfikacja: {verdict['detail']}\n{executed.get('execution_result')}"
+        )
+        if send:
+            deliver_proactive(chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID"), summary)
+        return summary
+
     self_repair_record(repair_id, context, "proposed", action_id=action["action_id"], files=files)
     summary = (
         f"🔧 Self-Repair: ZIELONY patch na `{context}` ({candidate.get('count')}x w errors).\n"
-        f"Pliki: {', '.join(files)} | weryfikacja: {verdict['detail']}\n"
+        f"Pliki: {', '.join(files)} | {change_count} | weryfikacja: {verdict['detail']}\n"
         f"Zatwierdz: /approve {action['action_id']} | odrzuc: /deny {action['action_id']}"
     )
     if send:
@@ -18913,18 +19093,29 @@ def execute_self_repair_action(action: dict) -> dict:
     payload = action.get("payload") or {}
     repair_id = str(payload.get("repair_id") or "")
     blocks = list(payload.get("blocks") or [])
-    files = sorted({str(b.get("file") or "") for b in blocks})
-    if not repair_id or not blocks or not all(self_repair_file_allowed(f) for f in files):
+    changeset = list(payload.get("changeset") or [])
+    if changeset:
+        files = sorted({str(c.get("file") or "") for c in changeset})
+    else:
+        files = sorted({str(b.get("file") or "") for b in blocks})
+    if not repair_id or not (blocks or changeset) or not files or not all(self_repair_file_allowed(f) for f in files):
         return _self_repair_failed(action, "payload niekompletny lub plik poza allowlista")
     backup = self_repair_backup_dir(repair_id)
     try:
         for rel in files:
             dest = backup / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes((PROJECT_DIR / rel).read_bytes())
+            src = PROJECT_DIR / rel
+            # a repair may ADD a new test file -> mark "absent" so undo can delete it
+            dest.write_bytes(src.read_bytes() if src.exists() else b"")
+            if not src.exists():
+                dest.with_suffix(dest.suffix + ".absent").write_text("1", encoding="utf-8")
     except OSError as exc:
         return _self_repair_failed(action, f"backup nieudany: {exc}")
-    applied, detail = apply_repair_blocks(blocks, PROJECT_DIR)
+    if changeset:
+        applied, detail = apply_repair_changeset(changeset, PROJECT_DIR)
+    else:
+        applied, detail = apply_repair_blocks(blocks, PROJECT_DIR)
     if applied:
         proc = subprocess.run(
             [sys.executable, "-m", "py_compile", str(PROJECT_DIR / "ai_council.py")],
@@ -18955,14 +19146,21 @@ def self_repair_undo(repair_id: str) -> str:
         return f"[Self-Repair] Brak backupu dla {repair_id}."
     restored: list[str] = []
     for path in sorted(backup.rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or path.name.endswith(".absent"):
             continue
         rel = path.relative_to(backup)
+        target = PROJECT_DIR / rel
         try:
-            (PROJECT_DIR / rel).write_bytes(path.read_bytes())
+            if path.with_suffix(path.suffix + ".absent").exists():
+                # file did NOT exist before the repair -> remove it on undo
+                if target.exists():
+                    target.unlink()
+                restored.append(f"{rel} (usunieto)")
+            else:
+                target.write_bytes(path.read_bytes())
+                restored.append(str(rel))
         except OSError as exc:
             return f"[Self-Repair] Blad przywracania {rel}: {exc}"
-        restored.append(str(rel))
     self_repair_record(repair_id, "", "undone", files=restored)
     return f"[Self-Repair] Przywrocono z backupu: {', '.join(restored) or '(nic)'}."
 

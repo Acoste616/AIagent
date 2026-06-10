@@ -114,6 +114,10 @@ class SelfRepairPipelineTests(unittest.TestCase):
         state = self.base / "state"
         state.mkdir()
         self.proj = proj
+        # These tests exercise the L4.101 FIND/REPLACE (blocks) path explicitly.
+        _tools_off = patch.dict("os.environ", {"AI_COUNCIL_SELF_REPAIR_TOOLS": "false"})
+        _tools_off.start()
+        self.addCleanup(_tools_off.stop)
         for p in (
             patch.object(ai_council, "PROJECT_DIR", proj),
             patch.object(ai_council, "STATE_DIR", state),
@@ -217,6 +221,123 @@ class SelfRepairRoutingTests(unittest.TestCase):
         recipe = json.loads((ai_council.PROJECT_DIR / "recipes" / "self_repair_loop.json").read_text(encoding="utf-8"))
         self.assertTrue(recipe["enabled"])
         self.assertEqual(recipe["steps"][0]["command"], "/self-repair")
+
+
+class SelfRepairToolsModeTests(unittest.TestCase):
+    """L4.102: model edits the isolated working copy directly with file tools;
+    we diff vs pristine for the changeset. Production still gated."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        proj = self.base / "proj"
+        (proj / "tests").mkdir(parents=True)
+        (proj / "ai_council.py").write_text("MARKER = 1\n", encoding="utf-8")
+        (proj / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+        (proj / "tests" / "test_mini.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        state = self.base / "state"
+        state.mkdir()
+        self.proj = proj
+        for p in (
+            patch.object(ai_council, "PROJECT_DIR", proj),
+            patch.object(ai_council, "STATE_DIR", state),
+            patch.object(ai_council, "ERRORS_FILE", state / "errors.jsonl"),
+            patch.object(ai_council, "ACTIONS_FILE", state / "actions.jsonl"),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        ai_council.record_error("marker_bug", message="MARKER zle", severity="error")
+
+    def _fake_tools_run(self, edit_main=None, new_test=None, foreign=None, say="REPAIR_DONE ok"):
+        def run(prompt, workdir):
+            if edit_main is not None:
+                (workdir / "ai_council.py").write_text(edit_main, encoding="utf-8")
+            if new_test is not None:
+                (workdir / "tests" / "test_added.py").write_text(new_test, encoding="utf-8")
+            if foreign is not None:
+                (workdir / foreign).parent.mkdir(parents=True, exist_ok=True)
+                (workdir / foreign).write_text("x = 1\n", encoding="utf-8")
+            return True, say
+        return run
+
+    def test_tools_changeset_proposed_without_touching_production(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 2\n")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("ZIELONY patch", out)
+        self.assertIn("tools", out)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 1\n")
+        action = ai_council.read_jsonl(ai_council.ACTIONS_FILE)[-1]
+        self.assertEqual(action["type"], "self_repair")
+        self.assertEqual(action["payload"]["changeset"][0]["content"], "MARKER = 2\n")
+
+    def test_tools_foreign_file_is_rejected(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run",
+                          self._fake_tools_run(edit_main="MARKER = 2\n", foreign="scripts/evil.py")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "ok"}):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("niedozwolony plik", out)
+        self.assertEqual(ai_council.read_jsonl(ai_council.ACTIONS_FILE), [])
+
+    def test_tools_no_change_is_reported(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run()), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "ok"}):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("nie zmienil", out)
+
+    def test_tools_no_safe_patch_from_transcript(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run",
+                          self._fake_tools_run(say="NO_SAFE_PATCH brak pewnosci")):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("odmowil", out)
+        self.assertEqual(ai_council.read_jsonl(ai_council.ACTIONS_FILE), [])
+
+    def test_apply_changeset_with_new_test_file_and_undo_deletes_it(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run",
+                          self._fake_tools_run(edit_main="MARKER = 2\n",
+                                               new_test="def test_extra():\n    assert 1 == 1\n")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "2 passed"}):
+            ai_council.run_self_repair_once()
+        action = ai_council.read_jsonl(ai_council.ACTIONS_FILE)[-1]
+        files = action["payload"]["files"]
+        self.assertIn("ai_council.py", files)
+        self.assertIn("tests/test_added.py", files)
+        executed = ai_council.execute_self_repair_action(action)
+        self.assertEqual(executed["status"], "executed", executed.get("execution_result"))
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 2\n")
+        self.assertTrue((self.proj / "tests" / "test_added.py").exists())
+        ai_council.self_repair_undo(action["payload"]["repair_id"])
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 1\n")
+        self.assertFalse((self.proj / "tests" / "test_added.py").exists())
+
+    def test_auto_apply_applies_green_repair_to_production(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 9\n")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}), \
+                patch.dict("os.environ", {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true"}):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("ZASTOSOWANY automatycznie", out)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 9\n")
+        statuses = [r["status"] for r in ai_council.read_jsonl(ai_council.self_repair_file())]
+        self.assertIn("auto_applied", statuses)
+
+    def test_auto_apply_red_verification_never_reaches_production(self):
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 9\n")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": False, "step": "pytest", "detail": "1 failed"}), \
+                patch.dict("os.environ", {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true"}):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("CZERWONA", out)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 1\n")
+        self.assertEqual(ai_council.read_jsonl(ai_council.ACTIONS_FILE), [])
+
+    def test_blocks_mode_still_works_when_tools_disabled(self):
+        with patch.dict("os.environ", {"AI_COUNCIL_SELF_REPAIR_TOOLS": "false"}), \
+                patch.object(ai_council, "claude_self_repair_response", return_value=VALID_BLOCK), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("blok", out)
+        action = ai_council.read_jsonl(ai_council.ACTIONS_FILE)[-1]
+        self.assertIn("blocks", action["payload"])
 
 
 if __name__ == "__main__":
