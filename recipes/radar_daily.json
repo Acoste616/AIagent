@@ -1,0 +1,34 @@
+{
+  "name": "radar_daily",
+  "recipe_version": "L4.105",
+  "cadence": "daily",
+  "description": "L4.105 RADAR: poranny osobisty zwiad YouTube/X/GitHub wg watchlisty — jeden krótki przegląd z linkami.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "0 8 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "capture_improvement": false,
+  "planner_selectable": true,
+  "intent_keywords": [
+    "radar",
+    "co nowego",
+    "co ciekawego",
+    "watchlista",
+    "obserwuj"
+  ],
+  "integrations": [
+    "youtube_rss",
+    "github",
+    "grok",
+    "claude"
+  ],
+  "steps": [
+    {
+      "command": "/radar",
+      "prompt": "scheduled"
+    }
+  ]
+}

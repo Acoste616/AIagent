@@ -210,6 +210,7 @@ READONLY_RECIPE_COMMANDS = {
     "/flow",
     "/council",
     "/evolve",
+    "/radar",
 }
 RECIPE_CONNECTOR_READ_ACTIONS = {"check", "status", "auth", "setup", "connect", "search", "find", "brief", "report", "summary", "ingest", "index", "cache", "sync", "oauth-sync"}
 INTEGRATION_DRAFT_CONNECTORS = {"gmail", "calendar", "drive", "github"}
@@ -275,6 +276,7 @@ IMPROVEMENT_REPAIR_VERSION = "L4.57"
 GROK_BUDGET_HYGIENE_VERSION = "L4.58"
 DEEPAGENTS_ADAPTER_VERSION = "L4.104"
 EVOLUTION_FACTORY_VERSION = "L4.104"
+RADAR_VERSION = "L4.105"
 GENERIC_IMPROVEMENT_TITLES = {
     "research gotowy",
     "plan workflow gotowy",
@@ -373,6 +375,7 @@ DEFAULT_RECIPE_MANAGED_KEYS = {
     "error_audit_twice_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
     "feature_evolution_loop": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
     "evolution_factory_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
+    "radar_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
 }
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
@@ -5728,6 +5731,22 @@ def default_recipes() -> dict[str, dict]:
             "intent_keywords": ["ewolucja", "evolution", "fabryka ulepszen", "fabryka ulepszeń", "rozwijaj się sam", "rozwijaj sie sam"],
             "integrations": ["grok", "claude", "improvements", "actions"],
             "steps": [{"command": "/evolve", "prompt": ""}],
+        },
+        "radar_daily": {
+            "name": "radar_daily",
+            "recipe_version": RADAR_VERSION,
+            "cadence": "daily",
+            "description": "L4.105 RADAR: poranny osobisty zwiad YouTube/X/GitHub wg watchlisty — jeden krótki przegląd z linkami.",
+            "enabled": True,
+            # 8:00 czasu lokalnego hosta — rano, PO quiet hours (23:00-07:00).
+            "trigger": {"type": "schedule", "cron": f"0 {max(0, min(23, int_cfg('AI_COUNCIL_RADAR_HOUR', 8)))} * * *"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "capture_improvement": False,
+            "planner_selectable": True,
+            "intent_keywords": ["radar", "co nowego", "co ciekawego", "watchlista", "obserwuj"],
+            "integrations": ["youtube_rss", "github", "grok", "claude"],
+            "steps": [{"command": "/radar", "prompt": "scheduled"}],
         },
         "project_next_action": {
             "name": "project_next_action",
@@ -14444,6 +14463,9 @@ def response_reply_markup(response: str) -> dict | None:
     recipe_match = re.search(r"\bactivation:\s*recipe\s+([A-Za-z0-9_.-]+)", response or "")
     if recipe_match:
         return recipe_activation_reply_markup(recipe_match.group(1))
+    if (response or "").lstrip().startswith(RADAR_DIGEST_HEADER):
+        # L4.105: digest radaru w odpowiedzi bezpośredniej -> te same przyciski co proaktywny.
+        return radar_reply_markup()
     task_match = re.search(r"\b(task-[0-9]{8}-[0-9]{6}-[A-Za-z0-9]+)", response or "")
     if task_match:
         task_id = task_match.group(1)
@@ -15041,6 +15063,40 @@ def _nat_status_diagnostics(stripped: str, lower: str) -> dict | None:
     return None
 
 
+def _nat_radar(stripped: str, lower: str) -> dict | None:
+    # L4.105 RADAR — osobisty zwiad YT/X/GitHub. Stoi PRZED _nat_ops_dashboards,
+    # żeby "obserwuj X" trafiało do radaru (stary /watch zostaje pod "śledź ...").
+    if lower in {"radar", "co nowego", "co ciekawego", "co nowego dzisiaj", "co nowego dzis", "co nowego dziś"}:
+        return {"command": "/radar", "operators": ["host"], "prompt": "", "mode": "radar", "intent": "natural"}
+    if lower in {"co obserwujesz", "watchlista", "co masz na radarze", "pokaż watchlistę", "pokaz watchliste"}:
+        return {"command": "/radar", "operators": ["host"], "prompt": "list", "mode": "radar_watch", "intent": "natural"}
+    stop_prefixes = [
+        "przestań obserwować ",
+        "przestan obserwowac ",
+        "przestań obserwowac ",
+        "przestan obserwować ",
+        "nie obserwuj już ",
+        "nie obserwuj juz ",
+    ]
+    if any(lower.startswith(prefix) for prefix in stop_prefixes):
+        return {
+            "command": "/radar",
+            "operators": ["host"],
+            "prompt": "remove " + strip_intent_prefix(stripped, stop_prefixes),
+            "mode": "radar_watch",
+            "intent": "natural",
+        }
+    if lower.startswith("obserwuj "):
+        return {
+            "command": "/radar",
+            "operators": ["host"],
+            "prompt": "add " + strip_intent_prefix(stripped, ["obserwuj "]),
+            "mode": "radar_watch",
+            "intent": "natural",
+        }
+    return None
+
+
 def _nat_ops_dashboards(stripped: str, lower: str) -> dict | None:
     if lower in {"watch", "watchlist", "śledzone tematy", "sledzone tematy", "co śledzisz", "co sledzisz", "tematy"} or lower.startswith(
         ("pokaż tematy", "pokaz tematy", "śledź ", "sledz ", "obserwuj ")
@@ -15609,6 +15665,7 @@ def _nat_research_fallthrough(stripped: str, lower: str) -> dict | None:
 
 NATURAL_INTENT_RULE_GROUPS = (
     _nat_status_diagnostics,
+    _nat_radar,
     _nat_ops_dashboards,
     _nat_connector_actions,
     _nat_task_lifecycle,
@@ -16111,6 +16168,9 @@ def route_text(text: str) -> dict:
     if lower == "/watch" or lower.startswith("/watch "):
         prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
         return {"command": "/watch", "operators": ["host"], "prompt": prompt, "mode": "watch"}
+    if lower == "/radar" or lower.startswith("/radar "):
+        prompt = stripped.split(maxsplit=1)[1].strip() if len(stripped.split(maxsplit=1)) > 1 else ""
+        return {"command": "/radar", "operators": ["host"], "prompt": prompt, "mode": "radar"}
     if lower.startswith("/chat"):
         return {"command": "/chat", "operators": ["host"], "prompt": stripped[5:].strip(), "mode": "chat"}
     if lower.startswith("/agent"):
@@ -17713,9 +17773,11 @@ def imessage_sender_allowed(sender: str) -> tuple[bool, str]:
 
 
 def imessage_primary_enabled() -> bool:
-    """iMessage is the PRIMARY proactive channel (phone-number thread); Telegram
-    is the fallback. Requires AI_COUNCIL_IMESSAGE_ENABLED for actual delivery."""
-    return bool_cfg("AI_COUNCIL_IMESSAGE_PRIMARY", True)
+    """L4.106 (decyzja Bartka 2026-06-10): TELEGRAM jest kanałem PRIMARY — pełne
+    przyciski/pickery/media, 100% Poke-style UX. iMessage zostaje jako opt-in
+    (AI_COUNCIL_IMESSAGE_PRIMARY=true przywraca stary układ); inbound iMessage
+    nadal działa przez most niezależnie od tej flagi."""
+    return bool_cfg("AI_COUNCIL_IMESSAGE_PRIMARY", False)
 
 
 def imessage_outbox_stale(max_pending_s: int | None = None) -> bool:
@@ -18181,6 +18243,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return setup_response()
     if command == "/watch":
         return watch_response(prompt, task_id=task_id)
+    if command == "/radar":
+        return radar_response(prompt, task_id=task_id)
     if command == "/undo":
         return workspace_action_undo(prompt)
     if command == "/chat":
@@ -18507,6 +18571,22 @@ def host_callback_response(target: str, chat_id: str = "") -> tuple[str, str]:
         return action_planner_response(prompt, chat_id=chat_id), "host_poke_research"
     if target == "health":
         return health_response(), "host_health"
+    # L4.105 RADAR buttons (callback_data <=64B, więc tematy czytamy z watchlisty, nie z payloadu)
+    if target == "radar-x":
+        topics = radar_watchlist().get("topics") or []
+        query = "Co dziś najgłośniejsze i najciekawsze na X w tematach: " + (", ".join(topics[:8]) or "agenci AI") + ". 3-5 punktów z linkami."
+        return grok_x_research_response(query), "host_radar_x"
+    if target == "radar-gh":
+        trending = radar_github_trending()
+        if not trending:
+            return "[Radar] GitHub trending chwilowo niedostępny — spróbuj za chwilę.", "host_radar_gh"
+        lines = ["⭐ GitHub trending dzisiaj:"]
+        for row in trending[:5]:
+            desc = f" — {row['description']}" if row.get("description") else ""
+            lines.append(f"• {row['repo']}{desc} · https://github.com/{row['repo']}")
+        return "\n".join(lines), "host_radar_gh"
+    if target == "radar-settings":
+        return radar_watchlist_text(), "host_radar_settings"
     return f"[Council] Nieznany host action `{compact_line(target, 80)}`.", "unknown_host_action"
 
 
@@ -19929,6 +20009,566 @@ def evolution_cycle(send: bool = False, force: bool = False) -> str:
     if detail:
         summary += f"\nszczegoly: {compact_line(detail, 300)}"
     return summary
+
+
+# ---------------------------------------------------------------------------
+# L4.105 — RADAR: osobisty zwiad YouTube/X/GitHub dla Bartka.
+# Read-only GET-y (YouTube RSS, GitHub trending/releases — bez tokenów, bez write),
+# JEDNO wywołanie Groka (X przez istniejącą ścieżkę research z reserve/finalize)
+# i JEDNO wywołanie Claude CLI na złożenie ludzkiego przeglądu po polsku.
+# Każde źródło jest fail-safe: pad jednego nie wywala radaru. Wysyłka:
+# deliver_proactive (iMessage-first) ORAZ Telegram z inline przyciskami.
+# ---------------------------------------------------------------------------
+
+RADAR_DIGEST_HEADER = "🛰 Radar"
+
+DEFAULT_RADAR_WATCHLIST = {
+    "topics": ["agenci AI", "Claude", "Grok", "iMessage automation", "OpenClaw"],
+    "yt_channels": [],
+    "gh_repos": ["anthropics/claude-code"],
+}
+
+RADAR_COMPOSE_CONTRACT = (
+    "Jesteś redaktorem prywatnego radaru nowości Bartka. Dostajesz surowe dane (YouTube/X/GitHub). "
+    "Złóż JEDEN krótki przegląd po polsku, prostym językiem, maks 12 linii. "
+    f"Pierwsza linia DOKŁADNIE: '{RADAR_DIGEST_HEADER} — co nowego dla Ciebie'. "
+    "Sekcje 🎬 (YouTube), 𝕏 (X), ⭐ (GitHub) TYLKO gdy mają treść; każda pozycja 1 linia + link. "
+    "Na końcu jedna linia 'Może Cię zaciekawi: ...' z JEDNĄ propozycją i pytaniem, czy coś rozwinąć. "
+    "Zero żargonu, zero JSON, zero nagłówków markdown, nie zmyślaj linków."
+)
+
+
+def radar_enabled() -> bool:
+    return bool_cfg("AI_COUNCIL_RADAR_ENABLED", True)
+
+
+def radar_watchlist_path() -> Path:
+    return STATE_DIR / "radar_watchlist.json"
+
+
+def radar_state_path() -> Path:
+    return STATE_DIR / "radar_state.json"
+
+
+def radar_watchlist() -> dict:
+    """Watchlista radaru. Brak/zepsuty plik -> seed startowy; istniejący plik jest
+    źródłem prawdy (pusta lista po świadomym wyczyszczeniu zostaje pusta)."""
+    try:
+        raw = json.loads(radar_watchlist_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        raw = None
+    if not isinstance(raw, dict):
+        return {
+            "topics": list(DEFAULT_RADAR_WATCHLIST["topics"]),
+            "yt_channels": [dict(c) for c in DEFAULT_RADAR_WATCHLIST["yt_channels"]],
+            "gh_repos": list(DEFAULT_RADAR_WATCHLIST["gh_repos"]),
+        }
+    topics = [str(t).strip() for t in (raw.get("topics") or []) if str(t).strip()]
+    channels = []
+    for ch in raw.get("yt_channels") or []:
+        if isinstance(ch, dict) and str(ch.get("channel_id") or "").strip():
+            cid = str(ch.get("channel_id")).strip()
+            channels.append({"name": str(ch.get("name") or "").strip() or cid, "channel_id": cid})
+    repos = [str(r).strip() for r in (raw.get("gh_repos") or []) if re.fullmatch(r"[\w.-]+/[\w.-]+", str(r).strip())]
+    return {"topics": topics, "yt_channels": channels, "gh_repos": repos}
+
+
+def radar_watchlist_save(data: dict) -> dict:
+    ensure_council_dirs()
+    clean: dict = {"topics": [], "yt_channels": [], "gh_repos": []}
+    seen: set[str] = set()
+    for topic in data.get("topics") or []:
+        value = str(topic).strip()
+        if value and value.lower() not in seen:
+            seen.add(value.lower())
+            clean["topics"].append(value)
+    seen = set()
+    for ch in data.get("yt_channels") or []:
+        cid = str((ch or {}).get("channel_id") or "").strip()
+        if cid and cid not in seen:
+            seen.add(cid)
+            clean["yt_channels"].append({"name": str((ch or {}).get("name") or "").strip() or cid, "channel_id": cid})
+    seen = set()
+    for repo in data.get("gh_repos") or []:
+        value = str(repo).strip()
+        if value and value.lower() not in seen:
+            seen.add(value.lower())
+            clean["gh_repos"].append(value)
+    radar_watchlist_path().write_text(json.dumps(clean, ensure_ascii=False), encoding="utf-8")
+    return clean
+
+
+def radar_state() -> dict:
+    try:
+        data = json.loads(radar_state_path().read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("sources", {})
+            return data
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return {"sources": {}}
+
+
+def radar_state_save(state: dict) -> None:
+    p = radar_state_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def radar_fetch_text(url: str, timeout: int = 20) -> str:
+    """Read-only GET zwracający tekst albo '' (nigdy nie rzuca). RSS/HTML nie są
+    JSON-em, więc request_json tu nie pasuje — to jego tekstowy bliźniak."""
+    req = Request(url, headers={"User-Agent": "ai-council-radar/1.0"})
+    try:
+        with urlopen(req, timeout=timeout) as res:
+            return res.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _radar_unescape(text: str) -> str:
+    out = str(text or "")
+    for entity, char in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
+        out = out.replace(entity, char)
+    return out
+
+
+def radar_classify_item(text: str) -> tuple[str, str]:
+    """Heurystyka 'obserwuj X': link YouTube -> kanał, owner/repo (lub link GitHub)
+    -> repo, wszystko inne -> temat."""
+    clean = str(text or "").strip().strip(".,;")
+    low = clean.lower()
+    if "youtube.com" in low or "youtu.be" in low:
+        return "yt", clean
+    gh_link = re.search(r"github\.com/([\w.-]+/[\w.-]+)", clean)
+    if gh_link:
+        return "gh", gh_link.group(1)
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", clean):
+        return "gh", clean
+    return "topic", clean
+
+
+def radar_youtube_channel_id(url: str) -> tuple[str, str]:
+    """(name, channel_id) z linku YouTube: najpierw sam URL, potem jeden GET strony
+    (regex po channelId). Fail-safe: ('','') gdy nie da rady."""
+    direct = re.search(r"youtube\.com/channel/(UC[\w-]{10,})", url)
+    if direct:
+        return direct.group(1), direct.group(1)
+    html_text = radar_fetch_text(url)
+    cid = re.search(r'"channelId"\s*:\s*"(UC[\w-]{10,})"', html_text or "")
+    name_match = re.search(r'"(?:author|ownerChannelName)"\s*:\s*"([^"\\]{1,80})"', html_text or "")
+    name = name_match.group(1) if name_match else ""
+    if cid:
+        return name or cid.group(1), cid.group(1)
+    return "", ""
+
+
+def radar_watch_add(item: str) -> str:
+    clean = str(item or "").strip()
+    if not clean:
+        return "Co mam obserwować? Napisz np. „obserwuj OpenClaw”, wklej link do kanału YouTube albo owner/repo z GitHuba."
+    watchlist = radar_watchlist()
+    kind, value = radar_classify_item(clean)
+    if kind == "gh":
+        if value.lower() in {r.lower() for r in watchlist["gh_repos"]}:
+            return f"Repo {value} już jest na radarze."
+        watchlist["gh_repos"].append(value)
+        radar_watchlist_save(watchlist)
+        return f"Dodane. Będę wypatrywać nowych wydań {value} na GitHubie."
+    if kind == "yt":
+        name, channel_id = radar_youtube_channel_id(value)
+        if not channel_id:
+            watchlist["topics"].append(clean)
+            radar_watchlist_save(watchlist)
+            return "Nie rozpoznałem kanału z tego linku, więc zapisałem go jako temat do śledzenia."
+        if channel_id in {c["channel_id"] for c in watchlist["yt_channels"]}:
+            return f"Kanał {name or channel_id} już jest na radarze."
+        watchlist["yt_channels"].append({"name": name or channel_id, "channel_id": channel_id})
+        radar_watchlist_save(watchlist)
+        return f"Dodane. Będę wypatrywać nowych filmów na kanale {name or channel_id}."
+    if value.lower() in {t.lower() for t in watchlist["topics"]}:
+        return f"Temat „{value}” już jest na radarze."
+    watchlist["topics"].append(value)
+    radar_watchlist_save(watchlist)
+    return f"Dodane. Mam oko na temat „{value}”."
+
+
+def radar_watch_remove(item: str) -> str:
+    clean = str(item or "").strip().strip(".,;")
+    if not clean:
+        return "Napisz, co zdjąć z radaru, np. „przestań obserwować OpenClaw”."
+    low = clean.lower()
+    watchlist = radar_watchlist()
+    before = len(watchlist["topics"]) + len(watchlist["yt_channels"]) + len(watchlist["gh_repos"])
+    watchlist["topics"] = [t for t in watchlist["topics"] if t.lower() != low]
+    watchlist["yt_channels"] = [
+        c for c in watchlist["yt_channels"] if c["channel_id"].lower() != low and c["name"].lower() != low
+    ]
+    watchlist["gh_repos"] = [r for r in watchlist["gh_repos"] if r.lower() != low]
+    saved = radar_watchlist_save(watchlist)
+    after = len(saved["topics"]) + len(saved["yt_channels"]) + len(saved["gh_repos"])
+    if after < before:
+        return f"Zdjęte z radaru: {clean}."
+    return f"Nie znalazłem „{clean}” na radarze, więc nic nie zmieniłem. Zapytaj „co obserwujesz”, to pokażę listę."
+
+
+def radar_watchlist_text() -> str:
+    watchlist = radar_watchlist()
+    lines = [f"{RADAR_DIGEST_HEADER} — co obserwuję dla Ciebie:"]
+    if watchlist["topics"]:
+        lines.append("Tematy: " + ", ".join(watchlist["topics"]))
+    if watchlist["yt_channels"]:
+        lines.append("YouTube: " + ", ".join(c["name"] or c["channel_id"] for c in watchlist["yt_channels"]))
+    if watchlist["gh_repos"]:
+        lines.append("GitHub: " + ", ".join(watchlist["gh_repos"]))
+    if len(lines) == 1:
+        lines.append("(pusto) — dodaj coś: „obserwuj <temat / link YouTube / owner/repo>”.")
+    lines.append("Dodaj: „obserwuj <coś>” · Zdejmij: „przestań obserwować <coś>” · Przegląd: /radar")
+    return "\n".join(lines)
+
+
+def radar_youtube_entries(xml_text: str, limit: int = 3) -> list[dict]:
+    """Defensywny parser RSS YouTube (regex, zero zależności): [{title, link, published}]."""
+    entries: list[dict] = []
+    for block in re.findall(r"<entry>(.*?)</entry>", xml_text or "", re.S):
+        title = re.search(r"<title>(.*?)</title>", block, re.S)
+        link = re.search(r'<link[^>]*href="([^"]+)"', block)
+        published = re.search(r"<published>(.*?)</published>", block, re.S)
+        if not title or not link:
+            continue
+        entries.append(
+            {
+                "title": compact_line(_radar_unescape(title.group(1)), 120),
+                "link": link.group(1).strip(),
+                "published": published.group(1).strip() if published else "",
+            }
+        )
+        if len(entries) >= limit:
+            break
+    return entries
+
+
+def radar_youtube_news(channels: list[dict], state: dict, per_channel: int = 3) -> list[dict]:
+    """Nowe filmy z obserwowanych kanałów — tylko nowsze niż marker per kanał
+    (radar_state.json). Pierwszy run: bierze 3 najnowsze i ustawia marker."""
+    out: list[dict] = []
+    sources = state.setdefault("sources", {})
+    for ch in channels[:10]:
+        cid = str(ch.get("channel_id") or "").strip()
+        if not cid:
+            continue
+        xml_text = radar_fetch_text(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
+        if not xml_text:
+            continue
+        entries = radar_youtube_entries(xml_text, limit=per_channel)
+        key = f"yt:{cid}"
+        last_seen = str((sources.get(key) or {}).get("last_published") or "")
+        fresh = [e for e in entries if not last_seen or str(e.get("published") or "") > last_seen]
+        newest = max((str(e.get("published") or "") for e in entries), default="")
+        if newest:
+            sources[key] = {"last_published": newest, "seen_at": utc_now()}
+        for entry in fresh:
+            out.append({"channel": str(ch.get("name") or cid), **entry})
+    return out
+
+
+def parse_github_trending(html_text: str, limit: int = 5) -> list[dict]:
+    """Defensywny parser HTML github.com/trending: [{repo, description}]."""
+    repos: list[dict] = []
+    for block in re.findall(r"<article[^>]*>(.*?)</article>", html_text or "", re.S):
+        repo_match = re.search(r'<h2[^>]*>.*?href="/([\w.-]+/[\w.-]+)"', block, re.S)
+        if not repo_match:
+            continue
+        description = ""
+        desc_match = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
+        if desc_match:
+            description = compact_line(_radar_unescape(re.sub(r"<[^>]+>", "", desc_match.group(1))), 110)
+        repos.append({"repo": repo_match.group(1), "description": description})
+        if len(repos) >= limit:
+            break
+    return repos
+
+
+def radar_github_trending(limit: int = 5) -> list[dict]:
+    html_text = radar_fetch_text("https://github.com/trending?since=daily")
+    if not html_text:
+        return []
+    return parse_github_trending(html_text, limit=limit)
+
+
+def radar_github_releases(repos: list[str], state: dict) -> list[dict]:
+    """Najnowsze wydanie każdego obserwowanego repo (publiczne API, bez tokena).
+    403/404/inne błędy cicho pomijane; marker per repo raportuje tylko zmianę tagu."""
+    out: list[dict] = []
+    sources = state.setdefault("sources", {})
+    for repo in repos[:10]:
+        try:
+            data = request_json(
+                f"https://api.github.com/repos/{repo}/releases/latest",
+                headers={"User-Agent": "ai-council-radar/1.0"},
+                timeout=15,
+            )
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("ok") is False:
+            continue  # 403 rate-limit / 404 brak releases -> cisza, radar idzie dalej
+        tag = str(data.get("tag_name") or "").strip()
+        if not tag:
+            continue
+        key = f"gh:{repo}"
+        if str((sources.get(key) or {}).get("last_tag") or "") == tag:
+            continue
+        sources[key] = {"last_tag": tag, "seen_at": utc_now()}
+        out.append(
+            {
+                "repo": repo,
+                "tag": tag,
+                "name": compact_line(str(data.get("name") or tag), 90),
+                "link": str(data.get("html_url") or f"https://github.com/{repo}/releases"),
+            }
+        )
+    return out
+
+
+def radar_x_highlights(topics: list[str]) -> str:
+    """Jedno wywołanie Groka (istniejąca ścieżka X research, reserve/finalize w środku).
+    Blocked/error -> '' i radar składa się z reszty źródeł."""
+    if not topics:
+        return ""
+    prompt = (
+        "Co dziś najgłośniejsze i najciekawsze na X w tych tematach: "
+        + ", ".join(topics[:8])
+        + ". Zwróć 3-5 punktów, każdy 1 linia + link do posta. Bez lania wody."
+    )
+    try:
+        raw = grok_x_research_response(prompt, max_chars=int_cfg("AI_COUNCIL_RADAR_X_MAX_CHARS", 1200))
+    except Exception as exc:
+        record_error("radar_x", exc=exc, severity="warning")
+        return ""
+    text = str(raw or "")
+    if "blocked:" in text[:60] or text.startswith("[Grok X Research] error"):
+        record_error("radar_x", message=compact_line(text, 200), severity="warning")
+        return ""
+    if text.startswith("[Grok X Research]"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    return text.strip()
+
+
+def radar_collect() -> dict:
+    """Zbiera wszystkie źródła. KAŻDE fail-safe — błąd jednego nie wywala radaru."""
+    watchlist = radar_watchlist()
+    state = radar_state()
+    data: dict = {"yt": [], "gh_trending": [], "gh_releases": [], "x": ""}
+    try:
+        data["yt"] = radar_youtube_news(watchlist["yt_channels"], state)
+    except Exception as exc:
+        record_error("radar_youtube", exc=exc, severity="warning")
+    try:
+        data["gh_trending"] = radar_github_trending()
+    except Exception as exc:
+        record_error("radar_github_trending", exc=exc, severity="warning")
+    try:
+        data["gh_releases"] = radar_github_releases(watchlist["gh_repos"], state)
+    except Exception as exc:
+        record_error("radar_github_releases", exc=exc, severity="warning")
+    try:
+        data["x"] = radar_x_highlights(watchlist["topics"])
+    except Exception as exc:
+        record_error("radar_x", exc=exc, severity="warning")
+    radar_state_save(state)
+    return data
+
+
+def radar_has_content(data: dict) -> bool:
+    return bool(data.get("yt") or data.get("gh_trending") or data.get("gh_releases") or str(data.get("x") or "").strip())
+
+
+def radar_data_text(data: dict) -> str:
+    parts: list[str] = []
+    if data.get("yt"):
+        parts.append("YOUTUBE (nowe filmy):")
+        parts.extend(f"- [{e['channel']}] {e['title']} — {e['link']}" for e in data["yt"][:6])
+    x_text = str(data.get("x") or "").strip()
+    if x_text:
+        parts.append("X (najgłośniejsze):")
+        parts.append(x_text[:1500])
+    if data.get("gh_releases"):
+        parts.append("GITHUB (nowe wydania obserwowanych repo):")
+        parts.extend(f"- {r['repo']} {r['tag']} — {r['link']}" for r in data["gh_releases"][:5])
+    if data.get("gh_trending"):
+        parts.append("GITHUB TRENDING dzisiaj:")
+        parts.extend(
+            f"- {r['repo']}" + (f" — {r['description']}" if r.get("description") else "")
+            for r in data["gh_trending"][:5]
+        )
+    return "\n".join(parts)
+
+
+def radar_fallback_digest(data: dict) -> str:
+    """Prosty złożony tekst z samych danych — gdy Claude jest niedostępny."""
+    lines = [f"{RADAR_DIGEST_HEADER} — co nowego dla Ciebie"]
+    if data.get("yt"):
+        lines.append("🎬 YouTube:")
+        lines.extend(f"• {e['title']} — {e['link']}" for e in data["yt"][:3])
+    x_text = str(data.get("x") or "").strip()
+    if x_text:
+        lines.append("𝕏 Na X:")
+        added = 0
+        for raw_line in x_text.splitlines():
+            cleaned = raw_line.strip().lstrip("-•*0123456789. ").strip()
+            if not cleaned:
+                continue
+            lines.append("• " + compact_line(cleaned, 180))
+            added += 1
+            if added >= 4:
+                break
+    if data.get("gh_releases") or data.get("gh_trending"):
+        lines.append("⭐ GitHub:")
+        lines.extend(f"• Nowe wydanie {r['repo']} {r['tag']} — {r['link']}" for r in data.get("gh_releases", [])[:3])
+        lines.extend(
+            "• Trending: " + r["repo"] + (f" — {r['description']}" if r.get("description") else "")
+            for r in data.get("gh_trending", [])[:3]
+        )
+    proposal = ""
+    if data.get("yt"):
+        proposal = data["yt"][0]["title"]
+    elif data.get("gh_trending"):
+        proposal = data["gh_trending"][0]["repo"]
+    elif data.get("gh_releases"):
+        proposal = f"{data['gh_releases'][0]['repo']} {data['gh_releases'][0]['tag']}"
+    if proposal:
+        lines.append(f"Może Cię zaciekawi: {compact_line(proposal, 120)}. Rozwinąć któryś temat?")
+    else:
+        lines.append("Rozwinąć któryś temat?")
+    return "\n".join(lines[:16])
+
+
+def radar_claude_compose(data_text: str) -> str | None:
+    """JEDNO wywołanie Claude CLI (subskrypcja, bez tools) — wzór evolution/poke_chat.
+    None -> radar_fallback_digest."""
+    started = time.time()
+    allowed, reason, reservation = reserve_operator_call("claude", detail="radar")
+    if not allowed:
+        record_error("radar_reserve", message=reason, severity="warning")
+        return None
+    command = [
+        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--append-system-prompt",
+        RADAR_COMPOSE_CONTRACT,
+    ]
+    model = (cfg("AI_COUNCIL_RADAR_MODEL") or cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_MODEL")).strip()
+    if model:
+        command.extend(["--model", model])
+    command.extend(["-p", "SUROWE DANE RADARU:\n" + data_text[:8000]])
+    timeout = int_cfg("AI_COUNCIL_RADAR_TIMEOUT", 120)
+    try:
+        proc = subprocess.run(
+            command, text=True, encoding="utf-8", errors="replace", input="",
+            capture_output=True, timeout=timeout, cwd=str(PROJECT_DIR), env=operator_env(),
+        )
+    except subprocess.TimeoutExpired:
+        finalize_operator_call(reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="radar compose timeout")
+        record_error("radar_compose", message=f"timeout po {timeout}s", severity="warning")
+        return None
+    except FileNotFoundError:
+        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="radar claude missing")
+        return None
+    duration_ms = int((time.time() - started) * 1000)
+    if proc.returncode != 0:
+        detail = compact_line(redact_secrets(proc.stderr or proc.stdout or ""), 220)
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"radar: {detail}")
+        record_error("radar_compose", message=detail or f"exit {proc.returncode}", severity="warning")
+        return None
+    answer = clean_operator_output(redact_secrets(proc.stdout or "")).strip()
+    if not answer:
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="radar: empty response")
+        return None
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="radar compose")
+    return answer
+
+
+def radar_compose_digest(data: dict) -> str:
+    raw = radar_claude_compose(radar_data_text(data))
+    if not raw:
+        return radar_fallback_digest(data)
+    lines = [line for line in raw.splitlines() if line.strip()][:14]
+    text = "\n".join(lines).strip()
+    if not text.startswith(RADAR_DIGEST_HEADER):
+        text = f"{RADAR_DIGEST_HEADER} — co nowego dla Ciebie\n{text}"
+    return text
+
+
+def radar_reply_markup() -> dict:
+    return inline_keyboard(
+        [
+            [("Więcej 𝕏", "host:radar-x"), ("GitHub", "host:radar-gh")],
+            [("Ustawienia radaru", "host:radar-settings")],
+        ]
+    )
+
+
+def radar_send(chat_id: str, text: str, markup: dict | None = None) -> bool:
+    """Digest idzie deliver_proactive (iMessage-first) ORAZ na Telegram z przyciskami.
+    deliver_proactive przy zdrowym iMessage-primary wycisza Telegram, a przyciski żyją
+    tylko tam — więc dosyłamy kopię z keyboardem (świadomy dual-channel dla radaru)."""
+    markup = markup or radar_reply_markup()
+    went_imessage_first = imessage_primary_enabled() and imessage_enabled() and not imessage_outbox_stale()
+    ok = deliver_proactive(chat_id, text, markup=markup)
+    if went_imessage_first and chat_id:
+        ok = telegram_send_message_with_markup(chat_id, text, markup) or ok
+    return ok
+
+
+def radar_digest(send: bool, on_demand: bool = False) -> str:
+    """Jeden przegląd radaru. Scheduled: maks 1 dziennie (marker jak morning brief,
+    zapis PRZED pracą — retry/crash nie spamuje). On-demand: działa zawsze."""
+    if not radar_enabled():
+        return "[Radar] wyłączony (AI_COUNCIL_RADAR_ENABLED=false)."
+    if not on_demand:
+        today = today_utc()
+        state = radar_state()
+        if str(state.get("last_digest_day") or "") == today:
+            return "[Radar] dzisiejszy przegląd już był (maks 1 dziennie)."
+        state["last_digest_day"] = today
+        radar_state_save(state)
+    data = radar_collect()
+    if not radar_has_content(data):
+        text = (
+            f"{RADAR_DIGEST_HEADER} — dziś cisza w Twoich tematach. "
+            "Chcesz coś dorzucić? Napisz: „obserwuj <temat / kanał YouTube / owner/repo>”."
+        )
+    else:
+        text = radar_compose_digest(data)
+    if send:
+        radar_send(cfg("TELEGRAM_ALLOWED_CHAT_ID"), text, radar_reply_markup())
+        return "[Radar] przegląd wysłany.\n" + compact_line(text.replace("\n", " | "), 300)
+    return text
+
+
+def radar_response(prompt: str, task_id: str = "") -> str:
+    """Dispatcher /radar: watchlista (add/remove/list), 'scheduled' (recipe, marker
+    dzienny) albo przegląd na żądanie (bez markera)."""
+    arg = str(prompt or "").strip()
+    low = arg.lower()
+    if low.startswith(("add ", "dodaj ")):
+        return radar_watch_add(arg.split(maxsplit=1)[1])
+    if low.startswith(("remove ", "rm ", "usuń ", "usun ")):
+        return radar_watch_remove(arg.split(maxsplit=1)[1])
+    if low in {"list", "lista", "watchlista", "watchlist", "settings", "ustawienia"}:
+        return radar_watchlist_text()
+    if low == "scheduled":
+        return radar_digest(send=True, on_demand=False)
+    return radar_digest(send=False, on_demand=True)
 
 
 def doctor() -> int:

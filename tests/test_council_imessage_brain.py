@@ -166,7 +166,9 @@ class IMessageOutboxTests(unittest.TestCase):
         self.assertEqual(ai_council.imessage_outbox_pending(), [])
 
     def test_proactive_delivery_enqueues_when_imessage_primary(self):
+        # L4.106: Telegram is the default PRIMARY; iMessage-primary is opt-in via env.
         with patch.object(ai_council, "imessage_enabled", return_value=True), \
+                patch.dict(os.environ, {"AI_COUNCIL_IMESSAGE_PRIMARY": "true"}, clear=False), \
                 patch.object(ai_council, "telegram_send_message_with_markup") as tg:
             ok = ai_council.deliver_proactive("123", "☀️ Brief: 2 akcje czekają")
         self.assertTrue(ok)
