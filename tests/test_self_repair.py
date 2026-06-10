@@ -312,14 +312,80 @@ class SelfRepairToolsModeTests(unittest.TestCase):
         self.assertFalse((self.proj / "tests" / "test_added.py").exists())
 
     def test_auto_apply_applies_green_repair_to_production(self):
+        env = {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true", "AI_COUNCIL_SELF_REPAIR_ADVERSARIAL": "false"}
         with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 9\n")), \
                 patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}), \
-                patch.dict("os.environ", {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true"}):
+                patch.dict("os.environ", env):
             out = ai_council.run_self_repair_once()
         self.assertIn("ZASTOSOWANY automatycznie", out)
         self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 9\n")
         statuses = [r["status"] for r in ai_council.read_jsonl(ai_council.self_repair_file())]
         self.assertIn("auto_applied", statuses)
+
+    # --- L4.103 auto-apply guardians ---
+    def test_auto_apply_blocked_when_patch_touches_protected_function(self):
+        # Production source defines a protected function; the model edits its body.
+        protected_src = (
+            "def safe_resolve(p):\n    return p\n\nMARKER = 1\n"
+        )
+        (self.proj / "ai_council.py").write_text(protected_src, encoding="utf-8")
+        edited = "def safe_resolve(p):\n    return p + '/anything'\n\nMARKER = 1\n"
+        env = {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true", "AI_COUNCIL_SELF_REPAIR_ADVERSARIAL": "false"}
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main=edited)), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}), \
+                patch.dict("os.environ", env):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("WSTRZYMANY", out)
+        self.assertIn("safe_resolve", out)
+        # production unchanged (still proposes, not applied)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), protected_src)
+        statuses = [r["status"] for r in ai_council.read_jsonl(ai_council.self_repair_file())]
+        self.assertIn("auto_apply_blocked", statuses)
+
+    def test_auto_apply_blocked_when_diff_too_large(self):
+        big = "MARKER = 1\n" + "\n".join(f"x{i} = {i}" for i in range(50)) + "\n"
+        env = {
+            "AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true",
+            "AI_COUNCIL_SELF_REPAIR_ADVERSARIAL": "false",
+            "AI_COUNCIL_SELF_REPAIR_MAX_DIFF_LINES": "10",
+        }
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main=big)), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}), \
+                patch.dict("os.environ", env):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("WSTRZYMANY", out)
+        self.assertIn("diff za duzy", out)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 1\n")
+
+    def test_auto_apply_blocked_when_reviewer_rejects(self):
+        env = {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true", "AI_COUNCIL_SELF_REPAIR_ADVERSARIAL": "true"}
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 9\n")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}), \
+                patch.object(ai_council, "claude_self_repair_response", return_value="REJECT ukryty backdoor"), \
+                patch.dict("os.environ", env):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("WSTRZYMANY", out)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 1\n")
+
+    def test_auto_apply_proceeds_when_reviewer_approves(self):
+        env = {"AI_COUNCIL_SELF_REPAIR_AUTO_APPLY": "true", "AI_COUNCIL_SELF_REPAIR_ADVERSARIAL": "true"}
+        with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 9\n")), \
+                patch.object(ai_council, "verify_repair_workspace", return_value={"ok": True, "step": "pytest", "detail": "1 passed"}), \
+                patch.object(ai_council, "claude_self_repair_response", return_value="APPROVE wyglada bezpiecznie"), \
+                patch.dict("os.environ", env):
+            out = ai_council.run_self_repair_once()
+        self.assertIn("ZASTOSOWANY automatycznie", out)
+        self.assertEqual((self.proj / "ai_council.py").read_text(encoding="utf-8"), "MARKER = 9\n")
+
+    def test_self_repair_env_strips_secrets(self):
+        env = {"TELEGRAM_BOT_TOKEN": "secret123", "XAI_API_KEY": "k", "GITHUB_TOKEN": "g", "PATH": "/usr/bin"}
+        with patch.dict("os.environ", env):
+            scrubbed = ai_council.self_repair_env()
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", scrubbed)
+        self.assertNotIn("XAI_API_KEY", scrubbed)
+        self.assertNotIn("GITHUB_TOKEN", scrubbed)
+        self.assertIn("PATH", scrubbed)
+        self.assertTrue(scrubbed["AI_COUNCIL_ENV"].endswith("_no_such_env"))
 
     def test_auto_apply_red_verification_never_reaches_production(self):
         with patch.object(ai_council, "claude_self_repair_tools_run", self._fake_tools_run(edit_main="MARKER = 9\n")), \

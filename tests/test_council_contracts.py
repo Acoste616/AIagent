@@ -464,7 +464,7 @@ class RespondB64ThreadMemoryTests(unittest.TestCase):
             ), patch.object(ai_council, "LOG_DIR", root / "logs"), patch.object(
                 ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"
             ), patch.object(
-                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
+                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553", "AI_COUNCIL_IMESSAGE_ALLOW_OPEN": "true"}.get(key, default)
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(
                 ai_council,
                 "build_response",
@@ -488,7 +488,7 @@ class RespondB64ThreadMemoryTests(unittest.TestCase):
             with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), patch.object(
                 ai_council, "CLARIFICATIONS_FILE", root / "state" / "clarifications.jsonl"
             ), patch.object(
-                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
+                ai_council, "cfg", side_effect=lambda key, default="": {"TELEGRAM_ALLOWED_CHAT_ID": "553", "AI_COUNCIL_IMESSAGE_ALLOW_OPEN": "true"}.get(key, default)
             ), patch.object(ai_council, "ensure_council_dirs", return_value=None), patch.object(
                 ai_council, "build_response", return_value="Zapisane."
             ), patch.object(ai_council, "maybe_auto_extract_facts") as capture:

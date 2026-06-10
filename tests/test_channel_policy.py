@@ -19,11 +19,20 @@ class SenderAllowlistTests(unittest.TestCase):
         self.assertEqual(ai_council.normalize_imessage_handle("Me@iCloud.com "), "me@icloud.com")
         self.assertEqual(ai_council.normalize_imessage_handle(""), "")
 
-    def test_empty_allowlist_is_legacy_open_mode(self):
-        with patch.dict("os.environ", {"AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS": ""}):
+    def test_empty_allowlist_is_fail_closed(self):
+        # L4.103: empty/unset allowlist DENIES by default (no silent open relay).
+        with patch.dict("os.environ", {"AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS": "", "AI_COUNCIL_IMESSAGE_ALLOW_OPEN": ""}):
+            allowed, verdict = ai_council.imessage_sender_allowed("+48123123123")
+        self.assertFalse(allowed)
+        self.assertEqual(verdict, "denied_no_allowlist")
+
+    def test_empty_allowlist_open_mode_requires_explicit_optin(self):
+        # Migration escape hatch: AI_COUNCIL_IMESSAGE_ALLOW_OPEN=true restores open mode on purpose.
+        env = {"AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS": "", "AI_COUNCIL_IMESSAGE_ALLOW_OPEN": "true"}
+        with patch.dict("os.environ", env):
             allowed, verdict = ai_council.imessage_sender_allowed("+48123123123")
         self.assertTrue(allowed)
-        self.assertEqual(verdict, "open")
+        self.assertEqual(verdict, "open_explicit")
 
     def test_allowlist_enforced(self):
         env = {"AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS": "+48 600 100 200, me@icloud.com"}

@@ -196,9 +196,11 @@ class ProactiveEventBrainTests(unittest.TestCase):
                     "error_id": "err-1",
                     "created_at": ai_council.utc_now(),
                     "day": ai_council.today_utc(),
-                    "context": "telegram_getUpdates",
-                    "severity": "warning",
-                    "message": "http_409",
+                    "context": "telegram_sendMessage",
+                    # L4.103b: nudge fires only on ACTIONABLE errors (benign noise like
+                    # getUpdates timeouts no longer pings Telegram).
+                    "severity": "error",
+                    "message": "http_500",
                 },
             )
 
@@ -208,7 +210,9 @@ class ProactiveEventBrainTests(unittest.TestCase):
                 ai_council, "TASKS_FILE", root / "state" / "tasks.jsonl"
             ), patch.object(ai_council, "IMPROVEMENTS_FILE", root / "state" / "improvements.jsonl"
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.dict(
-                os.environ, {"AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false"}, clear=False
+                os.environ,
+                {"AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false", "AI_COUNCIL_PROACTIVE_ERROR_THRESHOLD": "1"},
+                clear=False,
             ):
                 first = ai_council.run_proactive_scan(send=False)
                 second = ai_council.run_proactive_scan(send=False)
@@ -220,7 +224,8 @@ class ProactiveEventBrainTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["kind"], "errors")
         self.assertIn("/errors recent 10", rows[0]["next_action"])
-        self.assertIn("err", rows[0]["nudge_key"])
+        # L4.103b: ONE nudge per day — key is the date, not the latest error id.
+        self.assertIn(ai_council.today_utc(), rows[0]["nudge_key"])
         self.assertIn("[Council] Nudges", response)
 
     def test_proactive_scan_creates_pending_action_nudge(self):
@@ -3222,9 +3227,15 @@ class L2LedgerTests(unittest.TestCase):
             ), patch.object(ai_council, "COSTS_FILE", root / "state" / "costs.jsonl"), patch.object(
                 ai_council, "LOG_DIR", root / "logs"
             ), patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), patch.dict(
-                os.environ, {"AI_COUNCIL_PROACTIVE_EVENT_BRAIN": "true", "AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false"}, clear=False
+                os.environ,
+                {
+                    "AI_COUNCIL_PROACTIVE_EVENT_BRAIN": "true",
+                    "AI_COUNCIL_PROACTIVE_SHORTCUT_SETUP": "false",
+                    "AI_COUNCIL_PROACTIVE_ERROR_THRESHOLD": "1",
+                },
+                clear=False,
             ):
-                ai_council.record_error("test", message="boom", severity="warning")
+                ai_council.record_error("test", message="boom", severity="error")
                 ai_council.control_response("pause proactive test")
                 blocked = ai_council.run_proactive_scan(send=False)
                 ai_council.control_response("resume proactive")

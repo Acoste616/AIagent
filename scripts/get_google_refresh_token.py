@@ -50,7 +50,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         msg = "OK — wroc do terminala, mozesz zamknac to okno." if _code_holder.get("code") else "Blad autoryzacji."
-        self.wfile.write(f"<html><body><h3>{msg}</h3></body></html>".encode("utf-8"))
+        self.wfile.write(f"<html><body><h3>{msg}</h3></body></html>".encode())
 
     def log_message(self, *_):
         pass

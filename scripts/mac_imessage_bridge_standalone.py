@@ -26,15 +26,38 @@ Env (set by the LaunchAgent or your shell):
 import base64
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-ALIAS = os.environ.get("AI_COUNCIL_HOST_SSH_ALIAS", "ai-council-desktop")
-HOST_DIR = os.environ.get("AI_COUNCIL_HOST_DIR", "D:\\ai-council")
-HOST_PY = os.environ.get("AI_COUNCIL_HOST_PYTHON", "python")
+
+def _safe_msg_id(value: str) -> str:
+    """L4.103: outbox ids are interpolated into the host PowerShell command, so
+    they must contain ONLY id-safe chars. A crafted id (`"; Start-Process ...`)
+    from a tampered host/SSH channel would otherwise inject. Reject anything else."""
+    v = str(value or "")
+    return v if re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", v) else ""
+
+
+def _safe_status(value: str) -> str:
+    return value if value in ("sent", "failed") else ""
+
+
+def _safe_host_token(value: str, default: str) -> str:
+    """HOST_DIR/HOST_PY/ALIAS go into the PowerShell wrapper unquoted; forbid
+    shell metacharacters so env tampering can't inject. Falls back to default."""
+    v = str(value or "").strip()
+    if not v or re.search(r'[";`$&|<>(){}\n\r]', v):
+        return default
+    return v
+
+
+ALIAS = _safe_host_token(os.environ.get("AI_COUNCIL_HOST_SSH_ALIAS", ""), "ai-council-desktop")
+HOST_DIR = _safe_host_token(os.environ.get("AI_COUNCIL_HOST_DIR", ""), "D:\\ai-council")
+HOST_PY = _safe_host_token(os.environ.get("AI_COUNCIL_HOST_PYTHON", ""), "python")
 TO = os.environ.get("AI_COUNCIL_IMESSAGE_TO", "").strip()
 # L4.99: the SAME Apple ID self-conversation is split per handle (phone vs email).
 # The bridge reads ALL listed handles and replies in the thread the message came from
@@ -81,8 +104,12 @@ def ack(msg_id: str, status: str, detail: str = "") -> None:
     # Windows, so the ack never recorded and the row stayed pending -> infinite
     # resend loop. The status (sent/failed) is all the host needs for terminal
     # state; the failure detail is kept in this Mac runner's own log.
+    safe_id, safe_status = _safe_msg_id(msg_id), _safe_status(status)
+    if not safe_id or not safe_status:
+        print(f"ack refused: unsafe id/status (id={msg_id!r} status={status!r})")
+        return
     try:
-        subprocess.run(_host_cmd(f"imessage-outbox-ack --id {msg_id} --status {status}"),
+        subprocess.run(_host_cmd(f"imessage-outbox-ack --id {safe_id} --status {safe_status}"),
                        capture_output=True, text=True, timeout=30)
     except Exception:
         pass
@@ -195,8 +222,7 @@ def _write_cursor(v) -> None:
 
 def _safe_handle(handle: str) -> str:
     """Quote-safe handle for the powershell -Command wrapper: phone/email chars only."""
-    import re as _re
-    return _re.sub(r"[^A-Za-z0-9@.+_-]", "", str(handle or ""))[:64]
+    return re.sub(r"[^A-Za-z0-9@.+_-]", "", str(handle or ""))[:64]
 
 
 def host_respond(text: str, sender: str = "") -> str:

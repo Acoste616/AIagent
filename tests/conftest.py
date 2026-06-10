@@ -64,6 +64,11 @@ for _flag in (
     "AI_COUNCIL_PROVIDER_WRITE_ENABLED", "AI_COUNCIL_GITHUB_ISSUE_WRITE_ENABLED",
     "AI_COUNCIL_IMESSAGE_ENABLED", "AI_COUNCIL_MAIL_ENABLED", "AI_COUNCIL_GROK_RESEARCH_MEMORY",
     "AI_COUNCIL_IMESSAGE_PROACTIVE", "AI_COUNCIL_WATCH_DIGEST", "AI_COUNCIL_IMESSAGE_INBOUND",
+    # L4.103: the production host runs with self-repair AUTO_APPLY ON (Bartek's full
+    # autonomy). The suite must stay hermetic against that — tests that exercise the
+    # "proposed -> /approve" path force-disable it; default it OFF for everyone else.
+    # AI_COUNCIL_IMESSAGE_ALLOW_OPEN is forced off so fail-closed is the tested default.
+    "AI_COUNCIL_SELF_REPAIR_AUTO_APPLY", "AI_COUNCIL_IMESSAGE_ALLOW_OPEN",
 ):
     os.environ[_flag] = "false"
 for _secret in ("GITHUB_TOKEN", "GH_TOKEN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"):

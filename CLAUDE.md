@@ -125,6 +125,17 @@ As of 2026-06-10 later (L4.100 DEPLOYED; L4.101 Mac worktree):
 - L4.100 DEPLOYED to `D:\ai-council` (backup `backups\pre-L4.100`): Windows pytest 525/525, listener restarted, canonical bridge installed via `scripts/deploy/install_imessage_bridge.sh` (`--check` clean), allowlist `+48573465367,bdomanskyy@icloud.com` set in Windows .env, smoke: allowed sender gets reply, foreign sender gets silence. iMessage channel LIVE on the phone-number thread.
 - L4.101 SELF-REPAIR LOOP: errors -> Claude diagnosis -> FIND/REPLACE patch in isolated copy -> full pytest -> pending action R2 -> `/approve` applies with backup + `self-repair-undo`. Recipe daily 21:30. Doc: `docs/implementation/L4_101_SELF_REPAIR_LOOP.md`. Mac tests: 540/540.
 
+As of 2026-06-10 night (L4.103 **DEPLOYED to D:\ai-council**): backup `backups\deploy-L4103-20260610-162831` (ai_council.py + whole tests/ + pyproject). Source of truth verified: Windows == git HEAD `0cc60cc` before deploy (clean superset, no Windows-only changes clobbered). Windows pytest **575/575** (after conftest fix: suite now neutralizes `AI_COUNCIL_SELF_REPAIR_AUTO_APPLY`/`AI_COUNCIL_IMESSAGE_ALLOW_OPEN` so it stays hermetic against the production host running AUTO_APPLY=ON). Listener restarted (`serve_count=1`, old serve 7020 killed). Smoke green: `/front` healthy, W4 `co robisz` live, `chce jedzenie` clarify (no debug tail), respond-b64 allowlisted sender → reply, foreign sender → empty (fail-closed proven both ways). `doctor` shows `imessage_allowlist=OK (2 senders)`. Mac iMessage bridge reinstalled (sanitized, `--check` OK, LaunchAgent running). NOT pushed to GitHub (needs separate approval).
+
+As of 2026-06-10 evening (L4.103 AUDIT REMEDIATION):
+
+- Full second audit + Bartek decisions executed across 4 sprints. Docs: `docs/audit/REPO_AUDIT_2026-06-10_v2_CLAUDE_FULL.md`, `docs/audit/AUDIT_ADDENDUM_DECISIONS_2026-06-10.md`, `docs/implementation/L4_103_AUDIT_REMEDIATION_LOOP.md`. Mac tests: **575/575**, ruff clean (extended select), coverage 76%.
+- AUTONOMY HARDENING (decyzja: pełna autonomia, ale bezpieczna): AUTO_APPLY stays but passes `self_repair_guard_auto_apply` (AST diff of `SELF_REPAIR_PROTECTED_FUNCS` + `AI_COUNCIL_SELF_REPAIR_MAX_DIFF_LINES`=400) + `self_repair_adversarial_review` (2nd Claude pass); any block -> manual `/approve`. Bash stays full but runs with secret-free `self_repair_env()`.
+- SECURITY: iMessage now FAIL-CLOSED (empty allowlist denies; `AI_COUNCIL_IMESSAGE_ALLOW_OPEN=true` migration opt-in; `doctor` reports it). Mac bridge sanitizes `msg_id/status/HOST_*` before the PowerShell wrapper (closes injection). 3 worst silent excepts now `record_error`.
+- VISIBILITY (decyzja 6): W1 Telegram `typing…` pulse on slow synchronous replies; W4 `/working` ("co robisz?") live status of running tasks. CONVERSATIONS read tail-first (`iter_jsonl_reverse`) for 24/7 life.
+- CI: Python matrix 3.10+3.12, coverage report. Ruff `select=[E,F,B,UP,SIM,C4,PIE]`. New tests: `test_visibility.py`, `test_imessage_bridge_script.py` + self-repair/channel/listen_once additions.
+- DEFERRED on purpose: full `build_response`/`route_text` registry rewrite (only `@all` extracted to `all_council_response`), W2/W3 iMessage ACK-first, `llm_route` removal. Windows deploy PENDING Bartek. NOTE: stale `.git/index.lock` + tracked `docs/.DS_Store` to clean on Mac before commit.
+
 ## Required Verification Commands
 
 Mac:

@@ -21,3 +21,7 @@ backups/
 *.tar
 *.tar.gz
 __MACOSX/
+**/.DS_Store
+.coverage
+.coverage.*
+htmlcov/

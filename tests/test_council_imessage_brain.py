@@ -689,10 +689,9 @@ class ConversationBrainTests(unittest.TestCase):
         self.assertEqual(decision["args"]["fact"], "Bartek lubi kawę bez cukru")
 
     def test_brain_execute_save_then_recall_fact_end_to_end(self):
-        with temp_dir() as tmp:
-            with patch.object(ai_council, "MEMORY_DB", Path(tmp) / "memory.sqlite"):
-                saved = ai_council.brain_execute_tool("save_fact", {"fact": "mój lot jest w piątek"}, "zapisz to", self.cid)
-                recalled = ai_council.brain_execute_tool("recall_fact", {"query": "kiedy mam lot"}, "kiedy lot", self.cid)
+        with temp_dir() as tmp, patch.object(ai_council, "MEMORY_DB", Path(tmp) / "memory.sqlite"):
+            saved = ai_council.brain_execute_tool("save_fact", {"fact": "mój lot jest w piątek"}, "zapisz to", self.cid)
+            recalled = ai_council.brain_execute_tool("recall_fact", {"query": "kiedy mam lot"}, "kiedy lot", self.cid)
         self.assertIn("Zapamiętane", saved)
         self.assertIn("piątek", recalled)
         self.assertNotIn("[Council]", recalled)
@@ -718,9 +717,12 @@ class ConversationBrainTests(unittest.TestCase):
 
     # --- (a) iMessage shares ONE thread: respond-b64 persists turns ---
     def test_imessage_respond_b64_persists_user_and_assistant_turns(self):
-        b64 = base64.b64encode("hej".encode("utf-8")).decode("ascii")
+        b64 = base64.b64encode(b"hej").decode("ascii")
         argv = ["ai_council.py", "respond-b64", "--b64", b64]
-        with patch.object(ai_council, "configure_utf8_stdio", lambda: None), \
+        # L4.103: no --sender means empty handle; with fail-closed allowlist that
+        # would be denied, so opt into open mode explicitly for this turn-persist test.
+        with patch.dict("os.environ", {"AI_COUNCIL_IMESSAGE_ALLOW_OPEN": "true"}), \
+             patch.object(ai_council, "configure_utf8_stdio", lambda: None), \
              patch.object(sys, "argv", argv), \
              contextlib.redirect_stdout(io.StringIO()):
             rc = ai_council.main()

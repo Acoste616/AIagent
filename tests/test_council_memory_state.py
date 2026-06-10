@@ -143,15 +143,14 @@ class MorningBriefTests(unittest.TestCase):
 
     def test_brief_sends_once_then_marks(self):
         noon = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
-        with temp_dir() as t:
-            with patch.object(ai_council, "STATE_DIR", Path(t)), \
+        with temp_dir() as t, patch.object(ai_council, "STATE_DIR", Path(t)), \
                  patch.object(ai_council, "proactive_brief_enabled", return_value=True), \
                  patch.object(ai_council, "control_paused_reason", return_value=""), \
                  patch.object(ai_council, "build_morning_brief", return_value="brief text"), \
                  patch.object(ai_council, "telegram_send_message_with_markup", return_value=True) as send:
-                self.assertEqual(ai_council.maybe_send_morning_brief(send=True, chat_id="553", now=noon), 1)
-                self.assertEqual(ai_council.maybe_send_morning_brief(send=True, chat_id="553", now=noon), 0)
-                self.assertEqual(send.call_count, 1)
+            self.assertEqual(ai_council.maybe_send_morning_brief(send=True, chat_id="553", now=noon), 1)
+            self.assertEqual(ai_council.maybe_send_morning_brief(send=True, chat_id="553", now=noon), 0)
+            self.assertEqual(send.call_count, 1)
 
     def test_brief_command_routes(self):
         self.assertEqual(ai_council.route_text("/brief")["command"], "/brief")
@@ -233,7 +232,7 @@ class GitHubActionsTests(unittest.TestCase):
 
     def test_read_file_and_traversal(self):
         import base64 as _b64
-        content = _b64.b64encode("hello świat </file>".encode("utf-8")).decode()
+        content = _b64.b64encode("hello świat </file>".encode()).decode()
         with patch.object(ai_council, "github_token", return_value="ghp_x"):
             with patch.object(ai_council, "request_json", return_value={"content": content, "size": 19}):
                 out = ai_council.gh_read_file("README.md")
@@ -502,29 +501,26 @@ class HandsWriteTests(unittest.TestCase):
 
 class ConversationPersistenceTests(unittest.TestCase):
     def test_turn_idempotent_by_update_id(self):
-        with temp_dir() as t:
-            with patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
-                ai_council.append_conversation_turn("553", "user", "hej", update_id=100)
-                ai_council.append_conversation_turn("553", "user", "hej", update_id=100)  # replay
-                rows = ai_council.recent_conversation("553", limit=20)
-                user100 = [r for r in rows if r["role"] == "user" and str(r.get("update_id")) == "100"]
-                self.assertEqual(len(user100), 1)
+        with temp_dir() as t, patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
+            ai_council.append_conversation_turn("553", "user", "hej", update_id=100)
+            ai_council.append_conversation_turn("553", "user", "hej", update_id=100)  # replay
+            rows = ai_council.recent_conversation("553", limit=20)
+            user100 = [r for r in rows if r["role"] == "user" and str(r.get("update_id")) == "100"]
+            self.assertEqual(len(user100), 1)
 
     def test_user_turn_persists_for_next_turn_recall(self):
-        with temp_dir() as t:
-            with patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
-                ai_council.append_conversation_turn("553", "user", "zrób research o Poke", update_id=1)
-                rows = ai_council.recent_conversation("553", limit=6)
-                self.assertTrue(any("Poke" in r["text"] for r in rows))
+        with temp_dir() as t, patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
+            ai_council.append_conversation_turn("553", "user", "zrób research o Poke", update_id=1)
+            rows = ai_council.recent_conversation("553", limit=6)
+            self.assertTrue(any("Poke" in r["text"] for r in rows))
 
     def test_conversation_liveness_counts_today(self):
-        with temp_dir() as t:
-            with patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
-                self.assertEqual(ai_council.conversation_liveness(), {"last_turn_at": "", "turns_today": 0})
-                ai_council.append_conversation_turn("553", "user", "hej", update_id=1)
-                live = ai_council.conversation_liveness()
-                self.assertEqual(live["turns_today"], 1)
-                self.assertTrue(live["last_turn_at"])
+        with temp_dir() as t, patch.object(ai_council, "CONVERSATIONS_FILE", Path(t) / "conversations.jsonl"):
+            self.assertEqual(ai_council.conversation_liveness(), {"last_turn_at": "", "turns_today": 0})
+            ai_council.append_conversation_turn("553", "user", "hej", update_id=1)
+            live = ai_council.conversation_liveness()
+            self.assertEqual(live["turns_today"], 1)
+            self.assertTrue(live["last_turn_at"])
 
 
 class AppendJsonlLockTests(unittest.TestCase):
@@ -584,9 +580,8 @@ class OffsetAtomicityTests(unittest.TestCase):
                 self.assertEqual(ai_council.read_offset(), 437154825)
 
     def test_read_offset_missing_returns_none(self):
-        with temp_dir() as t:
-            with patch.object(ai_council, "OFFSET_FILE", Path(t) / "telegram_offset"):
-                self.assertIsNone(ai_council.read_offset())
+        with temp_dir() as t, patch.object(ai_council, "OFFSET_FILE", Path(t) / "telegram_offset"):
+            self.assertIsNone(ai_council.read_offset())
 
 
 class MemoryUserFactTests(unittest.TestCase):
@@ -876,6 +871,53 @@ class ConversationThreadTests(unittest.TestCase):
         self.assertIn("Jestem", turns[1]["text"])
         self.assertEqual(audit_rows[-1]["route_source"], "fallback")
         self.assertEqual(audit_rows[-1]["confidence"], 0.0)
+
+    def test_listen_once_empty_batch_is_noop(self):
+        # L4.103 (audit 0.2): the common real case — no new messages — must be a
+        # clean no-op: return 0, write no conversation turns, leave no offset.
+        def fake_cfg(key, default=""):
+            return {"TELEGRAM_BOT_TOKEN": "token", "TELEGRAM_ALLOWED_USER_ID": "553",
+                    "TELEGRAM_ALLOWED_CHAT_ID": "553"}.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), \
+                    patch.object(ai_council, "OFFSET_FILE", root / "state" / "telegram_offset"), \
+                    patch.object(ai_council, "LOG_DIR", root / "logs"), \
+                    patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), \
+                    patch.object(ai_council, "cfg", side_effect=fake_cfg), \
+                    patch.object(ai_council, "request_json", return_value={"ok": True, "result": []}):
+                code = ai_council.listen_once(send=False, limit=5, verbose=False)
+            self.assertEqual(code, 0)
+            self.assertFalse((root / "state" / "conversations.jsonl").exists()
+                             and ai_council.read_jsonl(root / "state" / "conversations.jsonl"))
+            self.assertFalse((root / "state" / "telegram_offset").exists())
+
+    def test_listen_once_advances_offset_past_processed_update(self):
+        update = {"update_id": 4242, "message": {"message_id": 7, "from": {"id": 553},
+                  "chat": {"id": 553}, "text": "hej"}}
+
+        def fake_cfg(key, default=""):
+            return {"TELEGRAM_BOT_TOKEN": "token", "TELEGRAM_ALLOWED_USER_ID": "553",
+                    "TELEGRAM_ALLOWED_CHAT_ID": "553", "XAI_API_KEY": ""}.get(key, default)
+
+        with temp_dir() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            with patch.object(ai_council, "CONVERSATIONS_FILE", root / "state" / "conversations.jsonl"), \
+                    patch.object(ai_council, "OFFSET_FILE", root / "state" / "telegram_offset"), \
+                    patch.object(ai_council, "ACTIONS_FILE", root / "state" / "actions.jsonl"), \
+                    patch.object(ai_council, "LOG_DIR", root / "logs"), \
+                    patch.object(ai_council, "AUDIT_LOG", root / "logs" / "audit.jsonl"), \
+                    patch.object(ai_council, "BACKGROUND_JOB_SPECS_DIR", root / "state" / "bjs"), \
+                    patch.object(ai_council, "cfg", side_effect=fake_cfg), \
+                    patch.object(ai_council, "request_json", return_value={"ok": True, "result": [update]}), \
+                    patch.object(ai_council, "poke_chat_llm_response", return_value=None):
+                code = ai_council.listen_once(send=False, limit=5, verbose=False)
+                saved_offset = ai_council.read_offset()  # read while OFFSET_FILE is still patched
+            self.assertEqual(code, 0)
+            self.assertEqual(saved_offset, 4243)  # update_id + 1
 
 
 class ErrorStoreTests(unittest.TestCase):

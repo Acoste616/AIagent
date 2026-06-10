@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import csv
 from contextlib import closing
@@ -1016,9 +1017,21 @@ def append_conversation_turn(
 
 
 def recent_conversation(chat_id: str, limit: int = 6) -> list[dict]:
+    # L4.103 (audit P1): read from the tail with early-stop instead of loading the
+    # whole conversations file on every message. CONVERSATIONS_FILE grows for the
+    # life of the system (24/7), so an O(history) read per message is unbounded.
+    limit = max(0, limit)
+    if not limit:
+        return []
     chat_hash = short_hash(str(chat_id))
-    rows = [row for row in read_jsonl(CONVERSATIONS_FILE) if row.get("chat_id_hash") == chat_hash]
-    return rows[-max(0, limit) :]
+    collected: list[dict] = []
+    for row in iter_jsonl_reverse(CONVERSATIONS_FILE):
+        if row.get("chat_id_hash") == chat_hash:
+            collected.append(row)
+            if len(collected) >= limit:
+                break
+    collected.reverse()  # restore chronological order
+    return collected
 
 
 def conversation_liveness() -> dict:
@@ -1968,6 +1981,41 @@ def progress_timeline_lines(task_id: str, limit: int = 5) -> list[str]:
     return ["progress:"] + [progress_event_line(event) for event in events]
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+def live_status_response() -> str:
+    """W4 (decyzja 6): a plain-language answer to 'co robisz?' — what the system
+    is doing right now, so the user always knows it is alive and working."""
+    running = [t for t in latest_tasks(limit=100) if t.get("status") in {"running", "running_background"}]
+    stuck = stuck_tasks(limit=5)
+    stuck_ids = {t.get("task_id") for t in stuck}
+    if not running:
+        return "[Council] Teraz nic nie mielę — czekam na Twoją wiadomość. Wszystkie zadania zakończone."
+    lines = [f"[Council] Pracuję nad {len(running)} zadaniem(ami):"]
+    for task in running[:6]:
+        tid = str(task.get("task_id") or "")
+        elapsed = _fmt_elapsed(seconds_since(str(task.get("updated_at") or task.get("created_at") or "")))
+        label = compact_line(str(task.get("text") or task.get("command") or tid), 60)
+        events = latest_progress_events(tid, limit=1)
+        stage = ""
+        if events:
+            ev = events[0]
+            pct = f" {ev.get('percent')}%" if ev.get("percent") is not None else ""
+            stage = f" — {compact_line(str(ev.get('stage') or ''), 40)}{pct}"
+        warn = " ⚠️ utknęło?" if tid in stuck_ids else ""
+        lines.append(f"• {label} ({elapsed}{stage}){warn} — /progress {tid}")
+    if stuck:
+        lines.append(f"\n{len(stuck)} zadań nie ruszyło od dłuższego czasu — napisz `/progress <id>`, by zobaczyć szczegóły.")
+    return "\n".join(lines)
+
+
 def progress_response(task_id: str) -> str:
     task_id = task_id.strip()
     if not task_id:
@@ -2331,11 +2379,6 @@ def source_statuses() -> list[dict]:
         },
     ]
     return sources
-
-
-def source_status(name: str) -> dict | None:
-    normalized = name.strip().lower()
-    return next((item for item in source_statuses() if item["name"] == normalized), None)
 
 
 def sources_response() -> str:
@@ -8395,8 +8438,10 @@ def _audit_hands(op: str, requested, resolved="", decision: str = "ok", **extra)
     event.update(extra)
     try:
         audit(event)
-    except Exception:
-        pass
+    except Exception as exc:
+        # L4.103: an audit gap in the workspace-hands decision path is exactly
+        # where we most need evidence — never swallow it silently.
+        record_error("hands_audit_drop", exc=exc, severity="warning")
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -8462,7 +8507,7 @@ def safe_resolve(rel: str) -> Path:
         candidate = (root / raw).resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         _audit_hands("resolve", rel, decision="rejected_resolve_error")
-        raise HandsError(f"resolve error: {exc}")
+        raise HandsError(f"resolve error: {exc}") from exc
     if candidate != root and not candidate.is_relative_to(root):
         _audit_hands("resolve", rel, resolved=candidate, decision="rejected_outside")
         raise HandsError("path outside sandbox")
@@ -10410,15 +10455,20 @@ def detect_proactive_events() -> list[dict]:
             )
         )
 
+    # L4.100: error nudge anti-spam. Old behaviour pinged Telegram on EVERY new error
+    # (key churned with the latest error_id) and counted benign noise (e.g.
+    # telegram_getUpdates timeout). Now: only ACTIONABLE errors, sane threshold,
+    # ONE nudge per day (key = date).
     recent_errors = error_rows(days=1)
-    error_threshold = int_cfg("AI_COUNCIL_PROACTIVE_ERROR_THRESHOLD", 1)
-    if len(recent_errors) >= error_threshold and recent_errors:
-        latest_error = recent_errors[-1]
+    actionable = actionable_error_rows(recent_errors)
+    error_threshold = int_cfg("AI_COUNCIL_PROACTIVE_ERROR_THRESHOLD", 5)
+    if len(actionable) >= error_threshold:
+        latest_error = actionable[-1]
         events.append(
             proactive_event(
                 "errors",
-                str(latest_error.get("error_id") or len(recent_errors)),
-                f"{len(recent_errors)} błędów w ostatnich 24h",
+                today_utc(),
+                f"{len(actionable)} realnych błędów w 24h ({len(recent_errors)} z szumem)",
                 f"Ostatni: {latest_error.get('context')} {latest_error.get('message')}",
                 "/errors recent 10",
                 severity="warning",
@@ -12994,11 +13044,6 @@ def verify_action_result(action: dict) -> dict:
     return {"ok": False, "detail": f"unsupported action type: {action_type}", "checks": checks}
 
 
-def verify_action(action: dict) -> tuple[bool, str]:
-    result = verify_action_result(action)
-    return bool(result.get("ok")), str(result.get("detail") or "")
-
-
 def append_verification_event(action: dict, result: dict) -> dict:
     if action.get("status") not in {"executed", "verified", "verify_failed", "rolled_back"}:
         return action
@@ -13770,10 +13815,6 @@ def start_council_job(prompt: str, chat_id: str = "", task_id: str = "") -> dict
     return job
 
 
-def council_response(prompt: str) -> str:
-    return council_response_for_chat(prompt, "")
-
-
 def council_response_for_chat(prompt: str, chat_id: str = "", task_id: str = "") -> str:
     if not prompt.strip():
         return council_jobs_response()
@@ -13916,15 +13957,15 @@ def request_multipart_related_json(
     metadata_json = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
     media_bytes = media_text.encode("utf-8")
     body = bytearray()
-    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(f"--{boundary}\r\n".encode())
     body.extend(b"Content-Type: application/json; charset=UTF-8\r\n\r\n")
     body.extend(metadata_json)
     body.extend(b"\r\n")
-    body.extend(f"--{boundary}\r\n".encode("utf-8"))
-    body.extend(f"Content-Type: {media_mime_type}\r\n\r\n".encode("utf-8"))
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(f"Content-Type: {media_mime_type}\r\n\r\n".encode())
     body.extend(media_bytes)
     body.extend(b"\r\n")
-    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    body.extend(f"--{boundary}--\r\n".encode())
     final_headers = headers.copy() if headers else {}
     final_headers["Content-Type"] = f"multipart/related; boundary={boundary}"
     req = Request(url, data=bytes(body), headers=final_headers, method="POST")
@@ -13955,19 +13996,19 @@ def request_multipart_json(
     boundary = f"ai-council-{short_hash(str(time.time()))}"
     body = bytearray()
     for key, value in fields or []:
-        body.extend(f"--{boundary}\r\n".encode("utf-8"))
-        body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
         body.extend(str(value).encode("utf-8"))
         body.extend(b"\r\n")
     filename = safe_filename(file_path.name, "audio")
-    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(f"--{boundary}\r\n".encode())
     body.extend(
-        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode("utf-8")
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode()
     )
-    body.extend(f"Content-Type: {mime_type or 'application/octet-stream'}\r\n\r\n".encode("utf-8"))
+    body.extend(f"Content-Type: {mime_type or 'application/octet-stream'}\r\n\r\n".encode())
     body.extend(file_path.read_bytes())
     body.extend(b"\r\n")
-    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    body.extend(f"--{boundary}--\r\n".encode())
     final_headers = headers.copy() if headers else {}
     final_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
     req = Request(url, data=bytes(body), headers=final_headers, method="POST")
@@ -14104,6 +14145,49 @@ def telegram_send_message_with_markup(chat_id: str, text: str, reply_markup: dic
         else:
             print("telegram_sendMessage=ok")
     return ok
+
+
+def telegram_send_typing(chat_id: str) -> bool:
+    """W1 (decyzja 6): native 'pisze…' indicator. Telegram shows it for ~5s, so
+    a pulser re-sends it while a slow response (CLI/research) is being built."""
+    if not chat_id:
+        return False
+    try:
+        data = request_json(telegram_url("sendChatAction"), method="POST",
+                            payload={"chat_id": chat_id, "action": "typing"})
+        return bool(data.get("ok"))
+    except Exception:
+        return False
+
+
+class TelegramTypingPulse:
+    """Context manager: keeps the Telegram 'typing…' indicator alive in a daemon
+    thread until the work finishes. Best-effort and never raises into the caller."""
+
+    def __init__(self, chat_id: str, enabled: bool = True, interval: float = 4.0):
+        self.chat_id = chat_id
+        self.enabled = bool(enabled and chat_id)
+        self.interval = max(1.0, float(interval))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            telegram_send_typing(self.chat_id)
+            self._stop.wait(self.interval)
+
+    def __enter__(self) -> TelegramTypingPulse:
+        if self.enabled:
+            telegram_send_typing(self.chat_id)
+            self._thread = threading.Thread(target=self._run, name="tg-typing", daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        return None
 
 
 def telegram_answer_callback_query(callback_query_id: str, text: str = "") -> bool:
@@ -14690,6 +14774,16 @@ def _nat_status_diagnostics(stripped: str, lower: str) -> dict | None:
     }
     if lower in status_phrases or lower.startswith(("pokaż status", "pokaz status", "sprawdź status", "sprawdz status")):
         return {"command": "/status", "operators": ["host"], "prompt": "", "mode": "status", "intent": "natural"}
+
+    # W4 (decyzja 6): "co robisz?" — live view of what the system is working on
+    # right now (running tasks, elapsed, latest progress, stuck warnings).
+    working_phrases = {
+        "co robisz", "co teraz robisz", "co aktualnie robisz", "nad czym pracujesz",
+        "czym się zajmujesz", "czym sie zajmujesz", "co porabiasz", "pracujesz nad czymś",
+        "pracujesz nad czyms", "co się dzieje", "co sie dzieje", "nad czym teraz pracujesz",
+    }
+    if lower.rstrip("?!. ") in working_phrases:
+        return {"command": "/working", "operators": ["host"], "prompt": "", "mode": "working", "intent": "natural"}
 
     if front_compact_summary_requested(stripped):
         return {"command": "/front", "operators": ["host"], "prompt": stripped, "mode": "front", "intent": "natural"}
@@ -17073,8 +17167,10 @@ def brain_loop(text: str, chat_id: str = "") -> str:
             try:
                 action = create_order_handoff_action(order_payload, chat_id=chat_id)
                 reply += f"\n\nDraft zamówienia gotowy — zatwierdź: /approve {action['action_id']}"
-            except Exception:
-                pass
+            except Exception as exc:
+                # L4.103: losing the order draft silently means the user sees a
+                # reply but no /approve button and never learns why — record it.
+                record_error("order_handoff_drop", exc=exc, severity="warning")
         return reply
     return brain_execute_tool(str(decision.get("action") or ""), decision.get("args") or {}, clean, chat_id)
 
@@ -17440,11 +17536,18 @@ def imessage_allowed_senders() -> set[str]:
 
 def imessage_sender_allowed(sender: str) -> tuple[bool, str]:
     """Defense-in-depth for the iMessage inbound relay: the Mac bridge passes
-    the thread handle and the HOST verifies it. Empty allowlist = legacy open
-    mode (bridge-side thread filter is then the only gate)."""
+    the thread handle and the HOST verifies it.
+
+    L4.103 FAIL-CLOSED: an empty/unset allowlist now DENIES by default, so a
+    missing AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS (fresh machine, .env regression,
+    typo) can never silently open the relay to any sender. Migration escape
+    hatch: set AI_COUNCIL_IMESSAGE_ALLOW_OPEN=true to restore legacy open mode
+    on purpose (e.g. during first bring-up before the allowlist is filled)."""
     allowed = imessage_allowed_senders()
     if not allowed:
-        return True, "open"
+        if bool_cfg("AI_COUNCIL_IMESSAGE_ALLOW_OPEN", False):
+            return True, "open_explicit"
+        return False, "denied_no_allowlist"
     norm = normalize_imessage_handle(sender)
     if norm and norm in allowed:
         return True, "allowlisted"
@@ -17849,6 +17952,29 @@ def front_all_response(parts: list[tuple[str, str]], task_id: str = "", verdict:
     return "\n".join(lines)
 
 
+def all_council_response(prompt: str, task_id: str = "") -> str:
+    """@all council: three operators vote, then a deterministic verdict. Extracted
+    from build_response (audit A2) so the megaswitch stays a dispatcher, not a body."""
+    codex_out = codex_response(prompt, task_id=task_id)
+    claude_out = claude_response(prompt, task_id=task_id)
+    grok_out = grok_route_response(prompt, max_chars=700, task_id=task_id)
+    parts = [
+        ("Technicznie", codex_out),
+        ("Plan", claude_out),
+        ("Research", grok_out),
+    ]
+    # L4.81: synthesize a single verdict from the three votes (deterministic,
+    # no extra Grok call) so @all ends on a ruling, not parallel answers.
+    verdict = fallback_council_synthesis(
+        prompt.strip() or "Konsultacja @all",
+        claude_out,
+        grok_out,
+        codex_out,
+        task_id=task_id,
+    )
+    return front_all_response(parts, task_id=task_id, verdict=verdict)
+
+
 def build_response(route: dict, chat_id: str = "") -> str:
     command = route.get("command")
     prompt = route.get("prompt", "")
@@ -17868,6 +17994,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return "[Council] Stop przyjęty. Bounded listener zakończy ten przebieg po obsłudze aktualnej wiadomości."
     if command == "/status":
         return task_status_response(prompt)
+    if command == "/working":
+        return live_status_response()
     if command == "/progress":
         return progress_response(prompt)
     if command == "/health":
@@ -18017,24 +18145,7 @@ def build_response(route: dict, chat_id: str = "") -> str:
     if command in FRONT_OPERATOR_COMMANDS:
         return front_operator_response(command, raw_operator_response(command, prompt, task_id=task_id), task_id=task_id)
     if command == "@all":
-        codex_out = codex_response(prompt, task_id=task_id)
-        claude_out = claude_response(prompt, task_id=task_id)
-        grok_out = grok_route_response(prompt, max_chars=700, task_id=task_id)
-        parts = [
-            ("Technicznie", codex_out),
-            ("Plan", claude_out),
-            ("Research", grok_out),
-        ]
-        # L4.81: synthesize a single verdict from the three votes (deterministic,
-        # no extra Grok call) so @all ends on a ruling, not parallel answers.
-        verdict = fallback_council_synthesis(
-            prompt.strip() or "Konsultacja @all",
-            claude_out,
-            grok_out,
-            codex_out,
-            task_id=task_id,
-        )
-        return front_all_response(parts, task_id=task_id, verdict=verdict)
+        return all_council_response(prompt, task_id=task_id)
     return host_response(prompt, chat_id=chat_id)
 
 
@@ -18427,8 +18538,10 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
         # Idempotent by update_id, so this is safe even if the update replays.
         try:
             append_conversation_turn(chat_id, "user", text, route, update_id=update.get("update_id"))
-        except Exception:
-            pass
+        except Exception as exc:
+            # L4.64 promised this turn is never dropped; L4.103 makes the drop
+            # at least leave evidence instead of vanishing silently.
+            record_error("conversation_turn_drop", exc=exc, severity="warning")
 
         task = None
         duplicate = None
@@ -18462,7 +18575,9 @@ def listen_once(send: bool = False, limit: int = 10, verbose: bool = True) -> in
                 background_started = True
                 response = start_background_job(route, chat_id=chat_id, task_id=task["task_id"], send_progress=send)
             else:
-                response = build_response(route, chat_id=chat_id)
+                # W1: show 'pisze…' while a synchronous (possibly slow) reply builds.
+                with TelegramTypingPulse(chat_id, enabled=send):
+                    response = build_response(route, chat_id=chat_id)
             response_failed = False
         except Exception as exc:
             response = f"[Council] Error: {compact_line(redact_secrets(str(exc)), 500)}"
@@ -18843,8 +18958,144 @@ def self_repair_tools_enabled() -> bool:
 def self_repair_auto_apply_enabled() -> bool:
     """L4.102: when ON, a GREEN (full pytest) repair is applied to production
     automatically — still with backup + py_compile rollback + self-repair-undo.
-    OFF by default: production change waits for /approve."""
+    OFF by default: production change waits for /approve.
+
+    L4.103: full autonomy is intentional (Bartek), but auto-apply now passes
+    through self_repair_guard_auto_apply() + an adversarial reviewer first; a
+    patch that touches a security function, is too large, or fails review falls
+    back to manual /approve instead of landing silently."""
     return bool_cfg("AI_COUNCIL_SELF_REPAIR_AUTO_APPLY", False)
+
+
+# L4.103: functions whose change must NEVER auto-apply (always require /approve).
+# These are the trust boundary of the system; the list itself is protected (any
+# patch editing self_repair_guard_auto_apply or this tuple touches them too).
+SELF_REPAIR_PROTECTED_FUNCS = (
+    "imessage_sender_allowed",
+    "imessage_allowed_senders",
+    "is_allowed_message",
+    "safe_resolve",
+    "approve_response",
+    "update_action_status",
+    "create_action",
+    "redact_secrets",
+    "redaction_values",
+    "shortcut_authorized",
+    "provider_write_gate_blockers",
+    "self_repair_file_allowed",
+    "self_repair_changeset",
+    "self_repair_guard_auto_apply",
+    "self_repair_adversarial_review",
+    "self_repair_auto_apply_enabled",
+    "execute_self_repair_action",
+    "self_repair_env",
+)
+
+
+def self_repair_env() -> dict[str, str]:
+    """L4.103 Bash hardening: the self-repair model keeps FULL Bash (it must be
+    able to fix scripts too), but runs with a SECRET-FREE environment and an
+    AI_COUNCIL_ENV pointing at a nonexistent path, so a prompt-injected repair
+    session cannot read live tokens from the process env or the .env file."""
+    env = operator_env()
+    for key in list(env.keys()):
+        upper = key.upper()
+        if any(marker in upper for marker in SECRET_MARKERS) or upper.startswith(
+            ("TELEGRAM_", "XAI_", "GROK_", "GITHUB_", "GH_", "GOOGLE_")
+        ):
+            env.pop(key, None)
+    env["AI_COUNCIL_ENV"] = str(self_repair_dir() / "_no_such_env")
+    env["AI_COUNCIL_SELF_REPAIR_SESSION"] = "1"
+    return env
+
+
+def _function_source(text: str, name: str) -> str | None:
+    """Exact source span of a top-level-or-nested function by name, or None."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    lines = text.splitlines()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            end = node.end_lineno or node.lineno
+            return "\n".join(lines[node.lineno - 1 : end])
+    return None
+
+
+def self_repair_guard_auto_apply(workdir: Path, baseline_root: Path) -> tuple[bool, str]:
+    """Deterministic gate for auto-apply. Returns (safe, reason). Compares the
+    edited working copy against the live production tree:
+      - any change to a SELF_REPAIR_PROTECTED_FUNCS body => block (manual approve),
+      - total changed-line count over the diff-size cap => block."""
+    max_diff = int_cfg("AI_COUNCIL_SELF_REPAIR_MAX_DIFF_LINES", 400)
+    total_changed = 0
+    candidates = [workdir / "ai_council.py"] + sorted((workdir / "tests").glob("*.py"))
+    for path in candidates:
+        if not path.is_file():
+            continue
+        rel = path.relative_to(workdir).as_posix()
+        new_text = path.read_text(encoding="utf-8", errors="replace")
+        old_path = baseline_root / rel
+        old_text = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else ""
+        if new_text == old_text:
+            continue
+        diff = difflib.unified_diff(old_text.splitlines(), new_text.splitlines(), n=0)
+        total_changed += sum(1 for line in diff if line and line[0] in "+-" and not line.startswith(("+++", "---")))
+    try:
+        old_main = (baseline_root / "ai_council.py").read_text(encoding="utf-8", errors="replace")
+        new_main = (workdir / "ai_council.py").read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, f"nie moge porownac zrodla: {exc}"
+    for fn in SELF_REPAIR_PROTECTED_FUNCS:
+        if _function_source(old_main, fn) != _function_source(new_main, fn):
+            return False, f"patch dotyka funkcji bezpieczenstwa: {fn}"
+    if total_changed > max_diff:
+        return False, f"diff za duzy ({total_changed} > {max_diff} linii)"
+    return True, f"diff {total_changed} linii, zero funkcji chronionych"
+
+
+SELF_REPAIR_REVIEW_CONTRACT = (
+    "Jestes recenzentem bezpieczenstwa. Ocen ponizszy diff patcha do systemu agentowego.\n"
+    "Szukaj: backdoorow, oslabienia kontroli dostepu/allowlist, eksfiltracji sekretow,\n"
+    "wywolan sieciowych, omijania bram approval, ukrytego kodu. Patch ma TYLKO naprawiac\n"
+    "podany blad. Odpowiedz DOKLADNIE jedna linia: 'APPROVE' albo 'REJECT <powod>'."
+)
+
+
+def self_repair_adversarial_review(diff_text: str, context: str) -> tuple[bool, str]:
+    """Second, independent Claude pass (no tools) that must APPROVE before an
+    auto-apply lands. Any failure/REJECT degrades to manual /approve (safe)."""
+    if not bool_cfg("AI_COUNCIL_SELF_REPAIR_ADVERSARIAL", True):
+        return True, "reviewer wylaczony"
+    prompt = f"{SELF_REPAIR_REVIEW_CONTRACT}\n\nBLAD: {context}\n\nDIFF:\n{diff_text[:14000]}"
+    verdict = claude_self_repair_response(prompt)
+    if verdict is None:
+        return False, "reviewer niedostepny -> wymaga /approve"
+    first = (verdict.strip().splitlines() or [""])[0].strip()
+    if first.upper().startswith("APPROVE"):
+        return True, "reviewer APPROVE"
+    return False, compact_line(first or "REJECT bez powodu", 200)
+
+
+def self_repair_diff_text(workdir: Path, baseline_root: Path) -> str:
+    """Unified diff of the working copy vs the live tree, for the reviewer."""
+    chunks: list[str] = []
+    candidates = [workdir / "ai_council.py"] + sorted((workdir / "tests").glob("*.py"))
+    for path in candidates:
+        if not path.is_file():
+            continue
+        rel = path.relative_to(workdir).as_posix()
+        new_text = path.read_text(encoding="utf-8", errors="replace")
+        old_path = baseline_root / rel
+        old_text = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else ""
+        if new_text == old_text:
+            continue
+        chunks.extend(difflib.unified_diff(
+            old_text.splitlines(), new_text.splitlines(),
+            fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm="",
+        ))
+    return "\n".join(chunks)
 
 
 SELF_REPAIR_TOOLS_CONTRACT = """Jestes inzynierem naprawiajacym blad w jednoplikowym systemie ai_council.py (Python, wylacznie stdlib).
@@ -18883,7 +19134,7 @@ def claude_self_repair_tools_run(prompt: str, workdir: Path) -> tuple[bool, str]
     try:
         proc = subprocess.run(
             command, text=True, encoding="utf-8", errors="replace", input="",
-            capture_output=True, timeout=timeout, cwd=str(workdir), env=operator_env(),
+            capture_output=True, timeout=timeout, cwd=str(workdir), env=self_repair_env(),
         )
     except subprocess.TimeoutExpired:
         finalize_operator_call(reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="self_repair tools timeout")
@@ -19054,9 +19305,29 @@ def run_self_repair_once(send: bool = False, chat_id: str = "") -> str:
         payload={"repair_id": repair_id, "context": context, "files": files, "evidence": verdict["detail"], **payload_change},
     )
 
-    # L4.102: optional full autonomy — apply a GREEN repair to production now.
+    # L4.102/L4.103: optional full autonomy — apply a GREEN repair to production
+    # now, but only after deterministic guards + adversarial review pass. Any
+    # block degrades to manual /approve so a risky/injected patch never lands alone.
     if self_repair_auto_apply_enabled():
-        approved = update_action_status(action["action_id"], "approved", "auto-apply (AI_COUNCIL_SELF_REPAIR_AUTO_APPLY)")
+        safe, guard_reason = self_repair_guard_auto_apply(workdir, PROJECT_DIR)
+        review_ok, review_reason = (False, "pominiety (guard)")
+        if safe:
+            review_ok, review_reason = self_repair_adversarial_review(
+                self_repair_diff_text(workdir, PROJECT_DIR), context
+            )
+        if not (safe and review_ok):
+            block_reason = guard_reason if not safe else review_reason
+            self_repair_record(repair_id, context, "auto_apply_blocked", action_id=action["action_id"], files=files, detail=block_reason)
+            summary = (
+                f"🔧 Self-Repair: ZIELONY patch na `{context}` ({candidate.get('count')}x), "
+                f"ale auto-apply WSTRZYMANY: {block_reason}.\n"
+                f"Pliki: {', '.join(files)} | weryfikacja: {verdict['detail']}\n"
+                f"Zatwierdz recznie: /approve {action['action_id']} | odrzuc: /deny {action['action_id']}"
+            )
+            if send:
+                deliver_proactive(chat_id or cfg("TELEGRAM_ALLOWED_CHAT_ID"), summary)
+            return summary
+        approved = update_action_status(action["action_id"], "approved", f"auto-apply ({guard_reason}; {review_reason})")
         executed = execute_self_repair_action(approved or action)
         ok = executed.get("status") == "executed"
         self_repair_record(repair_id, context, "auto_applied" if ok else "auto_apply_failed", action_id=action["action_id"], files=files)
@@ -19177,6 +19448,14 @@ def doctor() -> int:
     ok = xai_models() and ok
     print("--- scheduled-task ---")
     ok = check_scheduled_task_status() and ok
+    print("--- imessage channel ---")
+    senders = imessage_allowed_senders()
+    if senders:
+        print(f"imessage_allowlist=OK ({len(senders)} sender(s))")
+    elif bool_cfg("AI_COUNCIL_IMESSAGE_ALLOW_OPEN", False):
+        print("imessage_allowlist=OPEN (AI_COUNCIL_IMESSAGE_ALLOW_OPEN=true) — any sender accepted; fill the allowlist before relying on iMessage")
+    else:
+        print("imessage_allowlist=FAIL-CLOSED (empty) — inbound iMessage is DENIED until AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS is set")
     print("--- state retention ---")
     try:
         print(f"state_prune={json.dumps(prune_state_files(), ensure_ascii=False)}")

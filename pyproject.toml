@@ -5,3 +5,25 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 120
 
+[tool.ruff.lint]
+# L4.103 (audit 2.5): lint now does more than line-length. E/F are the default
+# (syntax, imports, bare-except via E722); B=bugbear (mutable defaults, B904
+# exception chaining), UP=pyupgrade, SIM=simplify, C4=comprehensions, PIE.
+select = ["E", "F", "B", "UP", "SIM", "C4", "PIE"]
+ignore = [
+    "E501",   # line length handled by formatter target, not enforced hard
+    "E741",   # ambiguous var names (l/I) — pre-existing style in this file
+    # Stylistic-only rules: not worth churning the 19k-line monolith now. The
+    # high-value rules (B bugbear, F, E, UP, C4) stay enforced. Silent-except
+    # remediation (audit 1.5) is a separate behavioral task, not SIM105 suppress.
+    "SIM105",  # try/except/pass vs contextlib.suppress
+    "SIM102",  # collapsible if
+    "SIM103",  # needless bool
+    "SIM108",  # if-else vs ternary
+    "SIM117",  # nested with (pervasive in tests' patch stacks)
+    "SIM118",  # .keys() membership
+    "PIE810",  # combine startswith/endswith calls
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F403", "F405"]  # star-import from council_test_shared is intentional
