@@ -3724,6 +3724,53 @@ def run_media_derived_route(intent_text: str, chat_id: str, parent_task: dict, s
     return {**derived, "status": "responded", "response": response}
 
 
+# --- audit 2.2: shared media-capture core (Telegram + iPhone Shortcut) -------
+def media_capture_analyze_and_route(metadata: dict, media: dict, chat_id: str, task: dict, *, send_progress: bool) -> tuple[dict, dict]:
+    """Common middle of every media capture: analyze the local file (if any),
+    derive an AI Council intent from it, and record both in the metadata."""
+    if metadata.get("local_path"):
+        analysis = analyze_downloaded_media(metadata)
+    else:
+        analysis = {"status": "not_available", "reason": str(metadata.get("download_status") or ""), "text": ""}
+    metadata["analysis"] = analysis
+    derived = run_media_derived_route(media_intent_text(media, analysis), chat_id, task, send_progress=send_progress)
+    metadata["derived_intent"] = derived
+    return analysis, derived
+
+
+def write_media_metadata(artifact_dir: Path, metadata: dict) -> Path:
+    metadata_path = artifact_dir / "media.json"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return metadata_path
+
+
+def media_capture_facts(media: dict, metadata: dict, analysis: dict, derived: dict) -> list[str]:
+    return [
+        f"type={media.get('kind')}",
+        f"download_status={metadata.get('download_status')}",
+        f"local_path={metadata.get('local_path') or 'not saved'}",
+        f"analysis_status={analysis.get('status')}",
+        f"derived_status={derived.get('status')}",
+    ]
+
+
+def media_capture_finalize(task_id: str, prompt: str, result: dict, *, completion_note: str, derived: dict, derived_label: str) -> str:
+    """Common tail of every media capture: persist artifacts, close the task,
+    assemble the user-facing response (with the derived-intent suffix)."""
+    artifact = save_task_artifacts(task_id, {"command": "/capture", "operators": ["host"], "prompt": prompt}, result)
+    update_task_status(
+        task_id,
+        "completed",
+        completion_note,
+        report_path=artifact.get("report_path"),
+        summary_path=artifact.get("summary_path"),
+    )
+    response = str(artifact.get("summary") or format_telegram_summary(result, task_id))
+    if derived.get("response"):
+        response += f"\n\n[{derived_label}]\n" + str(derived["response"])
+    return response
+
+
 def capture_telegram_media_message(message: dict, chat_id: str, update_id: int | None = None) -> tuple[str, dict | None]:
     media = telegram_media_from_message(message)
     if not media:
@@ -3771,19 +3818,9 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
         "local_path": local_path,
         "download_status": download_status,
     }
-    analysis = analyze_downloaded_media(metadata) if local_path else {"status": "not_available", "reason": download_status, "text": ""}
-    metadata["analysis"] = analysis
-    derived = run_media_derived_route(media_intent_text(media, analysis), chat_id, task, send_progress=True)
-    metadata["derived_intent"] = derived
-    metadata_path = artifact_dir / "media.json"
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    facts = [
-        f"type={media.get('kind')}",
-        f"download_status={download_status}",
-        f"local_path={local_path or 'not saved'}",
-        f"analysis_status={analysis.get('status')}",
-        f"derived_status={derived.get('status')}",
-    ]
+    analysis, derived = media_capture_analyze_and_route(metadata, media, chat_id, task, send_progress=True)
+    metadata_path = write_media_metadata(artifact_dir, metadata)
+    facts = media_capture_facts(media, metadata, analysis, derived)
     derived_next = []
     if derived.get("task_id"):
         derived_next.append(f"Sprawdź pracę z media intent: /details {derived.get('task_id')}")
@@ -3812,17 +3849,10 @@ def capture_telegram_media_message(message: dict, chat_id: str, update_id: int |
             f"Metadata: {metadata_path}\n"
         ),
     }
-    artifact = save_task_artifacts(task_id, {"command": "/capture", "operators": ["host"], "prompt": prompt}, result)
-    update_task_status(
-        task_id,
-        "completed",
-        "telegram media captured",
-        report_path=artifact.get("report_path"),
-        summary_path=artifact.get("summary_path"),
+    response = media_capture_finalize(
+        task_id, prompt, result,
+        completion_note="telegram media captured", derived=derived, derived_label="Media intent",
     )
-    response = str(artifact.get("summary") or format_telegram_summary(result, task_id))
-    if derived.get("response"):
-        response += "\n\n[Media intent]\n" + str(derived["response"])
     return response, task
 
 
@@ -4091,19 +4121,9 @@ def capture_shortcut_media_payload(payload: dict, remote_addr: str = "") -> dict
         "local_path": str(target),
         "download_status": "provided_by_shortcut",
     }
-    analysis = analyze_downloaded_media(metadata)
-    metadata["analysis"] = analysis
-    derived = run_media_derived_route(media_intent_text(media, analysis), chat_id, task, send_progress=send_telegram)
-    metadata["derived_intent"] = derived
-    metadata_path = artifact_dir / "media.json"
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    facts = [
-        f"type={media.get('kind')}",
-        "download_status=provided_by_shortcut",
-        f"local_path={target}",
-        f"analysis_status={analysis.get('status')}",
-        f"derived_status={derived.get('status')}",
-    ]
+    analysis, derived = media_capture_analyze_and_route(metadata, media, chat_id, task, send_progress=send_telegram)
+    metadata_path = write_media_metadata(artifact_dir, metadata)
+    facts = media_capture_facts(media, metadata, analysis, derived)
     next_actions = []
     if derived.get("task_id"):
         next_actions.append(f"Sprawdź pracę z iPhone Shortcut media intent: /details {derived.get('task_id')}")
@@ -4131,17 +4151,10 @@ def capture_shortcut_media_payload(payload: dict, remote_addr: str = "") -> dict
             f"Derived: {json.dumps(derived, ensure_ascii=False, indent=2)}\n"
         ),
     }
-    artifact = save_task_artifacts(task_id, {"command": "/capture", "operators": ["host"], "prompt": prompt}, result)
-    update_task_status(
-        task_id,
-        "completed",
-        "iphone shortcut media captured",
-        report_path=artifact.get("report_path"),
-        summary_path=artifact.get("summary_path"),
+    response = media_capture_finalize(
+        task_id, prompt, result,
+        completion_note="iphone shortcut media captured", derived=derived, derived_label="Shortcut media intent",
     )
-    response = str(artifact.get("summary") or format_telegram_summary(result, task_id))
-    if derived.get("response"):
-        response += "\n\n[Shortcut media intent]\n" + str(derived["response"])
     if send_telegram and chat_id:
         telegram_send_message_with_markup(chat_id, response, response_reply_markup(response))
     audit(
