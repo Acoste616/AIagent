@@ -162,9 +162,11 @@ def _decode_ab(blob) -> str:
     n = b[p]
     p += 1
     if n == 0x81:
-        n = int.from_bytes(b[p:p + 2], "little"); p += 2
+        n = int.from_bytes(b[p:p + 2], "little")
+        p += 2
     elif n == 0x82:
-        n = int.from_bytes(b[p:p + 4], "little"); p += 4
+        n = int.from_bytes(b[p:p + 4], "little")
+        p += 4
     return b[p:p + n].decode("utf-8", errors="replace")
 
 

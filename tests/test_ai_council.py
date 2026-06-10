@@ -9119,8 +9119,10 @@ class ConversationBrainTests(unittest.TestCase):
         base = Path(self._tmp.name)
         self._p1 = patch.object(ai_council, "CLARIFICATIONS_FILE", base / "clarifications.jsonl")
         self._p2 = patch.object(ai_council, "CONVERSATIONS_FILE", base / "conversations.jsonl")
-        self._p1.start(); self.addCleanup(self._p1.stop)
-        self._p2.start(); self.addCleanup(self._p2.stop)
+        self._p1.start()
+        self.addCleanup(self._p1.stop)
+        self._p2.start()
+        self.addCleanup(self._p2.stop)
         self.cid = "brainA-553"
 
     # --- (c) taxonomy: detects the full intent set ---

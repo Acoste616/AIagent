@@ -1,6 +1,8 @@
 # Bartek Agent OS / AI Council
 
-Private Telegram-first AI operating layer for Bartek.
+[![CI](https://github.com/Acoste616/AIagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Acoste616/AIagent/actions/workflows/ci.yml)
+
+Private messaging-first AI operating layer for Bartek. Primary channel: iMessage (phone-number thread via the Mac bridge). Fallback channel: Telegram.
 
 Current production host:
 
@@ -34,19 +36,23 @@ Build a private Poke-like assistant that combines:
 - Hermes: agent skills, workflow discipline, tool execution patterns
 - Codex/Claude/Grok: executor, planner, researcher/red-team
 
-The first channel is Telegram. Apple Messages/iMessage is a later channel after the core is stable.
+Primary channel is iMessage (sender-allowlisted, relayed by the Mac bridge over SSH). Telegram stays as the fallback channel and as the transport for proactive nudges when iMessage is unavailable.
 
 ## Run Tests
 
+Always run through pytest so `tests/conftest.py` can sandbox the writable state
+directories (running the file directly from a production checkout would write to
+the live `state/`):
+
 ```bash
-python -X utf8 tests/test_ai_council.py
+python3 -m pytest -q tests
 ```
 
 On Windows production:
 
 ```powershell
 cd D:\ai-council
-python -X utf8 tests\test_ai_council.py
+python -m pytest -q tests
 python -X utf8 ai_council.py doctor
 ```
 
@@ -72,8 +78,4 @@ Never commit:
 - logs/state/artifacts with private user data
 
 Use `.env.example` as the template.
-
-## GitHub Auth Status
-
-This repo was prepared locally from the live Windows deployment. Pushing to `Acoste616/AIagent` currently requires GitHub re-auth because both the Codex GitHub connector and Windows `gh` token were expired during setup.
 

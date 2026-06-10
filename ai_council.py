@@ -4021,7 +4021,7 @@ def capture_shortcut_media_payload(payload: dict, remote_addr: str = "") -> dict
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     facts = [
         f"type={media.get('kind')}",
-        f"download_status=provided_by_shortcut",
+        "download_status=provided_by_shortcut",
         f"local_path={target}",
         f"analysis_status={analysis.get('status')}",
         f"derived_status={derived.get('status')}",
@@ -7262,7 +7262,7 @@ def codex_worker_review_response(prompt: str) -> str:
     lines = [
         f"[Council] Codex Worker Review {CODEX_WORKER_VERSION}",
         f"task_id: {task_id}",
-        f"product_goal: Poke clone + GPT/Claude suby/OAuth + Grok API + lokalny OpenClaw/Hermes server",
+        "product_goal: Poke clone + GPT/Claude suby/OAuth + Grok API + lokalny OpenClaw/Hermes server",
         f"worker_prompt: {'OK' if prompt_exists else 'missing'}",
         f"worker_final: {'OK' if final_exists else 'missing'}",
         f"secret_guard: {secret_guard['status']}",
@@ -17030,9 +17030,11 @@ def imessage_decode_attributed_body(blob) -> str:
     n = b[p]
     p += 1
     if n == 0x81:        # extended: next 2 bytes little-endian
-        n = int.from_bytes(b[p:p + 2], "little"); p += 2
+        n = int.from_bytes(b[p:p + 2], "little")
+        p += 2
     elif n == 0x82:      # 4-byte length (rare)
-        n = int.from_bytes(b[p:p + 4], "little"); p += 4
+        n = int.from_bytes(b[p:p + 4], "little")
+        p += 4
     return b[p:p + n].decode("utf-8", errors="replace")
 
 
