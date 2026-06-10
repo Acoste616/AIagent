@@ -16573,7 +16573,116 @@ BRAIN_TOOLS = [
 ]
 
 
+BRAIN_TOOL_MARKER_RE = re.compile(r"^\s*TOOL:\s*(\{.*\})\s*$", re.MULTILINE)
+
+
+def brain_tools_prompt_block() -> str:
+    """L4.98: BRAIN_TOOLS described in-prompt for the Claude CLI brain (no native
+    tool-calling over the CLI; a single strict TOOL: marker line instead)."""
+    lines = [
+        "NARZĘDZIA: jeśli wiadomość wymaga narzędzia, odpowiedz WYŁĄCZNIE jedną linią:",
+        'TOOL: {"action":"<nazwa>","args":{...}}',
+        "Dozwolone narzędzia:",
+    ]
+    for tool in BRAIN_TOOLS:
+        fn = tool.get("function") or {}
+        lines.append(f"- {fn.get('name')}: {fn.get('description')}")
+    lines.append("W każdym innym wypadku odpowiedz zwykłym, ludzkim tekstem (bez TOOL:, bez JSON).")
+    return "\n".join(lines)
+
+
+def brain_decide_claude(text: str, chat_id: str = "") -> dict | None:
+    """L4.98: Claude (subscription CLI, no tools) as the brain's PRIMARY voice —
+    North Star: Claude rozmawia z Bartkiem, Grok robi research. Returns the same
+    decision dict as brain_decide; None on any failure (Grok brain is the fallback)."""
+    if not poke_chat_claude_configured():
+        return None
+    clean = str(text or "").strip()
+    if not clean:
+        return None
+    started = time.time()
+    allowed, _reason, reservation = reserve_operator_call("claude", detail="brain")
+    if not allowed:
+        return None
+    memory_context = memory_context_for_prompt(clean)
+    memory_block = f"\n\nKontekst z pamięci (fakty o Bartku):\n{memory_context}" if memory_context else ""
+    history_lines = []
+    for message in poke_chat_history_messages(chat_id):
+        speaker = "Bartek" if message["role"] == "user" else "Ty"
+        history_lines.append(f"{speaker}: {compact_line(message['content'], 400)}")
+    history_block = ("Ostatnia rozmowa:\n" + "\n".join(history_lines) + "\n\n") if history_lines else ""
+    command = [
+        command_path("CLAUDE_BIN", "claude", DEFAULT_CLAUDE_BIN),
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--append-system-prompt",
+        BRAIN_SYSTEM_PROMPT + "\n\n" + brain_tools_prompt_block(),
+    ]
+    model = cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_MODEL").strip()
+    if model:
+        command.extend(["--model", model])
+    command.extend(["-p", f"{history_block}Bartek pisze: {clean}{memory_block}"])
+    timeout = int_cfg("AI_COUNCIL_POKE_CHAT_CLAUDE_TIMEOUT", 90)
+    try:
+        proc = subprocess.run(
+            command,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            input="",
+            capture_output=True,
+            timeout=timeout,
+            cwd=str(PROJECT_DIR),
+            env=operator_env(),
+        )
+    except subprocess.TimeoutExpired:
+        finalize_operator_call(
+            reservation, status="timeout", duration_ms=int((time.time() - started) * 1000), detail="brain claude timeout"
+        )
+        record_error("brain_claude", message=f"timeout after {timeout}s", severity="warning")
+        return None
+    except FileNotFoundError:
+        finalize_operator_call(reservation, status="missing", duration_ms=0, estimated_usd=0.0, detail="brain claude missing")
+        return None
+    duration_ms = int((time.time() - started) * 1000)
+    if proc.returncode != 0:
+        detail = compact_line(redact_secrets(proc.stderr or proc.stdout or ""), 220)
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail=f"brain claude: {detail}")
+        record_error("brain_claude", message=detail or f"exit {proc.returncode}", severity="warning")
+        return None
+    answer = clean_operator_output(redact_secrets(proc.stdout or "")).strip()
+    if not answer:
+        finalize_operator_call(reservation, status="failed", duration_ms=duration_ms, detail="brain claude: empty")
+        return None
+    finalize_operator_call(reservation, status="completed", duration_ms=duration_ms, detail="brain claude")
+    match = BRAIN_TOOL_MARKER_RE.search(answer)
+    if match:
+        try:
+            payload = json.loads(match.group(1))
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and str(payload.get("action") or "").strip():
+            args = payload.get("args")
+            return {"action": str(payload["action"]).strip(), "args": args if isinstance(args, dict) else {}}
+        answer = BRAIN_TOOL_MARKER_RE.sub("", answer).strip()  # broken marker => treat as plain reply
+        if not answer:
+            return None
+    return {"action": "reply", "text": answer[: int_cfg("AI_COUNCIL_POKE_CHAT_MAX_CHARS", 1200)]}
+
+
 def brain_decide(text: str, chat_id: str = "") -> dict | None:
+    """L4.98 dispatcher — North Star: Claude rozmawia z Bartkiem (primary voice),
+    Grok brain zostaje fallbackiem i operatorem research."""
+    decision = brain_decide_claude(text, chat_id=chat_id)
+    if decision:
+        return decision
+    return brain_decide_grok(text, chat_id=chat_id)
+
+
+def brain_decide_grok(text: str, chat_id: str = "") -> dict | None:
     """P2 — the brain's reasoning turn. One Grok call with BRAIN_SYSTEM_PROMPT + recent
     conversation + memory + tool schemas. Returns {"action":"reply","text":…} or
     {"action":<tool>,"args":{…}}. None when the LLM is unavailable."""

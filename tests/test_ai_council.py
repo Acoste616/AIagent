@@ -8345,6 +8345,59 @@ class PokeChatClaudeOperatorTests(unittest.TestCase):
         self.assertIn("DOPYTYWANIE", ai_council.MASTER_HOST_CONTRACT)
         self.assertIn("JEDNO", ai_council.MASTER_HOST_CONTRACT)
 
+    def test_brain_voice_is_claude_first_with_grok_fallback(self):
+        # L4.98: brain_decide dispatches Claude first; Grok only when Claude fails.
+        with patch.object(
+            ai_council, "brain_decide_claude", return_value={"action": "reply", "text": "Hej, jasne."}
+        ), patch.object(ai_council, "brain_decide_grok") as grok:
+            decision = ai_council.brain_decide("co tam?", chat_id="553")
+        self.assertEqual(decision["text"], "Hej, jasne.")
+        grok.assert_not_called()
+
+        with patch.object(ai_council, "brain_decide_claude", return_value=None), patch.object(
+            ai_council, "brain_decide_grok", return_value={"action": "reply", "text": "grok przejął"}
+        ):
+            decision = ai_council.brain_decide("co tam?", chat_id="553")
+        self.assertEqual(decision["text"], "grok przejął")
+
+    def test_brain_decide_claude_parses_tool_marker_and_reply(self):
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = 'TOOL: {"action":"save_fact","args":{"fact":"Bartek lubi sushi"}}'
+
+        def fake_cfg(key, default=""):
+            return default
+
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "recent_conversation", return_value=[]
+        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
+            ai_council.subprocess, "run", return_value=FakeProc()
+        ):
+            decision = ai_council.brain_decide_claude("zapamiętaj że lubię sushi", chat_id="553")
+        self.assertEqual(decision["action"], "save_fact")
+        self.assertEqual(decision["args"]["fact"], "Bartek lubi sushi")
+
+        FakeProc.stdout = "Jasne, ogarniam to."
+        with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
+            ai_council, "reserve_operator_call", return_value=(True, "", {"usage_id": "u1"})
+        ), patch.object(ai_council, "finalize_operator_call", return_value=None), patch.object(
+            ai_council, "recent_conversation", return_value=[]
+        ), patch.object(ai_council, "memory_context_for_prompt", return_value=""), patch.object(
+            ai_council.subprocess, "run", return_value=FakeProc()
+        ):
+            decision = ai_council.brain_decide_claude("ogarnij temat", chat_id="553")
+        self.assertEqual(decision, {"action": "reply", "text": "Jasne, ogarniam to."})
+
+    def test_brain_decide_claude_disabled_for_grok_operator(self):
+        def grok_cfg(key, default=""):
+            return {"AI_COUNCIL_POKE_CHAT_OPERATOR": "grok"}.get(key, default)
+
+        with patch.object(ai_council, "cfg", side_effect=grok_cfg):
+            self.assertIsNone(ai_council.brain_decide_claude("hej tam, co słychać?", chat_id="553"))
+
 
 class OrderHandoffTests(unittest.TestCase):
     """L4.96: 'zamów pizzę' => Claude collects slots, emits ORDER_DRAFT marker,
@@ -9246,7 +9299,7 @@ class ConversationBrainTests(unittest.TestCase):
 
     def test_brain_reply_strips_debug_and_operator_labels(self):
         def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok"}.get(key, default)
 
         leaky = "[Grok] noise\nroute=secret\nNormalna odpowiedź dla Bartka."
         with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
@@ -9262,7 +9315,7 @@ class ConversationBrainTests(unittest.TestCase):
     # --- (P2/P3) brain tool-calling: act, don't just chat ---
     def test_brain_decide_parses_tool_call(self):
         def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test"}.get(key, default)
+            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok"}.get(key, default)
 
         tool_resp = {"choices": [{"message": {"content": None, "tool_calls": [
             {"function": {"name": "save_fact", "arguments": '{"fact": "Bartek lubi kawę bez cukru"}'}}]}}]}
