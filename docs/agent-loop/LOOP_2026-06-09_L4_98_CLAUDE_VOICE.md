@@ -1,7 +1,13 @@
 # Agent Loop — Iteracje 7–8 — L4.98: Claude głosem brain + ORDER_DRAFT na live path
 
 Date: 2026-06-09/10 noc · Owner: Claude (loop owner)
-Status: **commitnięte na Macu (5f50e74), NIE wdrożone — Desktop offline (blocker)**
+Status: **DEPLOYED na D:\ai-council 2026-06-10 rano** (Desktop wrócił online).
+
+DEPLOY WYKONANY: backup `backups/pre-L4.98`, Windows pytest **497/497** (po hermetyzacji 3 testów,
+które na Windows wołały żywe Claude CLI), listener zrestartowany, smoke:
+`respond-b64` 19.3 s round-trip (Claude CLI 13.2 s), odpowiedź naturalna/ludzka, zero debugu,
+`costs.jsonl`: `operator=claude, detail="brain claude", completed, estimated_usd=0.0` —
+**North Star potwierdzony na live path: Claude mówi, Grok = fallback/research, koszt głosu $0.**
 
 ## OBSERVE
 
