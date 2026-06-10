@@ -193,11 +193,23 @@ def _write_cursor(v) -> None:
         pass
 
 
-def host_respond(text: str) -> str:
-    """Forward a user message to the host and return ONLY its reply (quote-safe b64)."""
+def _safe_handle(handle: str) -> str:
+    """Quote-safe handle for the powershell -Command wrapper: phone/email chars only."""
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9@.+_-]", "", str(handle or ""))[:64]
+
+
+def host_respond(text: str, sender: str = "") -> str:
+    """Forward a user message to the host and return ONLY its reply (quote-safe b64).
+    L4.100: passes the THREAD HANDLE as --sender so the host can verify it against
+    AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS (defense-in-depth; empty reply = denied)."""
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    sender_arg = _safe_handle(sender)
+    cmd = f"respond-b64 --b64 {b64}"
+    if sender_arg:
+        cmd += f" --sender {sender_arg}"
     try:
-        p = subprocess.run(_host_cmd(f"respond-b64 --b64 {b64}"), capture_output=True, text=True, timeout=180)
+        p = subprocess.run(_host_cmd(cmd), capture_output=True, text=True, timeout=180)
     except Exception:
         return ""
     return (p.stdout or "").strip()
@@ -246,7 +258,7 @@ def inbound_cycle() -> int:
         body = _msg_text(text, ab).strip()
         if not body or _norm(body) in sent_norms:
             continue  # empty or our own echo -> skip (loop-safety)
-        reply = host_respond(body)
+        reply = host_respond(body, sender=chat_map.get(chat_rowid, TO))
         if reply:
             record_sent(reply)          # record BEFORE sending so the echo is deduped
             ok, _ = send(reply, to=chat_map.get(chat_rowid, TO))  # reply where he wrote

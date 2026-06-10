@@ -10449,10 +10449,8 @@ def send_proactive_nudge(chat_id: str, event: dict) -> bool:
     if nxt and not re.match(r"^/|@", nxt):  # only surface a next step if it's human, not a slash-command
         body += f"\nNastępny krok: {nxt}"
     text = sanitize_brain_reply(body)
-    ok = telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
-    if ok:
-        mirror_proactive_to_imessage(text)  # mirror to iMessage (gated)
-    return ok
+    # L4.100: channel policy — iMessage primary, Telegram fallback.
+    return deliver_proactive(chat_id, text, response_reply_markup(text))
 
 
 def run_proactive_scan(send: bool = False, chat_id: str = "") -> int:
@@ -10560,8 +10558,8 @@ def maybe_send_morning_brief(send: bool = False, chat_id: str = "", now=None) ->
     if not text:
         return 0  # 'wait' — nothing worth saying today
     if send and chat_id:
-        telegram_send_message_with_markup(chat_id, text, response_reply_markup(text))
-        mirror_proactive_to_imessage(text)  # L4.84: proactively reach Bartek over iMessage too (gated)
+        # L4.100: channel policy — iMessage primary, Telegram fallback.
+        deliver_proactive(chat_id, text, response_reply_markup(text))
     audit({"command": "/brief", "operators": ["host"], "status": "sent", "duration_ms": 0, "output_preview": text[:300]})
     return 1
 
@@ -13529,8 +13527,8 @@ def run_background_job(task_id: str) -> int:
                     chat_id,
                     force=True,
                 )
-                telegram_send_message_with_markup(chat_id, summary, background_delivery_reply_markup(summary, task_id))
-                mirror_proactive_to_imessage(summary)  # Deliver: background failure summary also reaches iMessage (gated)
+                # L4.100: channel policy — iMessage primary, Telegram fallback.
+                deliver_proactive(chat_id, summary, background_delivery_reply_markup(summary, task_id))
             return 1
         append_progress_event(task_id, route, "DELIVERING", "final summary ready")
         if send_intermediate:
@@ -13568,8 +13566,8 @@ def run_background_job(task_id: str) -> int:
                 chat_id,
                 force=True,
             )
-            telegram_send_message_with_markup(chat_id, summary, background_delivery_reply_markup(summary, task_id))
-            mirror_proactive_to_imessage(summary)  # Deliver: background RESULT also reaches iMessage (gated)
+            # L4.100: channel policy — iMessage primary, Telegram fallback.
+            deliver_proactive(chat_id, summary, background_delivery_reply_markup(summary, task_id))
         return 0
     except Exception as exc:
         stop_progress_heartbeat(heartbeat)
@@ -17298,24 +17296,86 @@ def proactive_imessage_enabled() -> bool:
     return bool_cfg("AI_COUNCIL_IMESSAGE_PROACTIVE", False)
 
 
-def mirror_proactive_to_imessage(text: str) -> bool:
-    """Also queue a proactive message to iMessage (to self), if enabled.
+# --- L4.100 channel policy: iMessage PRIMARY, Telegram FALLBACK -------------
+def normalize_imessage_handle(handle: str) -> str:
+    """Comparable form of an iMessage handle. Emails: lowercase. Phones: digits
+    only, so '+48 600-100-200' == '48600100200'. Allowlist entries should use
+    the full international form."""
+    h = (handle or "").strip().lower()
+    if not h:
+        return ""
+    if "@" in h:
+        return h
+    return re.sub(r"\D", "", h)
 
-    Off by default. The host (Windows) only ENQUEUES; the Mac runner does the
-    actual send. This is what makes the assistant proactively reach Bartek over
-    iMessage (core Poke behavior) once the channel is live — Telegram still gets
-    its copy regardless. Best-effort: never breaks the Telegram path.
-    """
-    if not proactive_imessage_enabled():
+
+def imessage_allowed_senders() -> set[str]:
+    raw = cfg("AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS")
+    return {normalize_imessage_handle(part) for part in raw.split(",") if normalize_imessage_handle(part)}
+
+
+def imessage_sender_allowed(sender: str) -> tuple[bool, str]:
+    """Defense-in-depth for the iMessage inbound relay: the Mac bridge passes
+    the thread handle and the HOST verifies it. Empty allowlist = legacy open
+    mode (bridge-side thread filter is then the only gate)."""
+    allowed = imessage_allowed_senders()
+    if not allowed:
+        return True, "open"
+    norm = normalize_imessage_handle(sender)
+    if norm and norm in allowed:
+        return True, "allowlisted"
+    return False, "denied"
+
+
+def imessage_primary_enabled() -> bool:
+    """iMessage is the PRIMARY proactive channel (phone-number thread); Telegram
+    is the fallback. Requires AI_COUNCIL_IMESSAGE_ENABLED for actual delivery."""
+    return bool_cfg("AI_COUNCIL_IMESSAGE_PRIMARY", True)
+
+
+def imessage_outbox_stale(max_pending_s: int | None = None) -> bool:
+    """True when the Mac runner is clearly not draining the outbox (e.g. the
+    desktop/Mac is asleep) — proactive sends should then fall back to Telegram
+    instead of silently queueing forever."""
+    limit = int_cfg("AI_COUNCIL_IMESSAGE_STALE_S", 600) if max_pending_s is None else max_pending_s
+    if limit <= 0:
         return False
+    pending = imessage_outbox_pending(limit=5)
+    if not pending:
+        return False
+    now = datetime.now(timezone.utc)
+    for row in pending:
+        created = parse_utc(str(row.get("created_at") or ""))
+        if created and (now - created).total_seconds() > limit:
+            return True
+    return False
+
+
+def deliver_proactive(chat_id: str, text: str, markup=None) -> bool:
+    """Single outbound policy for proactive/background messages.
+
+    1. iMessage primary (gated by AI_COUNCIL_IMESSAGE_PRIMARY + _ENABLED) and the
+       outbox is healthy -> ENQUEUE for the Mac runner; Telegram stays quiet.
+    2. Otherwise Telegram (with reply markup). In legacy mirror mode
+       (AI_COUNCIL_IMESSAGE_PROACTIVE, primary off) iMessage also gets a copy.
+    Never enqueues on the fallback path — that would duplicate the message when
+    the bridge wakes up and drains the queue."""
     body = (text or "").strip()
     if not body:
         return False
-    try:
-        imessage_outbox_enqueue(body, to="", kind="proactive")
-        return True
-    except Exception:
-        return False
+    if imessage_primary_enabled() and imessage_enabled() and not imessage_outbox_stale():
+        try:
+            imessage_outbox_enqueue(body, to="", kind="proactive")
+            return True
+        except Exception as exc:
+            record_error("imessage_enqueue", exc=exc, severity="warning")
+    ok = telegram_send_message_with_markup(chat_id, body, markup if markup is not None else response_reply_markup(body))
+    if ok and not imessage_primary_enabled() and proactive_imessage_enabled() and imessage_enabled():
+        try:
+            imessage_outbox_enqueue(body, to="", kind="proactive")
+        except Exception as exc:
+            record_error("imessage_enqueue", exc=exc, severity="warning")
+    return ok
 
 
 def imessage_drain_rows(rows: list[dict], send_fn, ack_fn) -> list[dict]:
@@ -17947,10 +18007,23 @@ def dry_route(text: str) -> None:
     print(f"audit_log={AUDIT_LOG}")
 
 
-def respond_b64_reply(msg: str) -> str:
+def respond_b64_reply(msg: str, sender: str = "") -> str:
     """L4.94: iMessage inbound relay pipeline. Persists BOTH conversation turns
     (thread memory — same as the Telegram listener) and returns ONLY the clean
-    user-facing reply (debug metadata scrubbed)."""
+    user-facing reply (debug metadata scrubbed).
+
+    L4.100 (audit 1.1): the HOST verifies the sender handle passed by the Mac
+    bridge against AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS. A denied sender gets an
+    EMPTY reply (the bridge sends nothing) and the message never reaches
+    routing, thread memory, or fact capture."""
+    allowed, verdict = imessage_sender_allowed(sender)
+    if not allowed:
+        record_error(
+            "imessage_sender_denied",
+            message=f"sender={compact_line(sender, 64)} verdict={verdict}",
+            severity="error",
+        )
+        return ""
     cid = cfg("TELEGRAM_ALLOWED_CHAT_ID")
     route = route_message(msg, chat_id=cid)
     append_conversation_turn(cid, "user", msg, route)
@@ -18442,6 +18515,7 @@ def main() -> int:
     set_secret.add_argument("--key", required=True)
     respb64 = sub.add_parser("respond-b64", help="respond() to a base64 message and print ONLY the reply (quote-safe iMessage inbound relay)")
     respb64.add_argument("--b64", required=True)
+    respb64.add_argument("--sender", default="", help="iMessage thread handle (verified against AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS)")
     args = parser.parse_args()
 
     if args.cmd == "doctor":
@@ -18498,7 +18572,7 @@ def main() -> int:
         # Print ONLY the reply so the iMessage inbound relay can capture it cleanly.
         # L4.94: persists thread memory (user + assistant turns) + auto fact capture
         # + debug scrub + never-empty reply (merged with Windows 'A' patch intent).
-        print(respond_b64_reply(msg))
+        print(respond_b64_reply(msg, sender=args.sender))
         return 0
     if args.cmd == "set-secret":
         value = sys.stdin.read().strip()

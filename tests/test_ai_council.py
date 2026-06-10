@@ -8841,15 +8841,21 @@ class IMessageOutboxTests(unittest.TestCase):
         self.assertIn("zakolejkowane", out)
         self.assertEqual(len(ai_council.imessage_outbox_pending()), 1)
 
-    def test_proactive_mirror_off_by_default(self):
-        # conftest forces AI_COUNCIL_IMESSAGE_PROACTIVE off.
-        self.assertFalse(ai_council.mirror_proactive_to_imessage("brief poranny"))
+    def test_proactive_delivery_uses_telegram_when_imessage_disabled(self):
+        # conftest forces AI_COUNCIL_IMESSAGE_ENABLED off -> Telegram fallback,
+        # nothing may land in the iMessage outbox (L4.100 deliver_proactive).
+        with patch.object(ai_council, "telegram_send_message_with_markup", return_value=True) as tg:
+            ok = ai_council.deliver_proactive("123", "brief poranny")
+        self.assertTrue(ok)
+        tg.assert_called_once()
         self.assertEqual(ai_council.imessage_outbox_pending(), [])
 
-    def test_proactive_mirror_enqueues_when_enabled(self):
-        with patch.object(ai_council, "proactive_imessage_enabled", return_value=True):
-            ok = ai_council.mirror_proactive_to_imessage("☀️ Brief: 2 akcje czekają")
+    def test_proactive_delivery_enqueues_when_imessage_primary(self):
+        with patch.object(ai_council, "imessage_enabled", return_value=True), \
+                patch.object(ai_council, "telegram_send_message_with_markup") as tg:
+            ok = ai_council.deliver_proactive("123", "☀️ Brief: 2 akcje czekają")
         self.assertTrue(ok)
+        tg.assert_not_called()
         pending = ai_council.imessage_outbox_pending()
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["kind"], "proactive")
