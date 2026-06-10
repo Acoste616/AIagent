@@ -69,3 +69,8 @@ for _flag in (
 for _secret in ("GITHUB_TOKEN", "GH_TOKEN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"):
     os.environ.pop(_secret, None)
     os.environ[_secret] = ""
+
+# L4.101: the production host sets the iMessage sender allowlist in its .env;
+# the suite must run in legacy OPEN mode unless a test opts in via patch.dict
+# (otherwise respond_b64_reply tests get denied on the production checkout).
+os.environ["AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS"] = ""
