@@ -113,6 +113,13 @@ As of 2026-06-09 late evening (L4.97, **DEPLOYED to D:\ai-council**):
 - Deployed with backup at `D:\ai-council\backups\pre-L4.97\`; Windows pytest 493 passed; Telegram listener restarted on new code; respond-b64 smoke clean (no debug tail); Bartek notified via iMessage.
 - Loop docs: `docs/agent-loop/LOOP_2026-06-09_L4_97_DEPLOY.md`.
 
+As of 2026-06-10 (L4.100, Mac worktree, NOT deployed; pushed to GitHub after Bartek's approval):
+
+- Full repo audit: `docs/audit/REPO_AUDIT_2026-06-10.md`; all M0–M3 tasks executed in one loop. Doc: `docs/implementation/L4_100_AUDIT_HARDENING_CHANNEL_SWITCH.md`.
+- CHANNEL SWITCH: iMessage is the PRIMARY channel (phone-number thread), Telegram is FALLBACK — `deliver_proactive` policy + `imessage_outbox_stale` failover; host-side sender allowlist for `respond-b64 --sender` (`AI_COUNCIL_IMESSAGE_ALLOWED_SENDERS`). Bridge deploy + Windows deploy + filling the phone number in env are PENDING Bartek.
+- CI exists (`.github/workflows/ci.yml`: ruff+pytest, ubuntu+windows). Routing contract suite guards `natural_intent_route`, which is now a 9-line dispatcher over `NATURAL_INTENT_RULE_GROUPS` (8 ordered rule groups, semantics preserved).
+- Cost ledger sharded per day (`costs-YYYY-MM-DD.jsonl` + legacy fallback + retention). Real tail reads (`iter_jsonl_reverse`). Silent failures now record evidence. State retention in `doctor` (`prune_state_files`). Tests split into `tests/test_council_*.py`. Mac tests: 525/525.
+
 ## Required Verification Commands
 
 Mac:
