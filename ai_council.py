@@ -14619,11 +14619,11 @@ def deterministic_research_route(stripped: str, lower: str) -> dict | None:
     return None
 
 
-def natural_intent_route(stripped: str, lower: str) -> dict | None:
-    if not stripped or stripped.startswith(("@", "/")):
-        return None
-    lower = normalize_intent_text(lower)
-
+# --- audit 2.1: ordered intent rule groups (dispatch registry) ---------------
+# Order IS the contract: earlier groups win (see tests/test_routing_contract.py).
+# A new natural intent = add/extend a group function and, if new, register it
+# in NATURAL_INTENT_RULE_GROUPS — natural_intent_route itself never changes.
+def _nat_status_diagnostics(stripped: str, lower: str) -> dict | None:
     status_phrases = {
         "status",
         "jaki status",
@@ -14732,6 +14732,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/setup", "operators": ["host"], "prompt": "", "mode": "setup", "intent": "natural"}
 
+    return None
+
+
+def _nat_ops_dashboards(stripped: str, lower: str) -> dict | None:
     if lower in {"watch", "watchlist", "śledzone tematy", "sledzone tematy", "co śledzisz", "co sledzisz", "tematy"} or lower.startswith(
         ("pokaż tematy", "pokaz tematy", "śledź ", "sledz ", "obserwuj ")
     ):
@@ -14806,6 +14810,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/connectors", "operators": ["host"], "prompt": "", "mode": "connectors", "intent": "natural"}
 
+    return None
+
+
+def _nat_connector_actions(stripped: str, lower: str) -> dict | None:
     connector_prefixes = ["sprawdź connector", "sprawdz connector", "sprawdź konektor", "sprawdz konektor"]
     if any(lower.startswith(prefix) for prefix in connector_prefixes):
         return {
@@ -14900,6 +14908,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
     ):
         return {"command": "/loops", "operators": ["host"], "prompt": "", "mode": "loops", "intent": "natural"}
 
+    return None
+
+
+def _nat_task_lifecycle(stripped: str, lower: str) -> dict | None:
     start_task_prefixes = ["start task-", "uruchom task-", "odpal task-"]
     if any(lower.startswith(prefix) for prefix in start_task_prefixes):
         prompt = stripped
@@ -15005,6 +15017,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    return None
+
+
+def _nat_memory_files_gh(stripped: str, lower: str) -> dict | None:
     if lower in {"pamięć", "pamiec", "memory", "pokaż pamięć", "pokaz pamiec"}:
         return {"command": "/memory", "operators": ["host"], "prompt": "recent", "mode": "memory", "intent": "natural"}
 
@@ -15089,6 +15105,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "mode": "gh", "intent": "natural",
         }
 
+    return None
+
+
+def _nat_workspace_writes(stripped: str, lower: str) -> dict | None:
     write_prefixes = ["zapisz plik", "utwórz plik", "utworz plik", "stwórz plik", "stworz plik", "write file", "zapisz workspace"]
     if any(lower.startswith(prefix) for prefix in write_prefixes):
         return {
@@ -15119,6 +15139,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    return None
+
+
+def _nat_operator_jobs(stripped: str, lower: str) -> dict | None:
     council_prefixes = [
         "uruchom council",
         "zrób council",
@@ -15252,6 +15276,10 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    return None
+
+
+def _nat_research_fallthrough(stripped: str, lower: str) -> dict | None:
     # L4.80: catch MID-SENTENCE live-research intent the prefix blocks above miss
     # (e.g. "co piszą o nowym modelu", "sprawdź to w internecie"). Runs after the
     # specific startswith routes so /xresearch + /poke-research still win. The win is
@@ -15270,6 +15298,29 @@ def natural_intent_route(stripped: str, lower: str) -> dict | None:
             "intent": "natural",
         }
 
+    return None
+
+
+NATURAL_INTENT_RULE_GROUPS = (
+    _nat_status_diagnostics,
+    _nat_ops_dashboards,
+    _nat_connector_actions,
+    _nat_task_lifecycle,
+    _nat_memory_files_gh,
+    _nat_workspace_writes,
+    _nat_operator_jobs,
+    _nat_research_fallthrough,
+)
+
+
+def natural_intent_route(stripped: str, lower: str) -> dict | None:
+    if not stripped or stripped.startswith(("@", "/")):
+        return None
+    lower = normalize_intent_text(lower)
+    for rule_group in NATURAL_INTENT_RULE_GROUPS:
+        route = rule_group(stripped, lower)
+        if route is not None:
+            return route
     return None
 
 
