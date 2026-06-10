@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+from contextlib import closing
 from datetime import datetime, timezone, timedelta
 import difflib
 from email.message import EmailMessage
@@ -7680,7 +7681,9 @@ def _migrate_memory_columns(conn: sqlite3.Connection) -> None:
 
 def init_memory_db() -> None:
     ensure_council_dirs()
-    with sqlite3.connect(MEMORY_DB) as conn:
+    # closing() matters on Windows: an unclosed handle keeps the .sqlite file
+    # locked (PermissionError on cleanup); `with conn:` alone only commits.
+    with closing(sqlite3.connect(MEMORY_DB)) as conn, conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_entries (

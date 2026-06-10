@@ -95,7 +95,8 @@ class MigrationVisibilityTests(unittest.TestCase):
     def test_migration_adds_missing_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "memory.sqlite"
-            with sqlite3.connect(db) as conn:
+            conn = sqlite3.connect(db)
+            try:
                 conn.execute(
                     "CREATE TABLE memory_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     " entry_id TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL,"
@@ -104,6 +105,8 @@ class MigrationVisibilityTests(unittest.TestCase):
                 )
                 ai_council._migrate_memory_columns(conn)
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
+            finally:
+                conn.close()  # Windows: unclosed handle -> PermissionError on tempdir cleanup
         self.assertLessEqual({"status", "confidence", "norm_key", "chat_id_hash"}, cols)
 
 
