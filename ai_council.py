@@ -4698,6 +4698,42 @@ def usage_estimated_usd(row: dict) -> float:
     return value
 
 
+# L4.100 (audit 1.3): the cost ledger is sharded per UTC day so the budget
+# guards on the hot path read O(one day) instead of the whole history. The
+# legacy single-file COSTS_FILE is still read as a fallback for rows written
+# before the cutover (and by older deployments); new rows go to the day shard.
+_COSTS_PRUNE_DONE = False
+
+
+def costs_file_for_day(day: str) -> Path:
+    """Per-day cost ledger shard. Derived from COSTS_FILE at call time so test
+    patches of COSTS_FILE relocate the shards too."""
+    return COSTS_FILE.with_name(f"costs-{day}.jsonl")
+
+
+def prune_cost_shards(retention_days: int | None = None) -> int:
+    """Delete day shards older than the retention window. Returns count removed.
+    Retention <= 0 disables pruning. The legacy COSTS_FILE is never deleted."""
+    days = int_cfg("AI_COUNCIL_COSTS_RETENTION_DAYS", 90) if retention_days is None else retention_days
+    if days <= 0:
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    removed = 0
+    try:
+        shards = list(COSTS_FILE.parent.glob("costs-*.jsonl"))
+    except OSError:
+        return 0
+    for shard in shards:
+        day = shard.name[len("costs-"):-len(".jsonl")]
+        if len(day) == 10 and day < cutoff:
+            try:
+                shard.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 def record_operator_usage(
     operator: str,
     *,
@@ -4708,6 +4744,13 @@ def record_operator_usage(
     estimated_usd: float | None = None,
     detail: str = "",
 ) -> dict:
+    global _COSTS_PRUNE_DONE
+    if not _COSTS_PRUNE_DONE:
+        _COSTS_PRUNE_DONE = True
+        try:
+            prune_cost_shards()
+        except Exception as exc:
+            record_error("costs_prune", exc=exc, severity="warning")
     operator = operator_key(operator)
     event = {
         "usage_id": usage_id or f"use-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{short_hash(f'{operator}:{task_id}:{time.time()}')[:6]}",
@@ -4720,7 +4763,7 @@ def record_operator_usage(
         "estimated_usd": estimated_operator_cost(operator) if estimated_usd is None else estimated_usd,
         "detail": compact_line(detail, 240),
     }
-    append_jsonl(COSTS_FILE, event)
+    append_jsonl(costs_file_for_day(event["day"]), event)
     return event
 
 
@@ -4737,7 +4780,13 @@ def collapse_usage_events(rows: list[dict]) -> list[dict]:
 
 
 def usage_today(operator: str | None = None, *, collapsed: bool = True) -> list[dict]:
-    rows = [row for row in read_jsonl(COSTS_FILE) if row.get("day") == today_utc()]
+    day = today_utc()
+    # Legacy rows FIRST so the day-shard's later statuses win in collapse
+    # (reserve -> completion pairs share a usage_id; latest wins).
+    rows: list[dict] = []
+    if COSTS_FILE.exists():
+        rows.extend(row for row in read_jsonl(COSTS_FILE) if row.get("day") == day)
+    rows.extend(read_jsonl(costs_file_for_day(day)))
     if operator:
         operator = operator_key(operator)
         rows = [row for row in rows if row.get("operator") == operator]
