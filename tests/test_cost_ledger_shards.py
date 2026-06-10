@@ -71,5 +71,47 @@ class CostShardTests(unittest.TestCase):
         self.assertTrue(shard.exists())
 
 
+class StateRetentionTests(unittest.TestCase):
+    """Audit task 3.4: bounded growth of state files."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        (base / "errors").mkdir()
+        self._patches = [
+            patch.object(ai_council, "STATE_DIR", base),
+            patch.object(ai_council, "ERRORS_FILE", base / "errors.jsonl"),
+            patch.object(ai_council, "ERRORS_DIR", base / "errors"),
+            patch.object(ai_council, "COSTS_FILE", base / "costs.jsonl"),
+        ]
+        for p in self._patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.base = base
+
+    def test_rotate_only_oversize_files(self):
+        small = self.base / "progress_events.jsonl"
+        small.write_text("{}\n", encoding="utf-8")
+        self.assertIsNone(ai_council.rotate_state_file(small, 1024))
+        big = self.base / "errors.jsonl"
+        big.write_text("x" * 2048, encoding="utf-8")
+        rotated = ai_council.rotate_state_file(big, 1024)
+        self.assertIsNotNone(rotated)
+        self.assertFalse(big.exists())
+        self.assertTrue(rotated.exists())
+        self.assertTrue(rotated.parent.name == "archive")
+        self.assertIsNone(ai_council.rotate_state_file(big, 0), "0 disables rotation")
+
+    def test_prune_state_files_drops_old_error_days(self):
+        (self.base / "errors" / "2020-01-01.jsonl").write_text("{}\n", encoding="utf-8")
+        today = ai_council.today_utc()
+        (self.base / "errors" / f"{today}.jsonl").write_text("{}\n", encoding="utf-8")
+        summary = ai_council.prune_state_files()
+        self.assertEqual(summary["errors_pruned"], 1)
+        self.assertFalse((self.base / "errors" / "2020-01-01.jsonl").exists())
+        self.assertTrue((self.base / "errors" / f"{today}.jsonl").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

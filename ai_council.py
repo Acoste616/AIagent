@@ -4789,6 +4789,52 @@ def prune_cost_shards(retention_days: int | None = None) -> int:
     return removed
 
 
+def rotate_state_file(path: Path, max_bytes: int) -> Path | None:
+    """Move an oversize append-only log into state/archive/ (audit 3.4).
+    Readers treat the now-missing file as empty; history stays in the archive."""
+    try:
+        if max_bytes <= 0 or not path.exists() or path.stat().st_size <= max_bytes:
+            return None
+        archive_dir = STATE_DIR / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        target = archive_dir / f"{path.stem}-{datetime.now().strftime('%Y%m%d-%H%M%S')}{path.suffix}"
+        path.replace(target)
+        return target
+    except OSError as exc:
+        record_error("state_rotate", exc=exc, severity="warning")
+        return None
+
+
+def prune_state_files() -> dict:
+    """Audit 3.4: bounded state growth, run from `doctor`. Rotates oversize
+    event logs (progress events, error log) into state/archive/ and prunes old
+    per-day error files + cost shards. NEVER touches actions.jsonl (pending
+    approvals) or tasks.jsonl (status lookups need the history)."""
+    max_bytes = int_cfg("AI_COUNCIL_STATE_ROTATE_MAX_BYTES", 10 * 1024 * 1024)
+    retention_days = int_cfg("AI_COUNCIL_ERRORS_RETENTION_DAYS", 90)
+    summary: dict = {"rotated": [], "errors_pruned": 0, "cost_shards_pruned": 0}
+    for path in (progress_events_path(), ERRORS_FILE):
+        rotated = rotate_state_file(path, max_bytes)
+        if rotated:
+            summary["rotated"].append(rotated.name)
+    if retention_days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date().isoformat()
+        try:
+            day_files = list(ERRORS_DIR.glob("*.jsonl"))
+        except OSError:
+            day_files = []
+        for day_file in day_files:
+            day = day_file.stem
+            if len(day) == 10 and day < cutoff:
+                try:
+                    day_file.unlink()
+                    summary["errors_pruned"] += 1
+                except OSError:
+                    continue
+    summary["cost_shards_pruned"] = prune_cost_shards()
+    return summary
+
+
 def record_operator_usage(
     operator: str,
     *,
@@ -18529,6 +18575,11 @@ def doctor() -> int:
     ok = xai_models() and ok
     print("--- scheduled-task ---")
     ok = check_scheduled_task_status() and ok
+    print("--- state retention ---")
+    try:
+        print(f"state_prune={json.dumps(prune_state_files(), ensure_ascii=False)}")
+    except Exception as exc:
+        record_error("state_prune", exc=exc, severity="warning")
     return 0 if ok else 1
 
 
