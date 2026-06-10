@@ -2986,7 +2986,11 @@ class ConversationThreadTests(unittest.TestCase):
 
     def test_poke_chat_co_dalej_uses_recent_context(self):
         def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+            return {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
+            }.get(key, default)
 
         with temp_dir() as tmp:
             root = Path(tmp)
@@ -9296,7 +9300,11 @@ class ConversationBrainTests(unittest.TestCase):
     # --- (P1) the LLM brain composes clean conversational replies ---
     def test_brain_loop_uses_llm_with_system_prompt_and_context(self):
         def fake_cfg(key, default=""):
-            return {"XAI_API_KEY": "xai-test", "AI_COUNCIL_POKE_CHAT_USE_GROK": "true"}.get(key, default)
+            return {
+                "XAI_API_KEY": "xai-test",
+                "AI_COUNCIL_POKE_CHAT_USE_GROK": "true",
+                "AI_COUNCIL_POKE_CHAT_OPERATOR": "grok",
+            }.get(key, default)
 
         ai_council.append_conversation_turn(self.cid, "user", "lecę jutro do Pragi")
         with patch.object(ai_council, "cfg", side_effect=fake_cfg), patch.object(
@@ -9313,8 +9321,10 @@ class ConversationBrainTests(unittest.TestCase):
         self.assertTrue(any("Pragi" in m["content"] for m in msgs))   # recent conversation included
 
     def test_brain_loop_without_llm_is_clean_and_honest(self):
-        # No key (suite default) -> graceful, clean, non-template reply (never the old sludge).
-        reply = ai_council.brain_loop("zaplanuj mi tydzień", chat_id=self.cid)
+        # No LLM at all -> graceful, clean, non-template reply (never the old sludge).
+        # brain_decide patched to None so the test never calls a live Claude CLI.
+        with patch.object(ai_council, "brain_decide", return_value=None):
+            reply = ai_council.brain_loop("zaplanuj mi tydzień", chat_id=self.cid)
         self.assertTrue(reply.strip())
         for bad in ("[Council]", "DECYZJA:", "FAKTY:", "NEXT:", "task-", "Przyjąłem. Najlepszy"):
             self.assertNotIn(bad, reply)
