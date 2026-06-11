@@ -15655,6 +15655,45 @@ def _nat_operator_jobs(stripped: str, lower: str) -> dict | None:
     return None
 
 
+def _nat_google_briefs(stripped: str, lower: str) -> dict | None:
+    # L4.108: naturalne "sprawdź maile" / "co w kalendarzu" (bez slashy) -> /connector
+    # brief. Frazy EXACT (po normalize_intent_text) + wąskie prefiksy kalendarzowe,
+    # dobrane tak, by NIE kolidować z wcześniejszymi grupami (routing contract:
+    # "sync kalendarz", "draft gmail", "brief", "co mam dzisiaj" zostają jak były).
+    # Exact match => "sprawdź mailera" ani "sprawdź maile od szefa po błędach" tu
+    # nie wpadają — wieloznaczne zdania idą dalej normalną ścieżką.
+    mail_phrases = {"sprawdź maile", "sprawdz maile", "co w skrzynce", "co na mailu", "przejrzyj maile"}
+    if lower in mail_phrases:
+        return {
+            "command": "/connector",
+            "operators": ["host"],
+            "prompt": "brief gmail in:inbox",
+            "mode": "connector_brief",
+            "intent": "natural",
+        }
+    calendar_exact = {
+        "co mam w kalendarzu": "najbliższe",
+        "co w kalendarzu": "najbliższe",
+        "jakie mam spotkania": "najbliższe",
+        "co mam jutro w kalendarzu": "jutro",
+    }
+    calendar_query = calendar_exact.get(lower)
+    if calendar_query is None:
+        for prefix in ("co mam w kalendarzu ", "co w kalendarzu ", "jakie mam spotkania "):
+            if lower.startswith(prefix):
+                calendar_query = lower[len(prefix):].strip() or "najbliższe"
+                break
+    if calendar_query is not None:
+        return {
+            "command": "/connector",
+            "operators": ["host"],
+            "prompt": f"brief calendar {calendar_query}",
+            "mode": "connector_brief",
+            "intent": "natural",
+        }
+    return None
+
+
 def _nat_research_fallthrough(stripped: str, lower: str) -> dict | None:
     # L4.80: catch MID-SENTENCE live-research intent the prefix blocks above miss
     # (e.g. "co piszą o nowym modelu", "sprawdź to w internecie"). Runs after the
@@ -15686,6 +15725,7 @@ NATURAL_INTENT_RULE_GROUPS = (
     _nat_memory_files_gh,
     _nat_workspace_writes,
     _nat_operator_jobs,
+    _nat_google_briefs,
     _nat_research_fallthrough,
 )
 
@@ -15818,6 +15858,40 @@ _BRAIN_CANCEL_WORDS = {
 }
 _BRAIN_CANCEL_PREFIXES = ("anuluj ", "cancel ", "odpuść ", "odpusc ", "daj spokój", "daj spokoj", "zostaw to", "zapomnij o")
 
+# L4.109: a pending clarification must NOT eat a message that is clearly not a slot
+# answer. Live failure: a stale food_local question consumed "Jesteś tu prawda?" as the
+# location slot and then ate "Nie o to pytam, masz problem z kontekstem" as the next one.
+# Conversational question openers + topic-change markers below release the pending flow
+# back to normal routing instead of consuming the message.
+_BRAIN_ESCAPE_QUESTION_PREFIXES = (
+    "czy ", "co ", "jak ", "gdzie ", "kiedy ", "dlaczego ", "czemu ", "kto ",
+    "jesteś ", "jestes ", "masz ", "możesz ", "mozesz ",
+)
+_BRAIN_ESCAPE_TOPIC_MARKERS = ("nie o to", "nie pytam", "inna sprawa")
+_BRAIN_ESCAPE_TOPIC_WORD_RE = re.compile(r"\b(zostaw|stop|anuluj)\b")
+# GPS pin / address-looking text is a legitimate location answer even when oddly phrased.
+_BRAIN_LOCATION_ANSWER_RE = re.compile(
+    r"lokalizacja:|-?\d{1,3}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}|\bul\.?\s|\bulic\w*|\balej\w*|\bosiedl\w*",
+    re.IGNORECASE,
+)
+
+
+def clarification_escape(text: str, pending_slot: str = "") -> bool:
+    """True when `text` is clearly NOT an answer to the pending clarification slot."""
+    stripped = str(text or "").strip()
+    norm = normalize_intent_text(stripped)
+    if not norm:
+        return False
+    if pending_slot == "location" and _BRAIN_LOCATION_ANSWER_RE.search(stripped):
+        return False
+    if stripped.endswith("?"):
+        return True
+    if any(norm.startswith(prefix) for prefix in _BRAIN_ESCAPE_QUESTION_PREFIXES):
+        return True
+    if any(marker in norm for marker in _BRAIN_ESCAPE_TOPIC_MARKERS):
+        return True
+    return bool(_BRAIN_ESCAPE_TOPIC_WORD_RE.search(norm))
+
 
 def _brain_ci(intent: str, confidence: float, matched: str = "") -> dict:
     return {"intent": intent, "confidence": confidence, "matched": matched}
@@ -15866,6 +15940,20 @@ def classify_intent(text: str) -> dict:
     return _brain_ci("unknown", 0.4)
 
 
+# L4.109: a reply that is ONLY a promise to check ("Sprawdzam…", "Zaraz wrócę…") is a lie —
+# the brain has no way to come back on its own without a TOOL/background task. Live failure:
+# "Sprawdzam co już mamy w repozytorium zanim cokolwiek napiszę." and then silence forever.
+_BRAIN_STALL_PROMISE_RE = re.compile(
+    r"^(sprawdzam|sprawdzę|sprawdze|zaraz|daj mi chwilę|daj mi chwile|momencik|moment|"
+    r"chwileczkę|chwileczke|za chwilę wrócę|za chwile wroce|już sprawdzam|juz sprawdzam)\b",
+    re.IGNORECASE,
+)
+_BRAIN_STALL_REPLACEMENT = (
+    "Powiedz dokładnie czego szukasz, odpowiem od razu — nie umiem wracać sam z siebie "
+    "bez zadania w tle."
+)
+
+
 def sanitize_brain_reply(text: str) -> str:
     """Enforce the anti-debug/anti-JSON contract on brain output (not just log it)."""
     clean = str(text or "").strip()
@@ -15884,6 +15972,10 @@ def sanitize_brain_reply(text: str) -> str:
     out = "\n".join(kept).strip()
     if re.search(r'\{[^{}]*"[^"]+"\s*:', out) or (out.startswith("{") and out.endswith("}") and '"' in out):
         out = "Mam wynik, ale nie wrzucam Ci surowego JSON-a. Powiedz, czego z tego potrzebujesz."
+    # L4.109: swap a short promise-only "I'll check…" reply for an honest ask — the brain
+    # cannot come back on its own, so promising to is worse than asking for specifics.
+    if out and len(out) < 120 and _BRAIN_STALL_PROMISE_RE.match(out):
+        out = _BRAIN_STALL_REPLACEMENT
     max_chars = int_cfg("AI_COUNCIL_FRONT_QUALITY_MAX_CHARS", 2400)
     if len(out) > max_chars:
         out = out[:max_chars].rstrip() + " …"
@@ -15932,11 +16024,45 @@ def get_pending_clarification(chat_id: str) -> dict | None:
     last = rows[-1]
     if last.get("status") != "pending":
         return None
-    # TTL: an abandoned flow must not silently resume days later (Sonnet review #2).
-    ttl = int_cfg("AI_COUNCIL_CLARIFY_TTL_SECONDS", 21600)  # 6h
+    # TTL: an abandoned flow must not silently resume later and eat an unrelated message
+    # as a slot answer (L4.109 live failure: hours-old food_local consumed "Jesteś tu
+    # prawda?"). Default 15 min via AI_COUNCIL_CLARIFICATION_TTL_MIN; the legacy
+    # AI_COUNCIL_CLARIFY_TTL_SECONDS (6h) stays honored as an upper bound.
+    ttl = min(
+        max(int_cfg("AI_COUNCIL_CLARIFICATION_TTL_MIN", 15), 1) * 60,
+        int_cfg("AI_COUNCIL_CLARIFY_TTL_SECONDS", 21600),
+    )
     if seconds_since(str(last.get("created_at") or "")) > ttl:
+        # Clean on read: append a terminal record so later reads short-circuit on status.
+        append_jsonl(
+            CLARIFICATIONS_FILE,
+            {
+                "created_at": utc_now(),
+                "chat_id_hash": h,
+                "intent": last.get("intent", ""),
+                "slots": last.get("slots", {}),
+                "pending_slot": "",
+                "status": "expired",
+            },
+        )
         return None
     return last
+
+
+def release_pending_clarification(chat_id: str, pending: dict) -> None:
+    """L4.109: drop a pending clarification WITHOUT consuming the current message
+    (the message was clearly not a slot answer — it re-enters normal routing)."""
+    append_jsonl(
+        CLARIFICATIONS_FILE,
+        {
+            "created_at": utc_now(),
+            "chat_id_hash": _clar_hash(chat_id),
+            "intent": (pending or {}).get("intent", ""),
+            "slots": (pending or {}).get("slots", {}),
+            "pending_slot": "",
+            "status": "released",
+        },
+    )
 
 
 def clear_pending_clarification(chat_id: str) -> dict | None:
@@ -16029,6 +16155,12 @@ def conversation_brain_consume(text: str, chat_id: str = "") -> dict | None:
             "Spoko, odpuszczam ten wątek. Napisz, gdy będziesz chciał wrócić.",
             intent=str(pending.get("intent", "")),
         )
+    # L4.109 smart escape — a message that is clearly NOT a slot answer (a question to
+    # the assistant, a topic change) releases the pending flow and goes through normal
+    # routing instead of being eaten as a slot value (live failure: "Jesteś tu prawda?").
+    if clarification_escape(stripped, pending_slot=str(pending.get("pending_slot", ""))):
+        release_pending_clarification(chat_id, pending)
+        return None
     # If the keyword router recognizes this message, the user changed topic mid-flow —
     # defer to it (Sonnet review #1). The pending clarification lingers and resumes on
     # the next free-text answer the router does not claim.
@@ -16309,10 +16441,26 @@ def route_text(text: str) -> dict:
         return {"command": "/front", "operators": ["host"], "prompt": stripped[6:].strip(), "mode": "front"}
     if lower.startswith("/workspace"):
         return {"command": "/workspace", "operators": ["host"], "prompt": "", "mode": "workspace"}
+    if lower.startswith("/working"):
+        return {"command": "/working", "operators": ["host"], "prompt": "", "mode": "working"}
     natural_route = natural_intent_route(stripped, lower)
     if natural_route:
         return natural_route
+    # L4.109: an unknown "/command" must NOT fall through to the chat brain (live failure:
+    # "/model" got a random answer about code). Only command-shaped tokens count — a path
+    # like "/Users/x/notes.txt" or a bare "/" still goes to /chat as before.
+    if stripped.startswith("/") and re.fullmatch(r"/[A-Za-z][\w-]{0,32}", stripped.split()[0]):
+        return {"command": "/unknown", "operators": ["host"], "prompt": stripped.split()[0], "mode": "unknown_command"}
     return {"command": "/chat", "operators": ["host"], "prompt": stripped, "mode": "chat", "intent": "natural"}
+
+
+def unknown_command_response(token: str) -> str:
+    """L4.109: honest, short reply for a slash command that matched no rule."""
+    shown = compact_line(str(token or "/?").strip(), 40)
+    return (
+        f"Nie znam komendy `{shown}`. Najbliższe: /status, /brief, /radar, /approve, /undo, /memory. "
+        "Albo po prostu napisz normalnie, co chcesz zrobić."
+    )
 
 
 def operator_key(name: str) -> str:
@@ -16719,6 +16867,9 @@ BRAIN_SYSTEM_PROMPT = (
     "ZASADY:\n"
     "- Odpowiadaj wprost na to, o co chodzi. Maks 2–4 zdania, chyba że Bartek prosi o więcej.\n"
     "- Jeśli brakuje danych, żeby coś zrobić — zadaj JEDNO konkretne pytanie zamiast zgadywać.\n"
+    "- NIGDY nie odpowiadaj 'sprawdzam', 'zaraz wrócę', 'daj mi chwilę' bez wykonania TOOL — "
+    "nie masz możliwości wrócić sam z siebie. Albo odpowiadasz pełną treścią od razu, "
+    "albo wywołujesz narzędzie.\n"
     "- Jeśli to ma sens, zaproponuj jeden konkretny następny krok.\n"
     "- Korzystaj z pamięci i historii rozmowy. Nie proś o powtórzenie tego, co już było.\n"
     "- Mów prawdę o stanie: nie udawaj, że coś zrobiłeś, jeśli system tego nie wykonał. "
@@ -18230,6 +18381,8 @@ def build_response(route: dict, chat_id: str = "") -> str:
         return task_status_response(prompt)
     if command == "/working":
         return live_status_response()
+    if command == "/unknown":
+        return unknown_command_response(prompt)
     if command == "/progress":
         return progress_response(prompt)
     if command == "/health":
@@ -20267,12 +20420,18 @@ def radar_youtube_entries(xml_text: str, limit: int = 3) -> list[dict]:
     return entries
 
 
+def radar_yt_max_channels() -> int:
+    """L4.108: górny limit kanałów YT na run (watchlista + subskrypcje) — żeby
+    radar nie mielił setek RSS-ów przy dużej liczbie subów."""
+    return max(1, int_cfg("AI_COUNCIL_RADAR_YT_MAX_CHANNELS", 25))
+
+
 def radar_youtube_news(channels: list[dict], state: dict, per_channel: int = 3) -> list[dict]:
     """Nowe filmy z obserwowanych kanałów — tylko nowsze niż marker per kanał
     (radar_state.json). Pierwszy run: bierze 3 najnowsze i ustawia marker."""
     out: list[dict] = []
     sources = state.setdefault("sources", {})
-    for ch in channels[:10]:
+    for ch in channels[: radar_yt_max_channels()]:
         cid = str(ch.get("channel_id") or "").strip()
         if not cid:
             continue
@@ -20289,6 +20448,77 @@ def radar_youtube_news(channels: list[dict], state: dict, per_channel: int = 3) 
         for entry in fresh:
             out.append({"channel": str(ch.get("name") or cid), **entry})
     return out
+
+
+YT_SUBSCRIPTIONS_URL = "https://www.googleapis.com/youtube/v3/subscriptions?part=snippet&mine=true&maxResults=50"
+
+
+def radar_youtube_subscriptions(state: dict | None = None) -> list[dict]:
+    """L4.108: subskrypcje YouTube Bartka (Google OAuth read-only, youtube.readonly).
+    Maks 2 strony API (=100 subów), cache dzienny w radar_state ('yt_subs' +
+    'yt_subs_day'). Fail-safe: brak OAuth -> [], błąd API/tokenu -> ostatni cache,
+    NIGDY nie rzuca (nie może wywalić radar_collect). Gdy dostaje wspólny `state`
+    (radar_collect), zapis robi caller — bez podwójnego radar_state_save."""
+    cached: list[dict] = []
+    try:
+        if not google_oauth_configured():
+            return []
+        own_state = state is None
+        if own_state:
+            state = radar_state()
+        for sub in state.get("yt_subs") or []:
+            if isinstance(sub, dict) and str(sub.get("channel_id") or "").strip():
+                cid = str(sub.get("channel_id")).strip()
+                cached.append({"name": str(sub.get("name") or "").strip() or cid, "channel_id": cid})
+        today = today_utc()
+        if cached and str(state.get("yt_subs_day") or "") == today:
+            return cached
+        status, token = google_access_token()
+        if status != "available":
+            record_error("radar_yt_subs", message=compact_line(status, 160), severity="warning")
+            return cached
+        subs: list[dict] = []
+        seen: set[str] = set()
+        page_token = ""
+        for _ in range(2):  # maks 2 strony = 100 subskrypcji
+            url = YT_SUBSCRIPTIONS_URL + (f"&pageToken={quote(page_token)}" if page_token else "")
+            data = request_json(url, headers=google_headers(token), timeout=20)
+            if not isinstance(data, dict) or data.get("ok") is False:
+                detail = str(data.get("error") or "") if isinstance(data, dict) else "invalid_response"
+                record_error("radar_yt_subs", message=compact_line(detail or "api_error", 160), severity="warning")
+                break
+            for item in data.get("items") or []:
+                snippet = (item or {}).get("snippet") or {}
+                cid = str((snippet.get("resourceId") or {}).get("channelId") or "").strip()
+                if cid and cid not in seen:
+                    seen.add(cid)
+                    subs.append({"name": compact_line(str(snippet.get("title") or ""), 80) or cid, "channel_id": cid})
+            page_token = str(data.get("nextPageToken") or "")
+            if not page_token:
+                break
+        if not subs:
+            return cached  # błąd/pusto -> zostaje wczorajszy cache
+        state["yt_subs"] = subs
+        state["yt_subs_day"] = today
+        if own_state:
+            radar_state_save(state)
+        return subs
+    except Exception as exc:
+        record_error("radar_yt_subs", exc=exc, severity="warning")
+        return cached
+
+
+def radar_yt_channels_combined(watchlist: dict, state: dict) -> list[dict]:
+    """L4.108: kanały do RSS = watchlista ∪ subskrypcje YT (dedupe po channel_id,
+    watchlista MA PIERWSZEŃSTWO), przycięte do radar_yt_max_channels()."""
+    channels: list[dict] = [dict(ch) for ch in watchlist.get("yt_channels") or []]
+    seen = {str(ch.get("channel_id") or "") for ch in channels}
+    for sub in radar_youtube_subscriptions(state):
+        cid = str(sub.get("channel_id") or "")
+        if cid and cid not in seen:
+            seen.add(cid)
+            channels.append({"name": str(sub.get("name") or "") or cid, "channel_id": cid})
+    return channels[: radar_yt_max_channels()]
 
 
 def parse_github_trending(html_text: str, limit: int = 5) -> list[dict]:
@@ -20379,7 +20609,7 @@ def radar_collect() -> dict:
     state = radar_state()
     data: dict = {"yt": [], "gh_trending": [], "gh_releases": [], "x": ""}
     try:
-        data["yt"] = radar_youtube_news(watchlist["yt_channels"], state)
+        data["yt"] = radar_youtube_news(radar_yt_channels_combined(watchlist, state), state)
     except Exception as exc:
         record_error("radar_youtube", exc=exc, severity="warning")
     try:
