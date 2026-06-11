@@ -2517,9 +2517,17 @@ def connector_index_count(connector: str) -> int:
     return int(row[0] if row else 0)
 
 
+CONNECTOR_GENERIC_QUERIES = {"*", "inbox", "najnowsze", "recent", "ostatnie", "najbliższe", "najblizsze", "wszystko"}
+CONNECTOR_OPERATOR_QUERY_RE = re.compile(r"^(in|is|label|from|to|newer_than|older_than):\S+$", re.IGNORECASE)
+
+
 def connector_index_search(connector: str, query: str, limit: int = 5) -> list[dict]:
     init_connector_index_db()
     clean_query = query.strip()
+    # L4.109b: Gmail-style operatory ("in:inbox") i ogólniki ("najnowsze") to nie jest
+    # tekst do szukania — potraktuj jak puste zapytanie => zwróć najnowsze wpisy.
+    if clean_query.lower() in CONNECTOR_GENERIC_QUERIES or CONNECTOR_OPERATOR_QUERY_RE.match(clean_query):
+        clean_query = ""
     with sqlite3.connect(CONNECTOR_INDEX_DB) as conn:
         conn.row_factory = sqlite3.Row
         if clean_query:
