@@ -1,0 +1,28 @@
+{
+  "name": "radar_afternoon",
+  "description": "L4.107: druga porcja radaru po południu — ciekawostki zamiast scrollowania.",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "0 16 * * *"
+  },
+  "risk": "R0",
+  "approval_policy": "auto",
+  "capture_improvement": false,
+  "planner_selectable": false,
+  "intent_keywords": [
+    "radar popołudnie"
+  ],
+  "integrations": [
+    "youtube_rss",
+    "github",
+    "grok",
+    "claude"
+  ],
+  "steps": [
+    {
+      "command": "/radar",
+      "prompt": "scheduled pm"
+    }
+  ]
+}

@@ -271,10 +271,28 @@ class RadarDailyMarkerTests(unittest.TestCase):
 
     def test_response_dispatch_scheduled_vs_on_demand(self):
         calls = []
-        with patch.object(ai_council, "radar_digest", side_effect=lambda send, on_demand=False: calls.append((send, on_demand)) or "ok"):
+        with patch.object(
+            ai_council, "radar_digest",
+            side_effect=lambda send, on_demand=False, slot="am": calls.append((send, on_demand, slot)) or "ok",
+        ):
             ai_council.radar_response("scheduled")
+            ai_council.radar_response("scheduled pm")  # L4.107: popołudniowa porcja
             ai_council.radar_response("")
-        self.assertEqual(calls, [(True, False), (False, True)])
+        self.assertEqual(calls, [(True, False, "am"), (True, False, "pm"), (False, True, "am")])
+
+    def test_afternoon_slot_has_independent_daily_marker(self):
+        # L4.107: rano i po południu to osobne markery — dwa przeglądy dziennie.
+        with tempfile.TemporaryDirectory() as tmp:
+            sent = []
+            p1, p2, p3 = self._patched(tmp)
+            with p1, p2, p3, patch.object(ai_council, "radar_send", side_effect=lambda c, t, m=None: sent.append(t) or True):
+                am = ai_council.radar_digest(send=True, on_demand=False, slot="am")
+                pm = ai_council.radar_digest(send=True, on_demand=False, slot="pm")
+                pm2 = ai_council.radar_digest(send=True, on_demand=False, slot="pm")
+        self.assertIn("wysłany", am)
+        self.assertIn("wysłany", pm)
+        self.assertIn("już był", pm2)
+        self.assertEqual(len(sent), 2)
 
 
 class RadarRecipeAndPolicyTests(unittest.TestCase):

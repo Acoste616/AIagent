@@ -376,6 +376,7 @@ DEFAULT_RECIPE_MANAGED_KEYS = {
     "feature_evolution_loop": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
     "evolution_factory_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
     "radar_daily": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
+    "radar_afternoon": AUTONOMOUS_LOOP_MANAGED_RECIPE_KEYS,
 }
 RECIPE_SOURCE_READ_ACTIONS = {"search"}
 RECIPE_MEMORY_READ_ACTIONS = {"recent", "search"}
@@ -5747,6 +5748,19 @@ def default_recipes() -> dict[str, dict]:
             "intent_keywords": ["radar", "co nowego", "co ciekawego", "watchlista", "obserwuj"],
             "integrations": ["youtube_rss", "github", "grok", "claude"],
             "steps": [{"command": "/radar", "prompt": "scheduled"}],
+        },
+        "radar_afternoon": {
+            "name": "radar_afternoon",
+            "description": "L4.107: druga porcja radaru po południu — ciekawostki zamiast scrollowania.",
+            "enabled": True,
+            "trigger": {"type": "schedule", "cron": f"0 {max(0, min(23, int_cfg('AI_COUNCIL_RADAR_HOUR_PM', 16)))} * * *"},
+            "risk": "R0",
+            "approval_policy": "auto",
+            "capture_improvement": False,
+            "planner_selectable": False,
+            "intent_keywords": ["radar popołudnie"],
+            "integrations": ["youtube_rss", "github", "grok", "claude"],
+            "steps": [{"command": "/radar", "prompt": "scheduled pm"}],
         },
         "project_next_action": {
             "name": "project_next_action",
@@ -20529,17 +20543,20 @@ def radar_send(chat_id: str, text: str, markup: dict | None = None) -> bool:
     return ok
 
 
-def radar_digest(send: bool, on_demand: bool = False) -> str:
-    """Jeden przegląd radaru. Scheduled: maks 1 dziennie (marker jak morning brief,
-    zapis PRZED pracą — retry/crash nie spamuje). On-demand: działa zawsze."""
+def radar_digest(send: bool, on_demand: bool = False, slot: str = "am") -> str:
+    """Jeden przegląd radaru. Scheduled: maks 1 dziennie PER SLOT (am/pm — L4.107:
+    Bartek chce porcję ciekawostek rano i po południu; marker zapis PRZED pracą —
+    retry/crash nie spamuje). On-demand: działa zawsze."""
     if not radar_enabled():
         return "[Radar] wyłączony (AI_COUNCIL_RADAR_ENABLED=false)."
     if not on_demand:
+        slot = slot if slot in {"am", "pm"} else "am"
+        marker_key = "last_digest_day" if slot == "am" else f"last_digest_day_{slot}"
         today = today_utc()
         state = radar_state()
-        if str(state.get("last_digest_day") or "") == today:
-            return "[Radar] dzisiejszy przegląd już był (maks 1 dziennie)."
-        state["last_digest_day"] = today
+        if str(state.get(marker_key) or "") == today:
+            return "[Radar] ten przegląd już był dzisiaj (maks 1 na slot)."
+        state[marker_key] = today
         radar_state_save(state)
     data = radar_collect()
     if not radar_has_content(data):
@@ -20567,7 +20584,9 @@ def radar_response(prompt: str, task_id: str = "") -> str:
     if low in {"list", "lista", "watchlista", "watchlist", "settings", "ustawienia"}:
         return radar_watchlist_text()
     if low == "scheduled":
-        return radar_digest(send=True, on_demand=False)
+        return radar_digest(send=True, on_demand=False, slot="am")
+    if low == "scheduled pm":
+        return radar_digest(send=True, on_demand=False, slot="pm")
     return radar_digest(send=False, on_demand=True)
 
 

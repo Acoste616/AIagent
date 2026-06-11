@@ -32,7 +32,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 DEFAULT_SCOPES = (
     "https://www.googleapis.com/auth/gmail.compose "
-    "https://www.googleapis.com/auth/gmail.readonly"
+    "https://www.googleapis.com/auth/gmail.readonly "
+    "https://www.googleapis.com/auth/calendar.readonly "
+    "https://www.googleapis.com/auth/youtube.readonly"  # L4.107: subskrypcje YT dla Radaru
 )
 REDIRECT_HOST, REDIRECT_PORT = "localhost", 8765
 REDIRECT_URI = f"http://{REDIRECT_HOST}:{REDIRECT_PORT}/"
